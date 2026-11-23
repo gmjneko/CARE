@@ -24,12 +24,11 @@ Done when the rule can be stated without naming the reported screen, input, app,
 
 Search the whole source tree — plus the modules upstream and downstream of the buggy one — for
 every site of the same pattern. Search by the shape of the mistake (the call, the field, the
-idiom), not only by the name in the bug report. Fix all instances within the agreed scope
-together. If the full fix would significantly expand that scope, explain its impact and cost
-and wait for the user's decision before proceeding.
+idiom), not only by the name in the bug report. Fix every hit in the same change.
 
-Report the exact search commands and the outcome for each hit. Identify which instances were
-fixed, which the user deferred, and why any other hits fall outside the defect class.
+Report the sweep: the exact search commands, each hit, and its disposition (fixed / not an
+instance, with the reason). A fix that touches only the named site is a half-landed fix and comes
+back later from a different direction.
 
 Done when every hit has a disposition and the search is reproducible from the report.
 
