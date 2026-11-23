@@ -24,15 +24,16 @@ Done when the rule can be stated without naming the reported screen, input, app,
 
 Search the whole source tree — plus the modules upstream and downstream of the buggy one — for
 every site of the same pattern. Search by the shape of the mistake (the call, the field, the
-idiom), not only by the name in the bug report. Fix every hit in the same change.
+idiom), not only by the name in the bug report. Fix all instances within the agreed scope
+together. If the full fix would significantly expand that scope, explain its impact and cost
+and wait for the user's decision before proceeding.
 
-Report the sweep: the exact search commands, each hit, and its disposition (fixed / not an
-instance, with the reason). A fix that touches only the named site is a half-landed fix and comes
-back later from a different direction.
+Report the exact search commands and the outcome for each hit. Identify which instances were
+fixed, which the user deferred, and why any other hits fall outside the defect class.
 
 Done when every hit has a disposition and the search is reproducible from the report.
 
-### 3. Find the data structure at fault
+### 3. Check whether the data structure is at fault
 
 Look at the data before the control flow. A common root cause is **two kinds of data mixed in one
 structure**: protocol fields declared on every business DTO, user content and system metadata in
@@ -40,7 +41,7 @@ one dict, two lifecycles in one object. The fix is to split the structure into t
 field name, branching on context, or excluding at the reader leaves the mix in place, and the
 next consumer trips over it again.
 
-Say in the fix description which data structure changed and how.
+If the root cause lies in a data structure, describe how the fix changes it.
 
 ### 4. Fix the input, not the output
 
@@ -109,7 +110,6 @@ fix than one strong one; a fix that adds a second path "for this case" is a new 
 
 ## Done
 
-The class and its rule are written down; the sweep is reported with commands, hits and
-dispositions; no new branch keys on a name, kind, platform or text; the changed data structure
-is named; the original failure reproduces through the production path before the fix and passes
-after it.
+The report names the defect class and its rule and lists the sweep commands, hits and
+dispositions. No new branch keys on a name, kind, platform or text. The original failure
+reproduces through the production path before the fix and passes after it.
