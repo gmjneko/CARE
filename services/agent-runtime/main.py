@@ -197,4 +197,4 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
