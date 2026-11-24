@@ -1,6 +1,6 @@
 # CARE Agent Runtime 详细设计文档（Workflow + Agent）
 
-> **文档状态**：已落地（Step 1 实现基线，对应 `services/agent-runtime` v0.0.1）  
+> **文档状态**：已落地（Step 1 实现基线，对应 `../../services/agent-runtime` v0.0.1）  
 > **关联文档**：[总体架构设计文档](./architecture.md)  
 > **适用范围**：AI 工程（Python / LangGraph / Pi）、后端（Java 事件消费与契约对接）、前端（Electron / Web 流式渲染）
 
@@ -8,7 +8,7 @@
 
 ## 1. 设计目标与职责边界
 
-`services/agent-runtime` 是 CARE 系统的同构 AI 编排与执行运行时。本文档聚焦其核心执行引擎——**“宏观 LangGraph 编排 + 微观 `AgentAdapter` (`pi --mode rpc`) 执行”**双层架构的详细设计。
+`../../services/agent-runtime` 是 CARE 系统的同构 AI 编排与执行运行时。本文档聚焦其核心执行引擎——**“宏观 LangGraph 编排 + 微观 `AgentAdapter` (`pi --mode rpc`) 执行”**双层架构的详细设计。
 
 ### 1.1 核心设计目标
 
@@ -417,7 +417,7 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
    - `test_framing.py`（12 项）：多字节 UTF-8 跨块切分、CRLF、`U+2028/U+2029`、边界行长、空行、非法 UTF-8/JSON/非对象与 EOF 截断；
    - `test_normalizer.py`（7 项）：双格式 Usage、多块消息、工具输出前缀增长/重复帧/滑动窗口重叠 Diff、凭据脱敏与限流分类、压缩与重试恢复、UI 弹窗分类与协议缺字段 fail-fast。
 4. **实机冒烟入口（`main.py`）**：
-   - 模型 / Base URL / API Key 默认读取 `~/.care/settings.json`（可通过 `CARE_HOME` 覆盖），在 IDE 中直接打开 `services/agent-runtime/main.py` 修改 `prompt` / `workflow` / `profile` / `cwd` 等参数后右键直接运行即可（或在目录内执行 `uv run python main.py`）。
+   - 模型 / Base URL / API Key 默认读取 `~/.care/settings.json`（可通过 `CARE_HOME` 覆盖），在 IDE 中直接打开 `../../services/agent-runtime/main.py` 修改 `prompt` / `workflow` / `profile` / `cwd` 等参数后右键直接运行即可（或在目录内执行 `uv run python main.py`）。
 
 ---
 
