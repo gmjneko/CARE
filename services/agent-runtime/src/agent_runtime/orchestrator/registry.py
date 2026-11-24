@@ -22,6 +22,7 @@ class WorkflowBuilder(Protocol):
         adapter: str = "pi",
         endpoint: ModelEndpoint | None = None,
         thinking_level: ThinkingLevel | None = None,
+        persist_session: bool = True,
     ) -> StateGraph[WorkflowState]: ...
 
 

@@ -15,7 +15,7 @@ from agent_runtime.adapters import (
     PiRpcConfig,
     ThinkingLevel,
 )
-from agent_runtime.config import load_local_settings
+from agent_runtime.config import checkpoints_db_path, load_local_settings
 from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
     NodeCompletedEvent,
@@ -27,6 +27,8 @@ from agent_runtime.protocol import (
     ToolOutputDeltaEvent,
     ToolStartedEvent,
     WorkflowCompletedEvent,
+    WorkflowInterruptedEvent,
+    WorkflowResumedEvent,
     WorkflowStartedEvent,
 )
 from agent_runtime.workflows import create_default_workflow_registry
@@ -38,7 +40,7 @@ def main() -> int:
     """IDE 直接右键运行入口，按需修改下方参数即可。
 
     模型 / Base URL / API Key 默认读取 `~/.care/settings.json`（可通过 `CARE_HOME` 覆盖目录），
-    未配置时沿用 Pi 本机默认配置；单次临时测试也可直接传 `endpoint=ModelEndpoint(...)`。
+    未配置时沿用 Pi 本机默认配置；固定 `thread_id` 连续运行即可体验跨进程多轮连续对话。
     """
     return run(
         # 用户提示词（直接在这里修改）
@@ -47,6 +49,8 @@ def main() -> int:
         workflow="single_agent",
         # Agent 工作目录（默认当前目录，支持相对路径、绝对路径或 ~）
         cwd=".",
+        # 会话线程 ID：设为固定值（如 "demo-1"）时，多次运行会自动续接同一轮对话上下文
+        thread_id=None,
         # 使用 ~/.care/settings.json 中的配置名（None 表示使用 active_profile）
         profile=None,
         # 可选单次临时覆盖（与 profile 二选一；None 时沿用 profile 或 Pi 默认配置）
@@ -54,7 +58,8 @@ def main() -> int:
         thinking_level=None,  # "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
         # 运行时配置
         pi_bin=None,  # None 时依次读取 settings.json -> $PI_BIN -> "pi"
-        checkpoint_db=":memory:",  # ":memory:" 或 SQLite 路径，如 "checkpoints.sqlite"
+        # None 时默认持久化到 ~/.care/checkpoints.sqlite（也可填 ":memory:" 仅内存运行）
+        checkpoint_db=None,
         json_output=False,  # True 时输出原始 RuntimeEvent JSONL
     )
 
@@ -64,11 +69,12 @@ def run(
     *,
     workflow: WorkflowName | str = "single_agent",
     cwd: str | Path = ".",
+    thread_id: str | None = None,
     profile: str | None = None,
     endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
     pi_bin: str | None = None,
-    checkpoint_db: str | Path = ":memory:",
+    checkpoint_db: str | Path | None = None,
     json_output: bool = False,
 ) -> int:
     """Run a CARE workflow synchronously and stream events to stdout."""
@@ -98,6 +104,7 @@ def run(
     )
     # Pi 可执行文件优先级：显式入参 > settings.json > 环境变量 PI_BIN > "pi"
     effective_pi_bin = pi_bin or settings.pi_bin or os.environ.get("PI_BIN", "pi")
+    effective_checkpoint_db = checkpoint_db if checkpoint_db is not None else checkpoints_db_path()
     workspace_dir = Path(cwd).expanduser()
 
     async def _execute() -> int:
@@ -112,12 +119,13 @@ def run(
         async with WorkflowRunner(
             adapter_registry,
             workflow_registry,
-            checkpoint_db=checkpoint_db,
+            checkpoint_db=effective_checkpoint_db,
         ) as runner:
             async for event in runner.run(
                 workflow,
                 prompt,
                 workspace_dir,
+                thread_id=thread_id,
                 endpoint=effective_endpoint,
                 thinking_level=effective_thinking,
             ):
@@ -146,6 +154,12 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
 
     if isinstance(payload, WorkflowStartedEvent):
         print(f"[workflow.started] workflow={payload.preset} run_id={event.run_id}", flush=True)
+    elif isinstance(payload, WorkflowResumedEvent):
+        print(
+            f"[workflow.resumed] workflow={payload.preset} "
+            f"thread_id={payload.thread_id} from={payload.resumed_from}",
+            flush=True,
+        )
     elif isinstance(payload, NodeStartedEvent):
         _end_stream()
         print(
@@ -186,6 +200,13 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
                 f"  failure=({payload.failure.failure_class}) {payload.failure.message}",
                 flush=True,
             )
+    elif isinstance(payload, WorkflowInterruptedEvent):
+        _end_stream()
+        print(
+            f"\n[workflow.interrupted] reason={payload.reason} "
+            f"node={payload.node_id} seq={event.seq}",
+            flush=True,
+        )
     elif isinstance(payload, WorkflowCompletedEvent):
         _end_stream()
         print(f"\n[workflow.completed] status={payload.status} seq={event.seq}", flush=True)

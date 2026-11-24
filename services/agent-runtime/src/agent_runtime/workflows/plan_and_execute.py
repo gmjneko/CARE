@@ -32,6 +32,7 @@ def build_plan_and_execute_workflow(
     adapter: str = "pi",
     endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
+    persist_session: bool = True,
 ) -> StateGraph[WorkflowState]:
     """2-node sequential workflow: planner (read-only) -> executor (full tools) -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
@@ -45,6 +46,7 @@ def build_plan_and_execute_workflow(
                 adapter=adapter,
                 endpoint=endpoint,
                 thinking_level=thinking_level,
+                persist_session=persist_session,
                 tools=("read", "grep", "find", "ls"),
                 append_system_prompt=(
                     "You are the Planner agent in a multi-agent workflow. "
@@ -69,6 +71,7 @@ def build_plan_and_execute_workflow(
                 adapter=adapter,
                 endpoint=endpoint,
                 thinking_level=thinking_level,
+                persist_session=persist_session,
                 append_system_prompt=(
                     "You are the Executor agent in a multi-agent workflow. "
                     "Execute the Planner's plan accurately in the workspace and verify the result."

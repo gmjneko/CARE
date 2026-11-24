@@ -6,7 +6,7 @@ from typing import Annotated, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
-from agent_runtime.protocol.events import AgentFailure, TokenUsage
+from agent_runtime.protocol.events import AgentFailure, InteractionRequestEvent, TokenUsage
 
 
 class NodeOutput(BaseModel):
@@ -16,11 +16,13 @@ class NodeOutput(BaseModel):
 
     node_id: str
     role: str
-    status: Literal["completed", "failed", "aborted"]
+    status: Literal["completed", "interrupted", "failed", "aborted"]
     summary: str
     session_ref: str | None = None
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
+    # 节点因阻塞式交互或进程退出而中断时，保留待用户回复的原始交互请求，供重启后还原弹窗
+    pending_interaction: InteractionRequestEvent | None = None
 
 
 def merge_node_outputs(
@@ -37,10 +39,14 @@ class WorkflowState(TypedDict):
     """
 
     run_id: str
+    thread_id: str
     workflow_id: str
     prompt: str
     workspace_dir: str
     node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
     latest_output: str
-    status: Literal["running", "completed", "failed", "aborted"]
+    status: Literal["running", "interrupted", "completed", "failed", "aborted"]
     failure: AgentFailure | None
+    # 仅在 runner.resume() 恢复中断/失败/崩溃线程时生效；恢复节点成功完成后即清空
+    resume_mode: bool
+    resume_prompt: str | None

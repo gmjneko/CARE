@@ -15,6 +15,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 def _emit(record: dict[str, Any]) -> None:
@@ -38,6 +39,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", default="rpc")
     parser.add_argument("--no-session", action="store_true")
     parser.add_argument("--session", default=None)
+    parser.add_argument("--session-dir", default=None)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--provider", default=None)
     parser.add_argument("--model", default=None)
@@ -457,10 +459,228 @@ def _handle_inspect_endpoint(req_id: str | None, args: argparse.Namespace) -> No
     _emit({"type": "agent_settled", "aborted": False})
 
 
+def _load_session_history(session_file: str | None) -> list[str]:
+    if not session_file:
+        return []
+    path = Path(session_file)
+    if not path.is_file():
+        return []
+    history: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            record = json.loads(line)
+            if isinstance(record, dict) and isinstance(record.get("prompt"), str):
+                history.append(record["prompt"])
+    return history
+
+
+def _append_session_history(session_file: str | None, prompt: str) -> None:
+    if not session_file:
+        return
+    path = Path(session_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"prompt": prompt}, ensure_ascii=False) + "\n")
+
+
+def _handle_stateful_chat(req_id: str | None, prompt: str, session_file: str | None) -> None:
+    """多轮持久化会话场景：将每次 prompt 真实追加到 session JSONL 文件并回显完整轮次历史。"""
+    history = _load_session_history(session_file)
+    history.append(prompt)
+    _append_session_history(session_file, prompt)
+
+    _emit(
+        {
+            "type": "response",
+            "id": req_id,
+            "command": "prompt",
+            "success": True,
+            "data": {"disposition": "started"},
+        }
+    )
+    reply = json.dumps(
+        {
+            "session_file": session_file,
+            "turn_count": len(history),
+            "history": history,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    _emit(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": reply, "contentIndex": 0},
+        }
+    )
+    _emit(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": reply}],
+            },
+        }
+    )
+    _emit({"type": "agent_settled", "aborted": False})
+
+
+def _handle_ui_question(
+    req_id: str | None,
+    prompt: str,
+    *,
+    session_file: str | None,
+    append_prompt: str,
+    tools: str | None,
+    crash_while_waiting: bool = False,
+) -> bool:
+    """模拟节点内 ask_question 阻塞提问；若已有历史则直接按恢复后回答继续完成。"""
+    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    if is_planner:
+        _handle_standard(req_id, prompt, tools=tools, append_prompt=append_prompt)
+        return False
+
+    history = _load_session_history(session_file)
+    _append_session_history(session_file, prompt)
+
+    # 若历史非空，说明是冷恢复后的续接轮次，直接消费恢复指令完成任务
+    if history:
+        _emit(
+            {
+                "type": "response",
+                "id": req_id,
+                "command": "prompt",
+                "success": True,
+                "data": {"disposition": "started"},
+            }
+        )
+        final_text = f"RESUMED_WITH_HISTORY({len(history)}):{prompt}"
+        _emit(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "stop",
+                    "content": [{"type": "text", "text": final_text}],
+                },
+            }
+        )
+        _emit({"type": "agent_settled", "aborted": False})
+        return False
+
+    _emit(
+        {
+            "type": "extension_ui_request",
+            "id": "ui-q-1",
+            "method": "select",
+            "title": "Select cache backend",
+            "message": "Which cache backend should be used?",
+            "options": ["redis", "memory"],
+        }
+    )
+
+    if crash_while_waiting:
+        # 发出阻塞提问后立刻模拟子进程被外部强杀
+        sys.stderr.write("killed while awaiting user answer\n")
+        sys.stderr.flush()
+        return True
+
+    resp = _read_record()
+    assert resp is not None and resp.get("type") == "extension_ui_response"
+    _emit(
+        {
+            "type": "response",
+            "id": req_id,
+            "command": "prompt",
+            "success": True,
+            "data": {"disposition": "started"},
+        }
+    )
+    answer = "cancelled" if resp.get("cancelled") else str(resp.get("value") or "")
+    final_text = f"QUESTION_ANSWER={answer}"
+    _emit(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": final_text}],
+            },
+        }
+    )
+    _emit({"type": "agent_settled", "aborted": False})
+    return False
+
+
+def _handle_fail_executor_once(
+    req_id: str | None,
+    prompt: str,
+    *,
+    session_file: str | None,
+    append_prompt: str,
+    tools: str | None,
+) -> None:
+    """planner 正常成功，executor 首次执行模拟 429 限流失败，带 session_ref 恢复后成功。"""
+    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    if is_planner:
+        _handle_standard(req_id, prompt, tools=tools, append_prompt=append_prompt)
+        return
+
+    history = _load_session_history(session_file)
+    _append_session_history(session_file, prompt)
+    _emit(
+        {
+            "type": "response",
+            "id": req_id,
+            "command": "prompt",
+            "success": True,
+            "data": {"disposition": "started"},
+        }
+    )
+    if not history:
+        _emit(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": "429 rate limit exceeded",
+                    "content": [],
+                },
+            }
+        )
+        _emit({"type": "agent_settled", "aborted": False})
+        return
+
+    final_text = f"EXECUTOR_RECOVERED(turns={len(history) + 1}):{prompt}"
+    _emit(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": final_text}],
+            },
+        }
+    )
+    _emit({"type": "agent_settled", "aborted": False})
+
+
 def main() -> int:
     args = _parse_args()
     append_prompt = _read_text_or_file(args.append_system_prompt)
-    session_file = args.session if args.session else (None if args.no_session else "fake.jsonl")
+    if args.session:
+        session_file: str | None = args.session
+    elif args.no_session:
+        session_file = None
+    elif args.session_dir:
+        sess_path = Path(args.session_dir) / f"fake-{uuid4().hex[:10]}.jsonl"
+        sess_path.parent.mkdir(parents=True, exist_ok=True)
+        sess_path.touch()
+        session_file = str(sess_path)
+    else:
+        session_file = "fake.jsonl"
     compaction_state = {"compacted_once": False}
 
     # Prevent orphaned test helper if parent ever dies unexpectedly.
@@ -505,6 +725,34 @@ def main() -> int:
                 _handle_compaction_race(req_id, prompt, compaction_state)
             elif scenario == "inspect_endpoint":
                 _handle_inspect_endpoint(req_id, args)
+            elif scenario == "stateful_chat":
+                _handle_stateful_chat(req_id, prompt, session_file)
+            elif scenario == "ui_question":
+                _handle_ui_question(
+                    req_id,
+                    prompt,
+                    session_file=session_file,
+                    append_prompt=append_prompt,
+                    tools=args.tools,
+                )
+            elif scenario == "ui_question_crash":
+                if _handle_ui_question(
+                    req_id,
+                    prompt,
+                    session_file=session_file,
+                    append_prompt=append_prompt,
+                    tools=args.tools,
+                    crash_while_waiting=True,
+                ):
+                    return 137
+            elif scenario == "fail_executor_once":
+                _handle_fail_executor_once(
+                    req_id,
+                    prompt,
+                    session_file=session_file,
+                    append_prompt=append_prompt,
+                    tools=args.tools,
+                )
             elif scenario == "malformed_stdout":
                 sys.stdout.buffer.write(b"console.log accidental stdout noise\n")
                 sys.stdout.buffer.flush()

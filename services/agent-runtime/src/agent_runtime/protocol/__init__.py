@@ -24,6 +24,8 @@ from agent_runtime.protocol.events import (
     UsageUpdatedEvent,
     WorkflowCompletedEvent,
     WorkflowEvent,
+    WorkflowInterruptedEvent,
+    WorkflowResumedEvent,
     WorkflowStartedEvent,
     redact_sensitive_text,
 )
@@ -52,6 +54,8 @@ __all__ = [
     "UsageUpdatedEvent",
     "WorkflowCompletedEvent",
     "WorkflowEvent",
+    "WorkflowInterruptedEvent",
+    "WorkflowResumedEvent",
     "WorkflowStartedEvent",
     "redact_sensitive_text",
 ]

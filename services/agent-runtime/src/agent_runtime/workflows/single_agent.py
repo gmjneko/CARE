@@ -20,6 +20,7 @@ def build_single_agent_workflow(
     adapter: str = "pi",
     endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
+    persist_session: bool = True,
 ) -> StateGraph[WorkflowState]:
     """1-node Vibe Coding graph: START -> agent -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
@@ -32,6 +33,7 @@ def build_single_agent_workflow(
                 adapter=adapter,
                 endpoint=endpoint,
                 thinking_level=thinking_level,
+                persist_session=persist_session,
                 prompt_builder=lambda state: state["prompt"],
             ),
             run_context,

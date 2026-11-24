@@ -25,7 +25,7 @@ from agent_runtime.adapters.errors import (
     AdapterTransportError,
 )
 from agent_runtime.adapters.pi.framing import DEFAULT_MAX_LINE_BYTES, JsonlFramer
-from agent_runtime.paths import runtime_tmp_dir
+from agent_runtime.paths import runtime_tmp_dir, sessions_dir
 from agent_runtime.protocol.events import redact_sensitive_text
 
 _STDERR_MAX_BYTES = 16 * 1024
@@ -98,8 +98,17 @@ def build_pi_argv(
     env: dict[str, str] | None = None
 
     if session_config.session_ref:
+        # 显式传入 session_ref 时恢复既有的 Pi JSONL 会话历史
         argv.extend(["--session", session_config.session_ref])
-    elif not session_config.persist_session:
+    elif session_config.persist_session:
+        # 持久化会话文件统一落盘到 ~/.care/sessions/（受 CARE_HOME 覆盖），
+        # 与临时 runtime_dir（~/.care/tmp/care-pi-*）彻底解耦，退出时不删除。
+        sess_dir = sessions_dir()
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(sess_dir, 0o700)
+        argv.extend(["--session-dir", str(sess_dir)])
+    else:
         argv.append("--no-session")
 
     if offline:
@@ -196,6 +205,7 @@ class PiRpcTransport:
         self._next_request_id = 0
         self._closing = False
         self._closed = False
+        self._closed_event = asyncio.Event()
         self._terminal_error: AdapterError | None = None
         self._stderr_chunks: deque[bytes] = deque()
         self._stderr_bytes = 0
@@ -323,8 +333,13 @@ class PiRpcTransport:
             if self._process.stdin is not None and not self._process.stdin.is_closing():
                 self._process.stdin.close()
             self._fail_pending(AdapterTransportError("Pi RPC transport closed"))
+            self._closed_event.set()
             self.inbound_queue.put_nowait(TransportClosed(error=None))
             self._runtime_dir.cleanup()
+
+    async def wait_closed(self) -> None:
+        """等待底层 Pi 子进程连接关闭或意外退出，供热交互等待期间并发感知进程死亡。"""
+        await self._closed_event.wait()
 
     async def _read_stdout(self) -> None:
         assert self._process.stdout is not None
@@ -349,6 +364,7 @@ class PiRpcTransport:
             return
 
         if self._closing:
+            self._closed_event.set()
             self.inbound_queue.put_nowait(TransportClosed(error=None))
             return
 
@@ -408,6 +424,7 @@ class PiRpcTransport:
         if self._terminal_error is None:
             self._terminal_error = error
         self._fail_pending(self._terminal_error)
+        self._closed_event.set()
         self.inbound_queue.put_nowait(TransportClosed(error=self._terminal_error))
 
     async def _terminate_process_tree(self) -> None:

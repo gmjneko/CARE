@@ -244,6 +244,10 @@ class PiRpcSession:
             )
         await self._transport.send(payload)
 
+    async def wait_closed(self) -> None:
+        """等待底层 Pi 子进程关闭或意外退出。"""
+        await self._transport.wait_closed()
+
     async def close(self) -> None:
         await self._transport.close()
 

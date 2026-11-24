@@ -251,6 +251,17 @@ class WorkflowStartedEvent(BaseModel):
     prompt: str
 
 
+class WorkflowResumedEvent(BaseModel):
+    """工作流从历史断点恢复执行时发射的起始事件。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["workflow.resumed"] = "workflow.resumed"
+    preset: str
+    thread_id: str
+    resumed_from: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
+
+
 class NodeStartedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -266,10 +277,22 @@ class NodeCompletedEvent(BaseModel):
     type: Literal["node.completed"] = "node.completed"
     node_id: str
     role: str
-    status: Literal["completed", "failed", "aborted"]
+    status: Literal["completed", "interrupted", "failed", "aborted"]
     summary: str = ""
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
+
+
+class WorkflowInterruptedEvent(BaseModel):
+    """工作流因节点间 interrupt() 或节点内待回复交互/挂起而暂停时发射的终态事件。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["workflow.interrupted"] = "workflow.interrupted"
+    reason: Literal["workflow_interrupt", "agent_interaction", "suspended"]
+    node_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    interaction: InteractionRequestEvent | None = None
 
 
 class WorkflowCompletedEvent(BaseModel):
@@ -282,7 +305,12 @@ class WorkflowCompletedEvent(BaseModel):
 
 
 WorkflowEvent = Annotated[
-    WorkflowStartedEvent | NodeStartedEvent | NodeCompletedEvent | WorkflowCompletedEvent,
+    WorkflowStartedEvent
+    | WorkflowResumedEvent
+    | NodeStartedEvent
+    | NodeCompletedEvent
+    | WorkflowInterruptedEvent
+    | WorkflowCompletedEvent,
     Field(discriminator="type"),
 ]
 
@@ -300,8 +328,10 @@ RuntimeEventPayload = Annotated[
     | UsageUpdatedEvent
     | TurnCompletedEvent
     | WorkflowStartedEvent
+    | WorkflowResumedEvent
     | NodeStartedEvent
     | NodeCompletedEvent
+    | WorkflowInterruptedEvent
     | WorkflowCompletedEvent,
     Field(discriminator="type"),
 ]

@@ -7,6 +7,8 @@ from pathlib import Path
 
 CARE_HOME_ENV = "CARE_HOME"
 DEFAULT_SETTINGS_FILENAME = "settings.json"
+DEFAULT_CHECKPOINTS_FILENAME = "checkpoints.sqlite"
+DEFAULT_SESSIONS_DIRNAME = "sessions"
 DEFAULT_TMP_DIRNAME = "tmp"
 
 
@@ -25,6 +27,16 @@ def settings_path(care_home: str | Path | None = None) -> Path:
     return resolve_care_home(care_home) / DEFAULT_SETTINGS_FILENAME
 
 
+def checkpoints_db_path(care_home: str | Path | None = None) -> Path:
+    """返回 `<care_home>/checkpoints.sqlite` 路径，用于持久化 LangGraph 断点与预写记录。"""
+    return resolve_care_home(care_home) / DEFAULT_CHECKPOINTS_FILENAME
+
+
+def sessions_dir(care_home: str | Path | None = None) -> Path:
+    """返回 `<care_home>/sessions` 路径，用于持久化 Pi 会话历史 `.jsonl`。"""
+    return resolve_care_home(care_home) / DEFAULT_SESSIONS_DIRNAME
+
+
 def runtime_tmp_dir(care_home: str | Path | None = None) -> Path:
     """返回 `<care_home>/tmp` 路径，用于统一收口子进程瞬态运行目录。"""
     return resolve_care_home(care_home) / DEFAULT_TMP_DIRNAME
@@ -32,9 +44,13 @@ def runtime_tmp_dir(care_home: str | Path | None = None) -> Path:
 
 __all__ = [
     "CARE_HOME_ENV",
+    "DEFAULT_CHECKPOINTS_FILENAME",
+    "DEFAULT_SESSIONS_DIRNAME",
     "DEFAULT_SETTINGS_FILENAME",
     "DEFAULT_TMP_DIRNAME",
+    "checkpoints_db_path",
     "resolve_care_home",
     "runtime_tmp_dir",
+    "sessions_dir",
     "settings_path",
 ]

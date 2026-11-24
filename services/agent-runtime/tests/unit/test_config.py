@@ -15,10 +15,12 @@ from agent_runtime.config import (
     CARE_HOME_ENV,
     LocalSettings,
     ModelProfile,
+    checkpoints_db_path,
     load_local_settings,
     resolve_care_home,
     runtime_tmp_dir,
     save_local_settings,
+    sessions_dir,
     settings_path,
 )
 
@@ -38,12 +40,16 @@ def test_care_home_env_overrides_default_directory(
     monkeypatch.delenv(CARE_HOME_ENV, raising=False)
     assert resolve_care_home() == Path.home() / ".care"
     assert runtime_tmp_dir() == Path.home() / ".care" / "tmp"
+    assert sessions_dir() == Path.home() / ".care" / "sessions"
+    assert checkpoints_db_path() == Path.home() / ".care" / "checkpoints.sqlite"
 
     custom_home = tmp_path / "custom-care"
     monkeypatch.setenv(CARE_HOME_ENV, str(custom_home))
     assert resolve_care_home() == custom_home
     assert settings_path() == custom_home / "settings.json"
     assert runtime_tmp_dir() == custom_home / "tmp"
+    assert sessions_dir() == custom_home / "sessions"
+    assert checkpoints_db_path() == custom_home / "checkpoints.sqlite"
 
 
 def test_save_and_load_round_trip_masks_secret_in_memory_and_sets_permissions(

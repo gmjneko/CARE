@@ -14,8 +14,10 @@ from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.paths import (
     CARE_HOME_ENV,
     DEFAULT_SETTINGS_FILENAME,
+    checkpoints_db_path,
     resolve_care_home,
     runtime_tmp_dir,
+    sessions_dir,
     settings_path,
 )
 
@@ -160,9 +162,11 @@ __all__ = [
     "DEFAULT_SETTINGS_FILENAME",
     "LocalSettings",
     "ModelProfile",
+    "checkpoints_db_path",
     "load_local_settings",
     "resolve_care_home",
     "runtime_tmp_dir",
     "save_local_settings",
+    "sessions_dir",
     "settings_path",
 ]
