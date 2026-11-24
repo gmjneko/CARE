@@ -7,11 +7,61 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from agent_runtime.protocol.events import AgentEvent
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+ApiProtocol = Literal[
+    "openai-completions",
+    "openai-responses",
+    "anthropic-messages",
+    "google-generative-ai",
+]
+
+
+class ModelEndpoint(BaseModel):
+    """后端无关的模型连接端点（统一承接本地 settings.json 与云端 AI Gateway 下发的参数）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: str | None = None
+    model: str
+    base_url: str | None = None
+    api_protocol: ApiProtocol = "openai-completions"
+    api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def _validate_endpoint(self) -> ModelEndpoint:
+        model = self.model.strip()
+        if not model:
+            raise ValueError("'model' must be a non-empty string")
+        object.__setattr__(self, "model", model)
+
+        if self.provider is not None:
+            provider = self.provider.strip()
+            if not provider:
+                raise ValueError("'provider' must be non-empty when provided")
+            object.__setattr__(self, "provider", provider)
+
+        if self.base_url is not None:
+            base_url = self.base_url.strip()
+            if not base_url.startswith(("http://", "https://")):
+                raise ValueError("'base_url' must start with 'http://' or 'https://'")
+            object.__setattr__(self, "base_url", base_url)
+
+        if self.api_key is not None:
+            secret = self.api_key.get_secret_value().strip()
+            if not secret:
+                raise ValueError("'api_key' must be non-empty when provided")
+            object.__setattr__(self, "api_key", SecretStr(secret))
+
+        if self.api_key is not None and self.base_url is None and not self.provider:
+            raise ValueError(
+                "'api_key' without 'base_url' requires 'provider' to identify "
+                "which built-in provider should receive the key"
+            )
+        return self
 
 
 class AgentCapabilities(BaseModel):
@@ -33,8 +83,7 @@ class SessionConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     cwd: Path
-    model: str | None = None
-    provider: str | None = None
+    endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
     system_prompt: str | None = None
     append_system_prompt: str | None = None
@@ -46,8 +95,6 @@ class SessionConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_combinations(self) -> SessionConfig:
-        if self.provider and not self.model:
-            raise ValueError("'provider' requires 'model' to be specified")
         if self.no_tools and self.tools is not None:
             raise ValueError("Cannot set both 'no_tools=True' and explicit 'tools'")
         if self.session_ref and not self.persist_session:

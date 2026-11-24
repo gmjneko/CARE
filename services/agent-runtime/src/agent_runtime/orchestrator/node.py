@@ -13,6 +13,7 @@ from langgraph.graph import END
 from agent_runtime.adapters.base import (
     AgentSession,
     InteractionResponse,
+    ModelEndpoint,
     SessionConfig,
     ThinkingLevel,
 )
@@ -52,8 +53,7 @@ class AgentNodeConfig:
     append_system_prompt: str | None = None
     tools: tuple[str, ...] | None = None
     no_tools: bool = False
-    model: str | None = None
-    provider: str | None = None
+    endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
     extensions: tuple[Path, ...] = ()
     persist_session: bool = False
@@ -82,8 +82,7 @@ def build_agent_node(
         adapter = run_context.registry.get(node_config.adapter)
         session_config = SessionConfig(
             cwd=Path(state["workspace_dir"]),
-            model=node_config.model,
-            provider=node_config.provider,
+            endpoint=node_config.endpoint,
             thinking_level=node_config.thinking_level,
             system_prompt=node_config.system_prompt,
             append_system_prompt=node_config.append_system_prompt,

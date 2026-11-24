@@ -8,7 +8,14 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from agent_runtime.adapters import AdapterRegistry, PiRpcAdapter, PiRpcConfig, ThinkingLevel
+from agent_runtime.adapters import (
+    AdapterRegistry,
+    ModelEndpoint,
+    PiRpcAdapter,
+    PiRpcConfig,
+    ThinkingLevel,
+)
+from agent_runtime.config import load_local_settings
 from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
     NodeCompletedEvent,
@@ -28,7 +35,11 @@ WorkflowName = Literal["single_agent", "plan_and_execute"]
 
 
 def main() -> int:
-    """IDE 直接右键运行入口，按需修改下方参数即可。"""
+    """IDE 直接右键运行入口，按需修改下方参数即可。
+
+    模型 / Base URL / API Key 默认读取 `~/.care/settings.json`（可通过 `CARE_HOME` 覆盖目录），
+    未配置时沿用 Pi 本机默认配置；单次临时测试也可直接传 `endpoint=ModelEndpoint(...)`。
+    """
     return run(
         # 用户提示词（直接在这里修改）
         prompt="列出当前目录的文件，并简短概括项目结构。",
@@ -36,12 +47,13 @@ def main() -> int:
         workflow="single_agent",
         # Agent 工作目录（默认当前目录，支持相对路径、绝对路径或 ~）
         cwd=".",
-        # 可选模型与推理覆盖（None 表示沿用 Pi 默认配置）
-        model=None,
-        provider=None,  # 指定 provider 时必须同时指定 model
+        # 使用 ~/.care/settings.json 中的配置名（None 表示使用 active_profile）
+        profile=None,
+        # 可选单次临时覆盖（与 profile 二选一；None 时沿用 profile 或 Pi 默认配置）
+        endpoint=None,
         thinking_level=None,  # "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
         # 运行时配置
-        pi_bin=None,  # None 时读取环境变量 PI_BIN，未设置则默认 "pi"
+        pi_bin=None,  # None 时依次读取 settings.json -> $PI_BIN -> "pi"
         checkpoint_db=":memory:",  # ":memory:" 或 SQLite 路径，如 "checkpoints.sqlite"
         json_output=False,  # True 时输出原始 RuntimeEvent JSONL
     )
@@ -52,8 +64,8 @@ def run(
     *,
     workflow: WorkflowName | str = "single_agent",
     cwd: str | Path = ".",
-    model: str | None = None,
-    provider: str | None = None,
+    profile: str | None = None,
+    endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
     pi_bin: str | None = None,
     checkpoint_db: str | Path = ":memory:",
@@ -62,12 +74,30 @@ def run(
     """Run a CARE workflow synchronously and stream events to stdout."""
     if not prompt.strip():
         raise ValueError("prompt must be non-empty")
+    if profile is not None and endpoint is not None:
+        raise ValueError("Cannot specify both 'profile' and 'endpoint'")
 
     # Ensure UTF-8 console output on Windows terminals.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    effective_pi_bin = pi_bin or os.environ.get("PI_BIN", "pi")
+    # 解析本地 ~/.care/settings.json（文件不存在时返回空默认配置，沿用 Pi 本机配置）
+    settings = load_local_settings()
+    # 显式传入 endpoint 时优先使用它；否则按 profile 名称或 settings.active_profile 解析
+    resolved_profile = None if endpoint is not None else settings.resolve_profile(profile)
+    effective_endpoint = (
+        endpoint
+        if endpoint is not None
+        else (resolved_profile.to_endpoint() if resolved_profile is not None else None)
+    )
+    # 推理深度优先级：显式入参 > Profile 默认值 > None（由 Pi 默认决定）
+    effective_thinking = (
+        thinking_level
+        if thinking_level is not None
+        else (resolved_profile.thinking_level if resolved_profile is not None else None)
+    )
+    # Pi 可执行文件优先级：显式入参 > settings.json > 环境变量 PI_BIN > "pi"
+    effective_pi_bin = pi_bin or settings.pi_bin or os.environ.get("PI_BIN", "pi")
     workspace_dir = Path(cwd).expanduser()
 
     async def _execute() -> int:
@@ -88,9 +118,8 @@ def run(
                 workflow,
                 prompt,
                 workspace_dir,
-                model=model,
-                provider=provider,
-                thinking_level=thinking_level,
+                endpoint=effective_endpoint,
+                thinking_level=effective_thinking,
             ):
                 if json_output:
                     print(event.model_dump_json(), flush=True)

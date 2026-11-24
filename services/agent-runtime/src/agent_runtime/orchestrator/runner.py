@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from agent_runtime.adapters.base import ThinkingLevel
+from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.adapters.registry import AdapterRegistry
 from agent_runtime.orchestrator.node import InteractionHandler, RunContext, StreamPacket
 from agent_runtime.orchestrator.registry import WorkflowBuilder, WorkflowRegistry
@@ -69,8 +69,7 @@ class WorkflowRunner:
         run_id: str | None = None,
         thread_id: str | None = None,
         adapter: str = "pi",
-        model: str | None = None,
-        provider: str | None = None,
+        endpoint: ModelEndpoint | None = None,
         thinking_level: ThinkingLevel | None = None,
         interaction_handler: InteractionHandler | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
@@ -79,8 +78,7 @@ class WorkflowRunner:
         compiled = builder(
             self._run_context,
             adapter=adapter,
-            model=model,
-            provider=provider,
+            endpoint=endpoint,
             thinking_level=thinking_level,
         ).compile(checkpointer=checkpointer)
 

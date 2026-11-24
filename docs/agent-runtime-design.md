@@ -48,16 +48,17 @@ services/agent-runtime/
 ├── pyproject.toml                         # Python >=3.14, 轻量依赖 (langgraph, checkpoint-sqlite, pydantic)
 ├── main.py                                # 直接右键运行的 main() 入口（直接配置参数并流式查看事件）
 ├── src/agent_runtime/
+│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json，支持 CARE_HOME 覆盖)
 │   ├── protocol/
 │   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent / AgentFailure / 凭据脱敏
 │   ├── adapters/
-│   │   ├── base.py                        # AgentAdapter / AgentSession Protocol, SessionConfig, AgentCapabilities
+│   │   ├── base.py                        # AgentAdapter / AgentSession Protocol, ModelEndpoint, SessionConfig, AgentCapabilities
 │   │   ├── errors.py                      # AdapterError 分层异常体系
 │   │   ├── registry.py                    # 显式 AdapterRegistry 容器
 │   │   └── pi/
 │   │       ├── framing.py                 # 严格 LF-only 字节分帧器 (JsonlFramer)
 │   │       ├── normalizer.py              # 无 I/O 的 Pi 原生事件归一化状态机 (PiEventNormalizer)
-│   │       ├── transport.py               # 子进程生命周期、请求 ID 关联与跨平台进程树回收 (PiRpcTransport)
+│   │       ├── transport.py               # 子进程生命周期、隔离 models.json/环境变量注入与跨平台进程树回收 (PiRpcTransport)
 │   │       └── adapter.py                 # PiRpcAdapter & PiRpcSession 实现
 │   ├── orchestrator/                      # 【纯执行引擎，不感知具体业务工作流】
 │   │   ├── state.py                       # 防膨胀 WorkflowState & NodeOutput
@@ -72,6 +73,7 @@ services/agent-runtime/
     ├── fakes/fake_pi_rpc.py               # 独立子进程 Fake Pi RPC 协议替身（外部边界注入）
     ├── e2e/test_workflow_scenarios.py     # 生产路径全链路端到端场景测试
     └── unit/
+        ├── test_config.py                 # ModelEndpoint 与 ~/.care/settings.json 失败模式测试
         ├── test_framing.py                # JsonlFramer 失败模式隔离测试
         └── test_normalizer.py             # PiEventNormalizer 失败模式隔离测试
 ```
@@ -167,10 +169,14 @@ class AgentAdapter(Protocol):
     def open_session(self, config: SessionConfig) -> AbstractAsyncContextManager[AgentSession]: ...
 ```
 
-### 4.2 配置校验与异常边界
+### 4.2 模型端点配置、本地 `~/.care/` 与异常边界
 
-- **`SessionConfig` 构造期 fail-fast 校验**：
-  - 指定 `provider` 时必须同时指定 `model`；
+- **`ModelEndpoint`（`adapters/base.py`）与本地配置（`config.py`）**：
+  - 核心引擎层（`WorkflowRunner` / `AgentNodeConfig` / `SessionConfig`）只接收内存中的 `ModelEndpoint(model, provider, base_url, api_protocol, api_key: SecretStr)`，不强绑定本地文件路径，也不将 `api_key` 写入 `WorkflowState`、Checkpoint 或 `RuntimeEvent`；
+  - 本地入口默认读取 `~/.care/settings.json`（支持 `CARE_HOME` 环境变量覆盖，支持多 Profile 切换与 `active_profile`，写入时采用原子替换与 `0600` 权限）；
+  - 当传入自定义 `base_url` 或 `api_key` 时，`PiRpcTransport` 在按会话隔离的临时目录生成 `models.json`（使用 `"apiKey": "$CARE_LLM_API_KEY"` 引用，无明文落盘），通过子进程环境变量注入 `PI_CODING_AGENT_DIR` 与 `CARE_LLM_API_KEY`，避免污染宿主机 `~/.pi/agent` 且天然支持多节点/多任务并发隔离。
+- **`ModelEndpoint` / `SessionConfig` 构造期 fail-fast 校验**：
+  - `model` 不可为空；传入 `base_url` 时须为 `http://` 或 `https://`；未指定 `base_url` 而传入 `api_key` 时必须同时指定内置 `provider`；
   - `no_tools=True` 与显式 `tools=(...)` 互斥；
   - 传入 `session_ref` 恢复会话时必须设置 `persist_session=True`。
 - **异常分层（`adapters/errors.py`）**：
@@ -403,13 +409,14 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
    - 独立子进程，通过真实 `stdin`/`stdout` 实现 `pi --mode rpc` JSONL 协议，仅经生产配置项 `PiRpcConfig(command=(sys.executable, ...))` 注入；
    - **生产代码零测试分支、零内部模块 Mock**，完整走通子进程拉起、LF 分帧、请求 ID 关联、事件归一化、LangGraph 状态图与 SQLite Checkpoint。
 2. **全链路 E2E 场景（`tests/e2e/test_workflow_scenarios.py`）**：
-   - 覆盖 `single_agent` 流式 + Checkpoint、`plan_and_execute` 跨节点交接与工具隔离、阻塞型 `interaction.request` 审批（有/无 handler）、运行中 `steer` 与 `abort`（验证 `clear_queue -> abort` 顺序）、上游失败短路与密钥脱敏、Compaction 竞态重发、非法 stdout fail-fast 以及子进程中途崩溃（exit 137）；
+   - 覆盖 `single_agent` 流式 + Checkpoint、`plan_and_execute` 跨节点交接与工具隔离、阻塞型 `interaction.request` 审批（有/无 handler）、运行中 `steer` 与 `abort`（验证 `clear_queue -> abort` 顺序）、上游失败短路与密钥脱敏、Compaction 竞态重发、非法 stdout fail-fast、子进程中途崩溃（exit 137），以及从 `~/.care/settings.json` 持久化/加载到 `PiRpcTransport` 隔离 `models.json` 与子进程密钥注入（验证命令行、临时文件、事件流与 Checkpoint 均零明文泄漏）；
    - 将事件流归一化为确定性 `manifest.json`（剥离时间戳等易变字段）进行断言。
-3. **纯解析器失败模式测试（`tests/unit/`）**：
+3. **失败模式隔离测试（`tests/unit/`）**：
+   - `test_config.py`（13 项）：缺失配置默认值、`CARE_HOME` 覆盖、原子保存/`0600` 权限与内存掩码、兼容桌面端扩展字段，以及非法 JSON / 悬空 `active_profile` / 非法 `ModelEndpoint` 组合的 fail-fast；
    - `test_framing.py`（12 项）：多字节 UTF-8 跨块切分、CRLF、`U+2028/U+2029`、边界行长、空行、非法 UTF-8/JSON/非对象与 EOF 截断；
    - `test_normalizer.py`（7 项）：双格式 Usage、多块消息、工具输出前缀增长/重复帧/滑动窗口重叠 Diff、凭据脱敏与限流分类、压缩与重试恢复、UI 弹窗分类与协议缺字段 fail-fast。
 4. **实机冒烟入口（`main.py`）**：
-   - 在 IDE 中直接打开 `services/agent-runtime/main.py`，在顶部的 `main()` 函数中修改 `prompt` / `workflow` / `cwd` / `model` 等参数后右键直接运行即可（或在目录内执行 `uv run python main.py`）。
+   - 模型 / Base URL / API Key 默认读取 `~/.care/settings.json`（可通过 `CARE_HOME` 覆盖），在 IDE 中直接打开 `services/agent-runtime/main.py` 修改 `prompt` / `workflow` / `profile` / `cwd` 等参数后右键直接运行即可（或在目录内执行 `uv run python main.py`）。
 
 ---
 

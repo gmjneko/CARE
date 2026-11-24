@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,8 +16,15 @@ from agent_runtime.adapters import (
     AdapterProtocolError,
     AdapterRegistry,
     InteractionResponse,
+    ModelEndpoint,
     PiRpcAdapter,
     PiRpcConfig,
+)
+from agent_runtime.config import (
+    LocalSettings,
+    ModelProfile,
+    load_local_settings,
+    save_local_settings,
 )
 from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
@@ -309,3 +319,143 @@ async def test_unregistered_workflow_fails_fast(tmp_path: Path) -> None:
         with pytest.raises(KeyError, match="Unknown workflow 'does_not_exist'"):
             async for _ in runner.run("does_not_exist", "Prompt", tmp_path):
                 pass
+
+
+async def test_local_settings_profile_stages_isolated_pi_models_without_leaking_key(
+    tmp_path: Path,
+) -> None:
+    care_home = tmp_path / "care-home"
+    db_path = tmp_path / "checkpoints.sqlite"
+    secret = "sk-care-e2e-secret-9876543210"
+
+    saved_path = save_local_settings(
+        LocalSettings(
+            active_profile="relay",
+            profiles={
+                "relay": ModelProfile(
+                    model="claude-sonnet-4-5",
+                    base_url="https://relay.example.internal",
+                    api_protocol="anthropic-messages",
+                    api_key=secret,
+                    thinking_level="high",
+                )
+            },
+        ),
+        care_home=care_home,
+    )
+    if os.name != "nt":
+        assert stat.S_IMODE(saved_path.stat().st_mode) == 0o600
+
+    loaded = load_local_settings(care_home=care_home)
+    profile = loaded.resolve_profile()
+    assert profile is not None
+
+    events: list[RuntimeEvent] = []
+    async with _make_runner("inspect_endpoint", checkpoint_db=db_path) as runner:
+        async for event in runner.run(
+            "single_agent",
+            "Check endpoint",
+            tmp_path,
+            endpoint=profile.to_endpoint(),
+            thinking_level=profile.thinking_level,
+            run_id="run-endpoint-1",
+            thread_id="thread-endpoint-1",
+        ):
+            events.append(event)
+
+    manifest = _write_manifest(tmp_path, events)
+    final = events[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    assert final.status == "completed"
+
+    report = json.loads(final.final_output)
+    expected_hash = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+    assert report["provider"] == "care"
+    assert report["model"] == "claude-sonnet-4-5"
+    assert report["thinking"] == "high"
+    assert report["env_api_key_set"] is True
+    assert report["env_api_key_sha256"] == expected_hash
+    assert report["api_key_in_argv"] is False
+    assert report["api_key_in_models_file"] is False
+    assert report["models_json"] == {
+        "providers": {
+            "care": {
+                "baseUrl": "https://relay.example.internal",
+                "api": "anthropic-messages",
+                "apiKey": "$CARE_LLM_API_KEY",
+                "models": [{"id": "claude-sonnet-4-5", "reasoning": True}],
+            }
+        }
+    }
+
+    # Temporary isolated PI_CODING_AGENT_DIR is cleaned up on session exit.
+    assert report["agent_dir"] is not None
+    assert not Path(report["agent_dir"]).exists()
+
+    # Raw API key never leaks into events manifest or SQLite checkpoints.
+    assert secret not in json.dumps(manifest)
+    assert secret.encode("utf-8") not in db_path.read_bytes()
+
+
+async def test_builtin_provider_key_only_and_keyless_local_base_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ensure inherited parent CARE_LLM_API_KEY does not leak into keyless local endpoints.
+    monkeypatch.setenv("CARE_LLM_API_KEY", "sk-stale-parent-key")
+
+    async with _make_runner("inspect_endpoint") as runner:
+        # 1. Built-in provider with API key override only (no custom base_url)
+        builtin_events: list[RuntimeEvent] = []
+        async for event in runner.run(
+            "single_agent",
+            "Official endpoint",
+            tmp_path,
+            endpoint=ModelEndpoint(
+                provider="openai",
+                model="gpt-4o",
+                api_key="sk-official-openai-key",
+            ),
+        ):
+            builtin_events.append(event)
+
+        # 2. Keyless custom base_url (e.g. local Ollama) without thinking_level
+        local_events: list[RuntimeEvent] = []
+        async for event in runner.run(
+            "single_agent",
+            "Local Ollama",
+            tmp_path,
+            endpoint=ModelEndpoint(
+                model="qwen2.5-coder:7b",
+                base_url="http://localhost:11434/v1",
+            ),
+        ):
+            local_events.append(event)
+
+    builtin_final = builtin_events[-1].payload
+    assert isinstance(builtin_final, WorkflowCompletedEvent)
+    builtin_report = json.loads(builtin_final.final_output)
+    assert builtin_report["provider"] == "openai"
+    assert builtin_report["model"] == "gpt-4o"
+    assert builtin_report["models_json"] == {
+        "providers": {"openai": {"apiKey": "$CARE_LLM_API_KEY"}}
+    }
+    assert builtin_report["env_api_key_set"] is True
+    assert builtin_report["api_key_in_models_file"] is False
+
+    local_final = local_events[-1].payload
+    assert isinstance(local_final, WorkflowCompletedEvent)
+    local_report = json.loads(local_final.final_output)
+    assert local_report["provider"] == "care"
+    assert local_report["model"] == "qwen2.5-coder:7b"
+    assert local_report["env_api_key_set"] is False
+    assert local_report["models_json"] == {
+        "providers": {
+            "care": {
+                "baseUrl": "http://localhost:11434/v1",
+                "api": "openai-completions",
+                "apiKey": "no-key",
+                "models": [{"id": "qwen2.5-coder:7b", "reasoning": False}],
+            }
+        }
+    }

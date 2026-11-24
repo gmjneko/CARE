@@ -28,6 +28,8 @@ from agent_runtime.adapters.pi.framing import DEFAULT_MAX_LINE_BYTES, JsonlFrame
 from agent_runtime.protocol.events import redact_sensitive_text
 
 _STDERR_MAX_BYTES = 16 * 1024
+_API_KEY_ENV_VAR = "CARE_LLM_API_KEY"
+_DEFAULT_CUSTOM_PROVIDER = "care"
 
 
 @dataclass(frozen=True)
@@ -83,15 +85,16 @@ def build_pi_argv(
     *,
     base_command: tuple[str, ...],
     session_config: SessionConfig,
-    prompt_dir: Path,
+    session_dir: Path,
     offline: bool = False,
-) -> list[str]:
-    """Construct `pi --mode rpc` argv, staging prompts via temp files to avoid shell quirks."""
+) -> tuple[list[str], dict[str, str] | None]:
+    """Construct `pi --mode rpc` argv and optional isolated env, staging files in `session_dir`."""
     if not base_command:
         raise AdapterStartupError("PiRpcConfig.command must contain at least one element")
 
     resolved_exe = resolve_pi_executable(base_command[0])
     argv: list[str] = [resolved_exe, *base_command[1:], "--mode", "rpc"]
+    env: dict[str, str] | None = None
 
     if session_config.session_ref:
         argv.extend(["--session", session_config.session_ref])
@@ -100,20 +103,66 @@ def build_pi_argv(
 
     if offline:
         argv.append("--offline")
-    if session_config.provider:
-        argv.extend(["--provider", session_config.provider])
-    if session_config.model:
-        argv.extend(["--model", session_config.model])
+
+    endpoint = session_config.endpoint
+    if endpoint is not None:
+        if endpoint.base_url is not None or endpoint.api_key is not None:
+            # 指定自定义 base_url 或 api_key 时，在会话临时目录生成独立 models.json，
+            # 并通过 PI_CODING_AGENT_DIR 指向该目录：
+            # 1) 不污染宿主机 ~/.pi/agent，也避免宿主机旧 auth.json 静默覆盖本次凭据；
+            # 2) 多任务/多节点并发使用不同网关或模型时互不冲突，会话结束随临时目录自动清理。
+            effective_provider = endpoint.provider or _DEFAULT_CUSTOM_PROVIDER
+            provider_entry: dict[str, Any] = {}
+            if endpoint.base_url is not None:
+                provider_entry["baseUrl"] = endpoint.base_url
+                provider_entry["api"] = endpoint.api_protocol
+                # Pi 的 models.json 支持 "$ENV_VAR" 环境变量插值，避免明文密钥报错；
+                provider_entry["apiKey"] = (
+                    f"${_API_KEY_ENV_VAR}" if endpoint.api_key is not None else "no-key"
+                )
+                provider_entry["models"] = [
+                    {
+                        "id": endpoint.model,
+                        # 仅在显式开启 thinking_level 时标记 reasoning=True，
+                        "reasoning": session_config.thinking_level not in (None, "off"),
+                    }
+                ]
+            else:
+                # 未指定 base_url 时仅覆写内置 provider 的 apiKey，
+                provider_entry["apiKey"] = f"${_API_KEY_ENV_VAR}"
+
+            models_file = session_dir / "models.json"
+            models_file.write_text(
+                json.dumps({"providers": {effective_provider: provider_entry}}, indent=2),
+                encoding="utf-8",
+            )
+
+            # 密钥仅经子进程环境变量传入，不通过命令行 --api-key 暴露给 ps 等进程查看工具
+            env = dict(os.environ)
+            env["PI_CODING_AGENT_DIR"] = str(session_dir)
+            if endpoint.api_key is not None:
+                env[_API_KEY_ENV_VAR] = endpoint.api_key.get_secret_value()
+            else:
+                # 清理父进程可能残留的同名环境变量，防止串入无密钥端点
+                env.pop(_API_KEY_ENV_VAR, None)
+
+            argv.extend(["--provider", effective_provider, "--model", endpoint.model])
+        else:
+            # 直接沿用 Pi 本机登录态与默认目录。
+            if endpoint.provider:
+                argv.extend(["--provider", endpoint.provider])
+            argv.extend(["--model", endpoint.model])
+
     if session_config.thinking_level:
         argv.extend(["--thinking", session_config.thinking_level])
 
     if session_config.system_prompt is not None:
-        sys_file = prompt_dir / "system_prompt.txt"
+        sys_file = session_dir / "system_prompt.txt"
         sys_file.write_text(session_config.system_prompt, encoding="utf-8")
         argv.extend(["--system-prompt", str(sys_file)])
 
     if session_config.append_system_prompt is not None:
-        append_file = prompt_dir / "append_system_prompt.txt"
+        append_file = session_dir / "append_system_prompt.txt"
         append_file.write_text(session_config.append_system_prompt, encoding="utf-8")
         argv.extend(["--append-system-prompt", str(append_file)])
 
@@ -125,7 +174,7 @@ def build_pi_argv(
     for ext in session_config.extensions:
         argv.extend(["--extension", str(ext)])
 
-    return argv
+    return argv, env
 
 
 class PiRpcTransport:
@@ -135,11 +184,11 @@ class PiRpcTransport:
         self,
         *,
         process: asyncio.subprocess.Process,
-        prompt_dir: tempfile.TemporaryDirectory[str],
+        session_dir: tempfile.TemporaryDirectory[str],
         config: PiRpcConfig,
     ) -> None:
         self._process = process
-        self._prompt_dir = prompt_dir
+        self._session_dir = session_dir
         self._config = config
         self._write_lock = asyncio.Lock()
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -164,17 +213,18 @@ class PiRpcTransport:
         if not session_config.cwd.exists():
             raise AdapterStartupError(f"Working directory does not exist: {session_config.cwd}")
 
-        prompt_dir = tempfile.TemporaryDirectory(prefix="care-pi-")
+        session_dir = tempfile.TemporaryDirectory(prefix="care-pi-")
         try:
-            argv = build_pi_argv(
+            argv, env = build_pi_argv(
                 base_command=rpc_config.command,
                 session_config=session_config,
-                prompt_dir=Path(prompt_dir.name),
+                session_dir=Path(session_dir.name),
                 offline=rpc_config.offline,
             )
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=str(session_config.cwd),
+                env=env,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -182,13 +232,13 @@ class PiRpcTransport:
                 start_new_session=(os.name != "nt"),
             )
         except AdapterError:
-            prompt_dir.cleanup()
+            session_dir.cleanup()
             raise
         except OSError as exc:
-            prompt_dir.cleanup()
+            session_dir.cleanup()
             raise AdapterStartupError(f"Failed to spawn Pi RPC process: {exc}") from exc
 
-        return cls(process=process, prompt_dir=prompt_dir, config=rpc_config)
+        return cls(process=process, session_dir=session_dir, config=rpc_config)
 
     def next_id(self, prefix: str = "care") -> str:
         self._next_request_id += 1
@@ -267,7 +317,7 @@ class PiRpcTransport:
                 self._process.stdin.close()
             self._fail_pending(AdapterTransportError("Pi RPC transport closed"))
             self.inbound_queue.put_nowait(TransportClosed(error=None))
-            self._prompt_dir.cleanup()
+            self._session_dir.cleanup()
 
     async def _read_stdout(self) -> None:
         assert self._process.stdout is not None

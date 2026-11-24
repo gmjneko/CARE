@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from agent_runtime.adapters.base import ThinkingLevel
+from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
     RunContext,
@@ -30,8 +30,7 @@ def build_plan_and_execute_workflow(
     run_context: RunContext,
     *,
     adapter: str = "pi",
-    model: str | None = None,
-    provider: str | None = None,
+    endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
 ) -> StateGraph[WorkflowState]:
     """2-node sequential workflow: planner (read-only) -> executor (full tools) -> END."""
@@ -44,8 +43,7 @@ def build_plan_and_execute_workflow(
                 id="planner",
                 role="planner",
                 adapter=adapter,
-                model=model,
-                provider=provider,
+                endpoint=endpoint,
                 thinking_level=thinking_level,
                 tools=("read", "grep", "find", "ls"),
                 append_system_prompt=(
@@ -69,8 +67,7 @@ def build_plan_and_execute_workflow(
                 id="executor",
                 role="executor",
                 adapter=adapter,
-                model=model,
-                provider=provider,
+                endpoint=endpoint,
                 thinking_level=thinking_level,
                 append_system_prompt=(
                     "You are the Executor agent in a multi-agent workflow. "

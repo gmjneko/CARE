@@ -8,7 +8,9 @@ and LangGraph orchestrator without mocking internal modules.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -409,6 +411,52 @@ def _handle_compaction_race(req_id: str | None, prompt: str, state: dict[str, bo
     _emit({"type": "agent_settled", "aborted": False})
 
 
+def _handle_inspect_endpoint(req_id: str | None, args: argparse.Namespace) -> None:
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    env_key = os.environ.get("CARE_LLM_API_KEY")
+    models_raw: str | None = None
+    models_json: dict[str, Any] | None = None
+    if agent_dir:
+        models_file = Path(agent_dir) / "models.json"
+        if models_file.is_file():
+            models_raw = models_file.read_text(encoding="utf-8")
+            models_json = json.loads(models_raw)
+
+    report = {
+        "agent_dir": agent_dir,
+        "provider": args.provider,
+        "model": args.model,
+        "thinking": args.thinking,
+        "models_json": models_json,
+        "env_api_key_set": env_key is not None,
+        "env_api_key_sha256": (
+            hashlib.sha256(env_key.encode("utf-8")).hexdigest()[:16] if env_key else None
+        ),
+        "api_key_in_argv": bool(env_key and any(env_key in part for part in sys.argv)),
+        "api_key_in_models_file": bool(env_key and models_raw and env_key in models_raw),
+    }
+    _emit(
+        {
+            "type": "response",
+            "id": req_id,
+            "command": "prompt",
+            "success": True,
+            "data": {"disposition": "started"},
+        }
+    )
+    _emit(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": json.dumps(report, sort_keys=True)}],
+            },
+        }
+    )
+    _emit({"type": "agent_settled", "aborted": False})
+
+
 def main() -> int:
     args = _parse_args()
     append_prompt = _read_text_or_file(args.append_system_prompt)
@@ -455,6 +503,8 @@ def main() -> int:
                 _handle_provider_fail_planner(req_id, args.tools)
             elif scenario == "compaction_race":
                 _handle_compaction_race(req_id, prompt, compaction_state)
+            elif scenario == "inspect_endpoint":
+                _handle_inspect_endpoint(req_id, args)
             elif scenario == "malformed_stdout":
                 sys.stdout.buffer.write(b"console.log accidental stdout noise\n")
                 sys.stdout.buffer.flush()
