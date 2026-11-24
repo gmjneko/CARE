@@ -46,7 +46,7 @@ flowchart TD
 ```text
 services/agent-runtime/
 ├── pyproject.toml                         # Python >=3.14, 轻量依赖 (langgraph, checkpoint-sqlite, pydantic)
-├── main.py                                # 极简运行与流式查看入口 (--workflow / --list-workflows / --json)
+├── main.py                                # 直接右键运行的 main() 入口（直接配置参数并流式查看事件）
 ├── src/agent_runtime/
 │   ├── protocol/
 │   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent / AgentFailure / 凭据脱敏
@@ -121,7 +121,7 @@ class RuntimeEvent(BaseModel, frozen=True):
 | **Agent** | `interaction.request` | 否 | `request_id`, `kind(approval\|user_input\|notify)`, `blocking`, `title`, `message`, `tool_call_id`, `tool_name`, `arguments`, `input_mode`, `options` | 后端无关的人机交互/工具审批请求（统一兼容 Pi 扩展弹窗、Claude `canUseTool`/`AskUserQuestion`、Codex/ACP 工具审批） |
 | **Agent** | `usage.updated` | 否 | `usage(TokenUsage)` | 实时 Token 用量更新 |
 | **Agent** | `turn.completed` | 否 | `turn_id`, `status(completed\|aborted\|failed)`, `final_text`, `usage`, `failure`, `session_reusable` | Turn 权威终态，显式告知会话是否可复用 |
-| **Workflow** | `workflow.started` | 否 | `preset`, `goal` | 工作流开始执行 |
+| **Workflow** | `workflow.started` | 否 | `preset`, `prompt` | 工作流开始执行 |
 | **Workflow** | `node.started` | 否 | `node_id`, `role`, `adapter` | LangGraph 某个 Agent 节点开始执行 |
 | **Workflow** | `node.completed` | 否 | `node_id`, `role`, `status`, `summary`, `usage`, `failure` | 节点执行结束与结构化交接摘要 |
 | **Workflow** | `workflow.completed` | 否 | `status(completed\|failed\|aborted)`, `final_output`, `failure` | 工作流最终状态与汇总产出 |
@@ -289,7 +289,7 @@ class NodeOutput(BaseModel, frozen=True):
 class WorkflowState(TypedDict):
     run_id: str
     workflow_id: str
-    goal: str
+    prompt: str
     workspace_dir: str
     node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
     latest_output: str
@@ -297,7 +297,7 @@ class WorkflowState(TypedDict):
     failure: AgentFailure | None
 ```
 
-- 每个新节点都在独立干净的 Agent 会话中启动，只通过 `prompt_builder(state)` 按需读取 `goal` 与上游 `node_outputs[...].summary`，避免上下文无限增长。
+- 每个新节点都在独立干净的 Agent 会话中启动，只通过 `prompt_builder(state)` 按需读取 `prompt` 与上游 `node_outputs[...].summary`，避免上下文无限增长。
 - 所有状态字段均为基础类型与 Pydantic v2 模型，与 `langgraph-checkpoint-sqlite` 的 `JsonPlusSerializer` 在 Python 3.14 下原生兼容。
 
 ### 6.2 通用 `AgentNode` 生命周期（`node.py`）
@@ -334,7 +334,7 @@ flowchart LR
 2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：2 节点串行图：
    - `planner` 通过 `--tools read,grep,find,ls` 从工具边界强制限制为只读，分析工作区并产出分步执行计划；
    - `continue_if_running("executor")` 条件边确保 `planner` 失败或中止时直接结束，不触发 `executor`；
-   - `executor` 读取 `state["node_outputs"]["planner"].summary` 与原始 `goal`，以全量工具执行计划并验证。
+   - `executor` 读取 `state["node_outputs"]["planner"].summary` 与原始 `prompt`，以全量工具执行计划并验证。
 
 #### 如何新增工作流
 
@@ -358,7 +358,7 @@ def build_security_audit_workflow(
             adapter=adapter,
             tools=("read", "grep", "find", "ls"),
             append_system_prompt="Analyze security risks only.",
-            prompt_builder=lambda s: f"Audit: {s['goal']}",
+            prompt_builder=lambda s: f"Audit: {s['prompt']}",
             **kwargs,
         ),
         run_context,
@@ -409,12 +409,7 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
    - `test_framing.py`（12 项）：多字节 UTF-8 跨块切分、CRLF、`U+2028/U+2029`、边界行长、空行、非法 UTF-8/JSON/非对象与 EOF 截断；
    - `test_normalizer.py`（7 项）：双格式 Usage、多块消息、工具输出前缀增长/重复帧/滑动窗口重叠 Diff、凭据脱敏与限流分类、压缩与重试恢复、UI 弹窗分类与协议缺字段 fail-fast。
 4. **实机冒烟入口（`main.py`）**：
-   ```powershell
-   cd services/agent-runtime
-   uv run python main.py --list-workflows
-   uv run python main.py --workflow single_agent --cwd <dir> "<goal>"
-   uv run python main.py --workflow plan_and_execute --cwd <dir> --checkpoint-db checkpoints.sqlite "<goal>"
-   ```
+   - 在 IDE 中直接打开 `services/agent-runtime/main.py`，在顶部的 `main()` 函数中修改 `prompt` / `workflow` / `cwd` / `model` 等参数后右键直接运行即可（或在目录内执行 `uv run python main.py`）。
 
 ---
 

@@ -1,16 +1,15 @@
-"""Minimal runnable entry point to exercise CARE Workflow + Agent (Pi RPC) end-to-end."""
+"""Runnable entry point to exercise CARE Workflow + Agent (Pi RPC) end-to-end."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Literal
 
 from agent_runtime.adapters import AdapterRegistry, PiRpcAdapter, PiRpcConfig, ThinkingLevel
-from agent_runtime.orchestrator import WorkflowRegistry, WorkflowRunner
+from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
     NodeCompletedEvent,
     NodeStartedEvent,
@@ -25,66 +24,87 @@ from agent_runtime.protocol import (
 )
 from agent_runtime.workflows import create_default_workflow_registry
 
+WorkflowName = Literal["single_agent", "plan_and_execute"]
 
-def _parse_args(
-    workflow_registry: WorkflowRegistry,
-    argv: list[str] | None = None,
-) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a CARE LangGraph workflow backed by Pi RPC.")
-    parser.add_argument(
-        "--list-workflows",
-        action="store_true",
-        help="List registered workflows and exit.",
+
+def main() -> int:
+    """IDE 直接右键运行入口，按需修改下方参数即可。"""
+    return run(
+        # 用户提示词（直接在这里修改）
+        prompt="列出当前目录的文件，并简短概括项目结构。",
+        # 内置工作流: "single_agent" | "plan_and_execute"
+        workflow="single_agent",
+        # Agent 工作目录（默认当前目录，支持相对路径、绝对路径或 ~）
+        cwd=".",
+        # 可选模型与推理覆盖（None 表示沿用 Pi 默认配置）
+        model=None,
+        provider=None,  # 指定 provider 时必须同时指定 model
+        thinking_level=None,  # "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+        # 运行时配置
+        pi_bin=None,  # None 时读取环境变量 PI_BIN，未设置则默认 "pi"
+        checkpoint_db=":memory:",  # ":memory:" 或 SQLite 路径，如 "checkpoints.sqlite"
+        json_output=False,  # True 时输出原始 RuntimeEvent JSONL
     )
-    parser.add_argument(
-        "--workflow",
-        default="single_agent",
-        choices=workflow_registry.list_names(),
-        help="Workflow to execute (default: single_agent).",
-    )
-    parser.add_argument(
-        "--cwd",
-        default=".",
-        help="Workspace directory passed to agent sessions (default: current directory).",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Optional model override passed to Pi.",
-    )
-    parser.add_argument(
-        "--provider",
-        default=None,
-        help="Optional provider override (requires --model).",
-    )
-    parser.add_argument(
-        "--thinking",
-        default=None,
-        choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-        help="Optional thinking level override.",
-    )
-    parser.add_argument(
-        "--pi-bin",
-        default=os.environ.get("PI_BIN", "pi"),
-        help="Path or command name for Pi CLI (default: $PI_BIN or 'pi').",
-    )
-    parser.add_argument(
-        "--checkpoint-db",
-        default=":memory:",
-        help="SQLite path for LangGraph checkpoints (default: in-memory).",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Emit raw RuntimeEvent JSONL records instead of formatted terminal output.",
-    )
-    parser.add_argument(
-        "goal",
-        nargs="?",
-        help="Task goal prompt for the workflow.",
-    )
-    return parser.parse_args(argv)
+
+
+def run(
+    prompt: str,
+    *,
+    workflow: WorkflowName | str = "single_agent",
+    cwd: str | Path = ".",
+    model: str | None = None,
+    provider: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
+    pi_bin: str | None = None,
+    checkpoint_db: str | Path = ":memory:",
+    json_output: bool = False,
+) -> int:
+    """Run a CARE workflow synchronously and stream events to stdout."""
+    if not prompt.strip():
+        raise ValueError("prompt must be non-empty")
+
+    # Ensure UTF-8 console output on Windows terminals.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    effective_pi_bin = pi_bin or os.environ.get("PI_BIN", "pi")
+    workspace_dir = Path(cwd).expanduser()
+
+    async def _execute() -> int:
+        workflow_registry = create_default_workflow_registry()
+        adapter_registry = AdapterRegistry(
+            {"pi": PiRpcAdapter(PiRpcConfig(command=(effective_pi_bin,)))}
+        )
+
+        render_state: dict[str, str | None] = {"stream": None}
+        exit_code = 0
+
+        async with WorkflowRunner(
+            adapter_registry,
+            workflow_registry,
+            checkpoint_db=checkpoint_db,
+        ) as runner:
+            async for event in runner.run(
+                workflow,
+                prompt,
+                workspace_dir,
+                model=model,
+                provider=provider,
+                thinking_level=thinking_level,
+            ):
+                if json_output:
+                    print(event.model_dump_json(), flush=True)
+                else:
+                    _render_human(event, render_state)
+
+                if isinstance(event.payload, WorkflowCompletedEvent) and (
+                    event.payload.status != "completed"
+                ):
+                    exit_code = 1
+
+        return exit_code
+
+    return asyncio.run(_execute())
 
 
 def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
@@ -145,60 +165,6 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
                 f"  failure=({payload.failure.failure_class}) {payload.failure.message}",
                 flush=True,
             )
-
-
-async def _run_async(
-    args: argparse.Namespace,
-    workflow_registry: WorkflowRegistry,
-) -> int:
-    adapter_registry = AdapterRegistry({"pi": PiRpcAdapter(PiRpcConfig(command=(args.pi_bin,)))})
-
-    render_state: dict[str, str | None] = {"stream": None}
-    exit_code = 0
-
-    async with WorkflowRunner(
-        adapter_registry,
-        workflow_registry,
-        checkpoint_db=args.checkpoint_db,
-    ) as runner:
-        async for event in runner.run(
-            args.workflow,
-            args.goal,
-            Path(args.cwd),
-            model=args.model,
-            provider=args.provider,
-            thinking_level=cast(ThinkingLevel | None, args.thinking),
-        ):
-            if args.json_output:
-                print(event.model_dump_json(), flush=True)
-            else:
-                _render_human(event, render_state)
-
-            if isinstance(event.payload, WorkflowCompletedEvent) and (
-                event.payload.status != "completed"
-            ):
-                exit_code = 1
-
-    return exit_code
-
-
-def main(argv: list[str] | None = None) -> int:
-    # Ensure UTF-8 console output on Windows terminals.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    workflow_registry = create_default_workflow_registry()
-    args = _parse_args(workflow_registry, argv)
-    if args.list_workflows:
-        for definition in workflow_registry.list_definitions():
-            print(f"{definition.name}: {definition.description}")
-        return 0
-
-    if not args.goal:
-        print("Error: a task goal prompt is required (or pass --list-workflows).", file=sys.stderr)
-        return 2
-
-    return asyncio.run(_run_async(args, workflow_registry))
 
 
 if __name__ == "__main__":

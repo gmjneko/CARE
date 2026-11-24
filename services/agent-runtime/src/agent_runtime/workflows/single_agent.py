@@ -34,7 +34,7 @@ def build_single_agent_workflow(
                 model=model,
                 provider=provider,
                 thinking_level=thinking_level,
-                prompt_builder=lambda state: state["goal"],
+                prompt_builder=lambda state: state["prompt"],
             ),
             run_context,
         ),

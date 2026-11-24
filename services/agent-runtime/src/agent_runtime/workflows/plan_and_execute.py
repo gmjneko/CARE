@@ -18,9 +18,9 @@ from agent_runtime.orchestrator import (
 def _build_executor_prompt(state: WorkflowState) -> str:
     planner_output = state["node_outputs"].get("planner")
     if planner_output is None or not planner_output.summary:
-        return state["goal"]
+        return state["prompt"]
     return (
-        f"## Goal\n{state['goal']}\n\n"
+        f"## User Prompt\n{state['prompt']}\n\n"
         f"## Execution Plan (from planner)\n{planner_output.summary}\n\n"
         "Follow the plan above carefully, verify your work, and summarize what you did."
     )
@@ -55,7 +55,7 @@ def build_plan_and_execute_workflow(
                 ),
                 prompt_builder=lambda state: (
                     "Analyze the workspace and create a clear execution plan for:\n\n"
-                    f"{state['goal']}"
+                    f"{state['prompt']}"
                 ),
             ),
             run_context,

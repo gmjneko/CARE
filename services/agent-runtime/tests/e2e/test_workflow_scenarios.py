@@ -307,5 +307,5 @@ async def test_subprocess_crash_mid_turn_surfaces_redacted_transport_failure(
 async def test_unregistered_workflow_fails_fast(tmp_path: Path) -> None:
     async with _make_runner("standard") as runner:
         with pytest.raises(KeyError, match="Unknown workflow 'does_not_exist'"):
-            async for _ in runner.run("does_not_exist", "Goal", tmp_path):
+            async for _ in runner.run("does_not_exist", "Prompt", tmp_path):
                 pass

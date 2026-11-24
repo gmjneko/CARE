@@ -63,7 +63,7 @@ class WorkflowRunner:
     async def run(
         self,
         workflow: str | WorkflowBuilder,
-        goal: str,
+        prompt: str,
         workspace_dir: str | Path,
         *,
         run_id: str | None = None,
@@ -106,7 +106,7 @@ class WorkflowRunner:
         initial_state: WorkflowState = {
             "run_id": effective_run_id,
             "workflow_id": workflow_name,
-            "goal": goal,
+            "prompt": prompt,
             "workspace_dir": str(Path(workspace_dir).resolve()),
             "node_outputs": {},
             "latest_output": "",
@@ -119,7 +119,7 @@ class WorkflowRunner:
         last_failure: AgentFailure | None = None
 
         try:
-            yield _wrap(WorkflowStartedEvent(preset=workflow_name, goal=goal))
+            yield _wrap(WorkflowStartedEvent(preset=workflow_name, prompt=prompt))
 
             async for chunk in compiled.astream(
                 initial_state,

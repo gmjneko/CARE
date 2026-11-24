@@ -146,7 +146,7 @@ def _handle_standard(
 
     if is_planner:
         final_text = (
-            f"[PLAN tools={tools}] Step 1: update module for goal: {prompt.splitlines()[-1]}"
+            f"[PLAN tools={tools}] Step 1: update module for prompt: {prompt.splitlines()[-1]}"
         )
     else:
         has_plan = "[PLAN tools=" in prompt

@@ -38,7 +38,7 @@ class WorkflowState(TypedDict):
 
     run_id: str
     workflow_id: str
-    goal: str
+    prompt: str
     workspace_dir: str
     node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
     latest_output: str

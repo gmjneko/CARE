@@ -248,7 +248,7 @@ class WorkflowStartedEvent(BaseModel):
 
     type: Literal["workflow.started"] = "workflow.started"
     preset: str
-    goal: str
+    prompt: str
 
 
 class NodeStartedEvent(BaseModel):
