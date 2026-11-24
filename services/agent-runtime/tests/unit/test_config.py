@@ -17,6 +17,7 @@ from agent_runtime.config import (
     ModelProfile,
     load_local_settings,
     resolve_care_home,
+    runtime_tmp_dir,
     save_local_settings,
     settings_path,
 )
@@ -34,10 +35,15 @@ def test_care_home_env_overrides_default_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(CARE_HOME_ENV, raising=False)
+    assert resolve_care_home() == Path.home() / ".care"
+    assert runtime_tmp_dir() == Path.home() / ".care" / "tmp"
+
     custom_home = tmp_path / "custom-care"
     monkeypatch.setenv(CARE_HOME_ENV, str(custom_home))
     assert resolve_care_home() == custom_home
     assert settings_path() == custom_home / "settings.json"
+    assert runtime_tmp_dir() == custom_home / "tmp"
 
 
 def test_save_and_load_round_trip_masks_secret_in_memory_and_sets_permissions(

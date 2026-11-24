@@ -323,8 +323,10 @@ async def test_unregistered_workflow_fails_fast(tmp_path: Path) -> None:
 
 async def test_local_settings_profile_stages_isolated_pi_models_without_leaking_key(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     care_home = tmp_path / "care-home"
+    monkeypatch.setenv("CARE_HOME", str(care_home))
     db_path = tmp_path / "checkpoints.sqlite"
     secret = "sk-care-e2e-secret-9876543210"
 
@@ -388,9 +390,11 @@ async def test_local_settings_profile_stages_isolated_pi_models_without_leaking_
         }
     }
 
-    # Temporary isolated PI_CODING_AGENT_DIR is cleaned up on session exit.
+    # Temporary isolated PI_CODING_AGENT_DIR lives under <CARE_HOME>/tmp and is cleaned up on exit.
     assert report["agent_dir"] is not None
-    assert not Path(report["agent_dir"]).exists()
+    agent_dir_path = Path(report["agent_dir"])
+    assert agent_dir_path.parent == care_home / "tmp"
+    assert not agent_dir_path.exists()
 
     # Raw API key never leaks into events manifest or SQLite checkpoints.
     assert secret not in json.dumps(manifest)

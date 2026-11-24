@@ -11,24 +11,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
-
-CARE_HOME_ENV = "CARE_HOME"
-DEFAULT_SETTINGS_FILENAME = "settings.json"
-
-
-def resolve_care_home(care_home: str | Path | None = None) -> Path:
-    """解析本地 CARE 主目录，优先级：显式参数 > 环境变量 `CARE_HOME` > `~/.care`。"""
-    if care_home is not None:
-        return Path(care_home).expanduser()
-    env_home = os.environ.get(CARE_HOME_ENV)
-    if env_home and env_home.strip():
-        return Path(env_home.strip()).expanduser()
-    return Path.home() / ".care"
-
-
-def settings_path(care_home: str | Path | None = None) -> Path:
-    """返回 `<care_home>/settings.json` 的完整路径。"""
-    return resolve_care_home(care_home) / DEFAULT_SETTINGS_FILENAME
+from agent_runtime.paths import (
+    CARE_HOME_ENV,
+    DEFAULT_SETTINGS_FILENAME,
+    resolve_care_home,
+    runtime_tmp_dir,
+    settings_path,
+)
 
 
 class ModelProfile(ModelEndpoint):
@@ -173,6 +162,7 @@ __all__ = [
     "ModelProfile",
     "load_local_settings",
     "resolve_care_home",
+    "runtime_tmp_dir",
     "save_local_settings",
     "settings_path",
 ]

@@ -25,6 +25,7 @@ from agent_runtime.adapters.errors import (
     AdapterTransportError,
 )
 from agent_runtime.adapters.pi.framing import DEFAULT_MAX_LINE_BYTES, JsonlFramer
+from agent_runtime.paths import runtime_tmp_dir
 from agent_runtime.protocol.events import redact_sensitive_text
 
 _STDERR_MAX_BYTES = 16 * 1024
@@ -85,10 +86,10 @@ def build_pi_argv(
     *,
     base_command: tuple[str, ...],
     session_config: SessionConfig,
-    session_dir: Path,
+    runtime_dir: Path,
     offline: bool = False,
 ) -> tuple[list[str], dict[str, str] | None]:
-    """Construct `pi --mode rpc` argv and optional isolated env, staging files in `session_dir`."""
+    """Construct `pi --mode rpc` argv and optional isolated env, staging files in `runtime_dir`."""
     if not base_command:
         raise AdapterStartupError("PiRpcConfig.command must contain at least one element")
 
@@ -131,7 +132,7 @@ def build_pi_argv(
                 # 未指定 base_url 时仅覆写内置 provider 的 apiKey，
                 provider_entry["apiKey"] = f"${_API_KEY_ENV_VAR}"
 
-            models_file = session_dir / "models.json"
+            models_file = runtime_dir / "models.json"
             models_file.write_text(
                 json.dumps({"providers": {effective_provider: provider_entry}}, indent=2),
                 encoding="utf-8",
@@ -139,7 +140,7 @@ def build_pi_argv(
 
             # 密钥仅经子进程环境变量传入，不通过命令行 --api-key 暴露给 ps 等进程查看工具
             env = dict(os.environ)
-            env["PI_CODING_AGENT_DIR"] = str(session_dir)
+            env["PI_CODING_AGENT_DIR"] = str(runtime_dir)
             if endpoint.api_key is not None:
                 env[_API_KEY_ENV_VAR] = endpoint.api_key.get_secret_value()
             else:
@@ -157,12 +158,12 @@ def build_pi_argv(
         argv.extend(["--thinking", session_config.thinking_level])
 
     if session_config.system_prompt is not None:
-        sys_file = session_dir / "system_prompt.txt"
+        sys_file = runtime_dir / "system_prompt.txt"
         sys_file.write_text(session_config.system_prompt, encoding="utf-8")
         argv.extend(["--system-prompt", str(sys_file)])
 
     if session_config.append_system_prompt is not None:
-        append_file = session_dir / "append_system_prompt.txt"
+        append_file = runtime_dir / "append_system_prompt.txt"
         append_file.write_text(session_config.append_system_prompt, encoding="utf-8")
         argv.extend(["--append-system-prompt", str(append_file)])
 
@@ -184,11 +185,11 @@ class PiRpcTransport:
         self,
         *,
         process: asyncio.subprocess.Process,
-        session_dir: tempfile.TemporaryDirectory[str],
+        runtime_dir: tempfile.TemporaryDirectory[str],
         config: PiRpcConfig,
     ) -> None:
         self._process = process
-        self._session_dir = session_dir
+        self._runtime_dir = runtime_dir
         self._config = config
         self._write_lock = asyncio.Lock()
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -213,12 +214,18 @@ class PiRpcTransport:
         if not session_config.cwd.exists():
             raise AdapterStartupError(f"Working directory does not exist: {session_config.cwd}")
 
-        session_dir = tempfile.TemporaryDirectory(prefix="care-pi-")
+        # 统一放到 ~/.care/tmp/（支持 CARE_HOME 覆盖），会话结束时自动删除子目录
+        tmp_root = runtime_tmp_dir()
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(tmp_root, 0o700)
+
+        runtime_dir = tempfile.TemporaryDirectory(prefix="care-pi-", dir=tmp_root)
         try:
             argv, env = build_pi_argv(
                 base_command=rpc_config.command,
                 session_config=session_config,
-                session_dir=Path(session_dir.name),
+                runtime_dir=Path(runtime_dir.name),
                 offline=rpc_config.offline,
             )
             process = await asyncio.create_subprocess_exec(
@@ -232,13 +239,13 @@ class PiRpcTransport:
                 start_new_session=(os.name != "nt"),
             )
         except AdapterError:
-            session_dir.cleanup()
+            runtime_dir.cleanup()
             raise
         except OSError as exc:
-            session_dir.cleanup()
+            runtime_dir.cleanup()
             raise AdapterStartupError(f"Failed to spawn Pi RPC process: {exc}") from exc
 
-        return cls(process=process, session_dir=session_dir, config=rpc_config)
+        return cls(process=process, runtime_dir=runtime_dir, config=rpc_config)
 
     def next_id(self, prefix: str = "care") -> str:
         self._next_request_id += 1
@@ -317,7 +324,7 @@ class PiRpcTransport:
                 self._process.stdin.close()
             self._fail_pending(AdapterTransportError("Pi RPC transport closed"))
             self.inbound_queue.put_nowait(TransportClosed(error=None))
-            self._session_dir.cleanup()
+            self._runtime_dir.cleanup()
 
     async def _read_stdout(self) -> None:
         assert self._process.stdout is not None

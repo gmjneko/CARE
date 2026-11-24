@@ -48,7 +48,8 @@ services/agent-runtime/
 ├── pyproject.toml                         # Python >=3.14, 轻量依赖 (langgraph, checkpoint-sqlite, pydantic)
 ├── main.py                                # 直接右键运行的 main() 入口（直接配置参数并流式查看事件）
 ├── src/agent_runtime/
-│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json，支持 CARE_HOME 覆盖)
+│   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
+│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json)
 │   ├── protocol/
 │   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent / AgentFailure / 凭据脱敏
 │   ├── adapters/
@@ -174,7 +175,7 @@ class AgentAdapter(Protocol):
 - **`ModelEndpoint`（`adapters/base.py`）与本地配置（`config.py`）**：
   - 核心引擎层（`WorkflowRunner` / `AgentNodeConfig` / `SessionConfig`）只接收内存中的 `ModelEndpoint(model, provider, base_url, api_protocol, api_key: SecretStr)`，不强绑定本地文件路径，也不将 `api_key` 写入 `WorkflowState`、Checkpoint 或 `RuntimeEvent`；
   - 本地入口默认读取 `~/.care/settings.json`（支持 `CARE_HOME` 环境变量覆盖，支持多 Profile 切换与 `active_profile`，写入时采用原子替换与 `0600` 权限）；
-  - 当传入自定义 `base_url` 或 `api_key` 时，`PiRpcTransport` 在按会话隔离的临时目录生成 `models.json`（使用 `"apiKey": "$CARE_LLM_API_KEY"` 引用，无明文落盘），通过子进程环境变量注入 `PI_CODING_AGENT_DIR` 与 `CARE_LLM_API_KEY`，避免污染宿主机 `~/.pi/agent` 且天然支持多节点/多任务并发隔离。
+  - 当传入自定义 `base_url` 或 `api_key` 时，`PiRpcTransport` 在 `~/.care/tmp/care-pi-*`（按会话隔离的临时目录，支持 `CARE_HOME` 覆盖）生成 `models.json`（使用 `"apiKey": "$CARE_LLM_API_KEY"` 引用，无明文落盘），通过子进程环境变量注入 `PI_CODING_AGENT_DIR` 与 `CARE_LLM_API_KEY`，避免污染宿主机 `~/.pi/agent` 且天然支持多节点/多任务并发隔离，会话结束自动清理。
 - **`ModelEndpoint` / `SessionConfig` 构造期 fail-fast 校验**：
   - `model` 不可为空；传入 `base_url` 时须为 `http://` 或 `https://`；未指定 `base_url` 而传入 `api_key` 时必须同时指定内置 `provider`；
   - `no_tools=True` 与显式 `tools=(...)` 互斥；
