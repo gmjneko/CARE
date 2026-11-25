@@ -239,7 +239,8 @@ def _handle_ui_confirm(req_id: str | None) -> None:
     _emit({"type": "agent_settled", "aborted": False})
 
 
-def _handle_abortable(req_id: str | None) -> None:
+def _handle_abortable(req_id: str | None, prompt: str, session_file: str | None) -> None:
+    _append_session_history(session_file, prompt)
     _emit(
         {
             "type": "response",
@@ -716,7 +717,7 @@ def main() -> int:
             elif scenario == "ui_confirm":
                 _handle_ui_confirm(req_id)
             elif scenario == "abortable":
-                _handle_abortable(req_id)
+                _handle_abortable(req_id, prompt, session_file)
             elif scenario == "steerable":
                 _handle_steerable(req_id)
             elif scenario == "provider_fail_planner":

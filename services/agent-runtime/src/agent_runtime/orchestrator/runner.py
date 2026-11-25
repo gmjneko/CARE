@@ -10,7 +10,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.graph import START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +28,7 @@ from agent_runtime.orchestrator.node import (
 from agent_runtime.orchestrator.registry import WorkflowBuilder, WorkflowRegistry
 from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
 from agent_runtime.protocol.events import (
+    AgentFailure,
     InteractionRequestEvent,
     RuntimeEvent,
     RuntimeEventPayload,
@@ -150,13 +151,24 @@ class WorkflowRunner:
         }
 
         with self._claim_run(effective_thread_id, effective_run_id):
-            snapshot = await compiled.aget_state(
-                {"configurable": {"thread_id": effective_thread_id}}
-            )
-            if snapshot.next:
-                raise ValueError(
-                    f"Thread '{effective_thread_id}' has an unfinished turn; call resume()"
+            try:
+                existing_state, _, paused = await self._inspect(
+                    compiled, effective_thread_id, finished=True
                 )
+            except KeyError:
+                existing_state, paused = None, None
+
+            if existing_state is not None and existing_state.resumable:
+                if existing_state.status not in ("failed", "aborted"):
+                    raise ValueError(
+                        f"Thread '{effective_thread_id}' is {existing_state.status}; "
+                        "call resume() or discard()"
+                    )
+                if paused is not None:
+                    initial_state["node_outputs"] = {
+                        paused.node_id: paused.model_copy(update={"pending_interaction": None})
+                    }
+
             async for event in self._stream_execution(
                 compiled=compiled,
                 workflow_name=workflow_name,
@@ -255,6 +267,52 @@ class WorkflowRunner:
                 staged_reply=continuation if stage_pause else None,
             ):
                 yield event
+
+    async def discard(
+        self,
+        workflow: str | WorkflowBuilder,
+        thread_id: str,
+    ) -> ThreadState:
+        """放弃未完成的挂起/崩溃/失败轮次，保留已落盘的 session_ref 并收口为不可恢复终态。"""
+        checkpointer = self._require_checkpointer()
+        store = self._require_inflight_store()
+        _, builder = self._resolve_workflow(workflow)
+        compiled = _compile_workflow(builder, self._run_context, checkpointer=checkpointer)
+
+        with self._claim_run(thread_id, f"discard-{uuid4().hex[:12]}"):
+            state, _, paused = await self._inspect(compiled, thread_id, finished=True)
+            if not state.resumable:
+                return state
+
+            final_status: Literal["failed", "aborted"] = (
+                "failed" if state.status == "failed" else "aborted"
+            )
+            preserved: dict[str, NodeOutput] = {}
+            for row in state.inflight_nodes:
+                existing = state.node_outputs.get(row.node_id)
+                if existing is not None:
+                    preserved[row.node_id] = existing.model_copy(
+                        update={"status": "aborted", "pending_interaction": None}
+                    )
+            if paused is not None:
+                preserved[paused.node_id] = paused.model_copy(
+                    update={"status": final_status, "pending_interaction": None}
+                )
+
+            await _close_resumable_turn(
+                checkpointer,
+                thread_id=thread_id,
+                node_outputs=preserved,
+                status=final_status,
+                failure=(
+                    paused.failure if (paused is not None and final_status == "failed") else None
+                ),
+            )
+            for row in state.inflight_nodes:
+                await store.delete(row)
+
+            closed, _, _ = await self._inspect(compiled, thread_id, finished=True)
+            return closed
 
     async def respond_interaction(self, run_id: str, response: InteractionResponse) -> None:
         """向正在线热等待的节点回传用户审批结果或提问回答。"""
@@ -372,12 +430,14 @@ class WorkflowRunner:
                     continue
                 live.append(row)
                 node, request = task.name, row.pending_interaction
+                existing = outputs.get(node)
                 outputs[node] = NodeOutput(
                     node_id=node,
-                    role=node,
+                    role=existing.role if existing is not None else node,
                     status="interrupted",
                     summary="",
-                    session_ref=row.session_ref,
+                    session_ref=row.session_ref
+                    or (existing.session_ref if existing is not None else None),
                     pending_interaction=request,
                 )
 
@@ -572,6 +632,30 @@ def _compile_workflow(
             thinking_level=thinking_level,
         )
     return graph.compile(checkpointer=checkpointer)
+
+
+async def _close_resumable_turn(
+    checkpointer: AsyncSqliteSaver,
+    *,
+    thread_id: str,
+    node_outputs: dict[str, NodeOutput],
+    status: Literal["failed", "aborted"],
+    failure: AgentFailure | None,
+) -> None:
+    """Close out a paused or crashed LangGraph cursor without running workflow nodes."""
+    graph: StateGraph[Any] = StateGraph(WorkflowState)
+    graph.add_node("_discard", lambda _: {})
+    graph.add_edge(START, "_discard")
+    graph.add_edge("_discard", END)
+    await graph.compile(checkpointer=checkpointer).ainvoke(
+        {
+            "node_outputs": node_outputs,
+            "status": status,
+            "failure": failure,
+        },
+        config={"configurable": {"thread_id": thread_id}},
+        durability="sync",
+    )
 
 
 async def _import_saved_agent_pause(checkpointer: AsyncSqliteSaver, state: ThreadState) -> None:

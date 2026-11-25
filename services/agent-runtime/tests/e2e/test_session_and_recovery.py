@@ -30,6 +30,7 @@ from agent_runtime.paths import sessions_dir
 from agent_runtime.protocol import (
     InteractionRequestEvent,
     RuntimeEvent,
+    TextDeltaEvent,
     WorkflowCompletedEvent,
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
@@ -233,6 +234,8 @@ async def test_live_hot_interaction_respond_in_place_without_restart(tmp_path: P
                         await anext(
                             runner.run("single_agent", "other", tmp_path, thread_id=ev.run_id)
                         )
+                    with pytest.raises(ValueError, match="already running"):
+                        await runner.discard("single_agent", ev.run_id)
                     await runner.respond_interaction(
                         "run-hot-1",
                         InteractionResponse(
@@ -649,6 +652,283 @@ async def test_committed_graph_stays_complete_if_worker_dies_before_stream_clean
         assert not state.inflight_nodes
         with pytest.raises(ValueError, match="already completed"):
             await anext(runner.resume("single_agent", "committed"))
+
+
+async def test_aborted_turn_allows_fresh_run_preserving_session_history(tmp_path: Path) -> None:
+    """Gap: aborting an active node previously left snapshot.next non-empty and blocked run()."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "abort-then-new-run"
+
+    turn1_events: list[RuntimeEvent] = []
+    async with _make_runner("abortable", checkpoint_db=db_path) as runner1:
+        async for ev in runner1.run(
+            "single_agent",
+            "Initial aborted request",
+            tmp_path,
+            run_id="run-abort-new-1",
+            thread_id=thread_id,
+        ):
+            turn1_events.append(ev)
+            if isinstance(ev.payload, TextDeltaEvent):
+                await runner1.abort("run-abort-new-1")
+
+        st1 = await runner1.get_thread_state("single_agent", thread_id)
+
+    assert isinstance(turn1_events[-1].payload, WorkflowCompletedEvent)
+    assert turn1_events[-1].payload.status == "aborted"
+    assert st1.status == "aborted"
+    assert st1.resumable is True
+    session_ref_1 = st1.node_outputs["agent"].session_ref
+    assert session_ref_1 is not None
+
+    # User sends a brand-new message directly via run() instead of resume()
+    turn2_events: list[RuntimeEvent] = []
+    async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner2:
+        async for ev in runner2.run(
+            "single_agent",
+            "Never mind, solve B instead",
+            tmp_path,
+            thread_id=thread_id,
+        ):
+            turn2_events.append(ev)
+        st2 = await runner2.get_thread_state("single_agent", thread_id)
+
+    _write_manifest(tmp_path, "abort_then_new_run", turn2_events)
+    final2 = turn2_events[-1].payload
+    assert isinstance(final2, WorkflowCompletedEvent)
+    assert final2.status == "completed"
+    payload2 = json.loads(final2.final_output)
+    assert payload2["session_file"] == session_ref_1
+    assert payload2["history"] == ["Initial aborted request", "Never mind, solve B instead"]
+    assert st2.status == "completed"
+    assert st2.resumable is False
+    assert st2.node_outputs["agent"].session_ref == session_ref_1
+
+
+async def test_failed_multinode_turn_allows_fresh_run_preserving_all_node_sessions(
+    tmp_path: Path,
+) -> None:
+    """Gap: failed executor paused inside subgraph had not flushed its session_ref to root state."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "fail-then-new-run"
+
+    async with _make_runner("fail_executor_once", checkpoint_db=db_path) as runner1:
+        events1 = [
+            ev
+            async for ev in runner1.run(
+                "plan_and_execute", "Original task", tmp_path, thread_id=thread_id
+            )
+        ]
+        st1 = await runner1.get_thread_state("plan_and_execute", thread_id)
+
+    assert isinstance(events1[-1].payload, WorkflowCompletedEvent)
+    assert events1[-1].payload.status == "failed"
+    assert st1.status == "failed" and st1.resumable is True
+    plan_ref = st1.node_outputs["planner"].session_ref
+    exec_ref = st1.node_outputs["executor"].session_ref
+    assert plan_ref is not None and exec_ref is not None
+
+    async with _make_runner("standard", checkpoint_db=db_path) as runner2:
+        events2 = [
+            ev
+            async for ev in runner2.run(
+                "plan_and_execute", "Fresh replacement task", tmp_path, thread_id=thread_id
+            )
+        ]
+        st2 = await runner2.get_thread_state("plan_and_execute", thread_id)
+
+    _write_manifest(tmp_path, "fail_then_new_run", events2)
+    started_nodes = [ev.payload.node_id for ev in events2 if ev.payload.type == "node.started"]
+    assert started_nodes == ["planner", "executor"]
+    assert isinstance(events2[-1].payload, WorkflowCompletedEvent)
+    assert events2[-1].payload.status == "completed"
+    assert st2.status == "completed" and st2.resumable is False
+    assert st2.node_outputs["planner"].session_ref == plan_ref
+    assert st2.node_outputs["executor"].session_ref == exec_ref
+
+
+async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path: Path) -> None:
+    """Gap: unresolved pauses must reject run() until explicitly discarded, keeping session_ref."""
+    db_path = tmp_path / "checkpoints.sqlite"
+
+    # Case 1: Cold agent interaction pause (interrupted)
+    thread_int = "discard-interrupted"
+    async with _make_runner("ui_question", checkpoint_db=db_path) as runner1:
+        events1 = [
+            ev
+            async for ev in runner1.run(
+                "plan_and_execute",
+                "Pick backend",
+                tmp_path,
+                thread_id=thread_int,
+                interaction_mode="suspend",
+            )
+        ]
+        st_paused = await runner1.get_thread_state("plan_and_execute", thread_int)
+        assert isinstance(events1[-1].payload, WorkflowInterruptedEvent)
+        assert st_paused.status == "interrupted" and st_paused.resumable is True
+        plan_ref = st_paused.node_outputs["planner"].session_ref
+        exec_ref = st_paused.node_outputs["executor"].session_ref
+        assert plan_ref is not None and exec_ref is not None
+
+        with pytest.raises(ValueError, match="interrupted"):
+            await anext(
+                runner1.run("plan_and_execute", "Overwrite pause", tmp_path, thread_id=thread_int)
+            )
+
+        discarded = await runner1.discard("plan_and_execute", thread_int)
+        assert discarded.status == "aborted"
+        assert discarded.resumable is False
+        assert discarded.next_nodes == ()
+        assert discarded.pending_interaction is None
+        assert discarded.node_outputs["planner"].session_ref == plan_ref
+        assert discarded.node_outputs["executor"].session_ref == exec_ref
+
+        # Idempotent on already-closed thread, and resume() now rejects it
+        assert await runner1.discard("plan_and_execute", thread_int) == discarded
+        with pytest.raises(ValueError, match="already aborted"):
+            await anext(runner1.resume("plan_and_execute", thread_int))
+
+    async with _make_runner("standard", checkpoint_db=db_path) as runner2:
+        events_after = [
+            ev
+            async for ev in runner2.run(
+                "plan_and_execute", "Start fresh after discard", tmp_path, thread_id=thread_int
+            )
+        ]
+        st_after = await runner2.get_thread_state("plan_and_execute", thread_int)
+
+    _write_manifest(tmp_path, "discard_interrupted_then_run", events_after)
+    assert isinstance(events_after[-1].payload, WorkflowCompletedEvent)
+    assert events_after[-1].payload.status == "completed"
+    assert st_after.node_outputs["planner"].session_ref == plan_ref
+    assert st_after.node_outputs["executor"].session_ref == exec_ref
+
+    # Case 2: Hard-killed worker crash (crashed with live WAL row)
+    thread_crash = "discard-crashed"
+    async with _make_runner("standard", checkpoint_db=db_path) as first:
+        async for _ in first.run("plan_and_execute", "Turn 1", tmp_path, thread_id=thread_crash):
+            pass
+
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(Path(__file__).resolve()),
+        str(tmp_path),
+        thread_crash,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert worker.stdout is not None
+        req_id = (await asyncio.wait_for(worker.stdout.readline(), 15)).decode().strip()
+        assert req_id == "ui-q-1"
+    finally:
+        if worker.returncode is None:
+            worker.kill()
+        await worker.wait()
+
+    async with _make_runner("standard", checkpoint_db=db_path) as runner3:
+        st_crash = await runner3.get_thread_state("plan_and_execute", thread_crash)
+        assert st_crash.status == "crashed" and st_crash.resumable is True
+        crash_exec_ref = st_crash.node_outputs["executor"].session_ref
+        assert crash_exec_ref is not None
+
+        with pytest.raises(ValueError, match="crashed"):
+            await anext(
+                runner3.run("plan_and_execute", "Overwrite crash", tmp_path, thread_id=thread_crash)
+            )
+
+        closed_crash = await runner3.discard("plan_and_execute", thread_crash)
+        assert closed_crash.status == "aborted"
+        assert closed_crash.resumable is False
+        assert closed_crash.inflight_nodes == ()
+        assert closed_crash.node_outputs["executor"].session_ref == crash_exec_ref
+
+        recovered_events = [
+            ev
+            async for ev in runner3.run(
+                "plan_and_execute",
+                "Fresh turn after crash discard",
+                tmp_path,
+                thread_id=thread_crash,
+            )
+        ]
+        st_recovered = await runner3.get_thread_state("plan_and_execute", thread_crash)
+
+    _write_manifest(tmp_path, "discard_crashed_then_run", recovered_events)
+    assert isinstance(recovered_events[-1].payload, WorkflowCompletedEvent)
+    assert recovered_events[-1].payload.status == "completed"
+    assert st_recovered.node_outputs["executor"].session_ref == crash_exec_ref
+
+    # Case 3: Workflow-level LangGraph interrupt() gate (paused is None, no WAL)
+    def _build_gate_workflow(
+        run_context: RunContext,
+        *,
+        adapter: str = "pi",
+        endpoint: Any = None,
+        thinking_level: Any = None,
+        persist_session: bool = True,
+    ) -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node(
+            "planner",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="planner",
+                    role="planner",
+                    adapter=adapter,
+                    endpoint=endpoint,
+                    thinking_level=thinking_level,
+                    persist_session=persist_session,
+                    tools=("read", "grep", "find", "ls"),
+                    append_system_prompt="You are the Planner agent.",
+                    prompt_builder=lambda s: f"Plan: {s['prompt']}",
+                ),
+                run_context,
+            ),
+        )
+        graph.add_node(
+            "gate", lambda s: {"status": "running" if interrupt({"p": 1}) else "aborted"}
+        )
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "gate")
+        graph.add_edge("gate", END)
+        return graph
+
+    thread_gate = "discard-workflow-gate"
+    async with _make_runner("standard", checkpoint_db=db_path) as runner4:
+        gate_events = [
+            ev
+            async for ev in runner4.run(
+                _build_gate_workflow, "Need approval", tmp_path, thread_id=thread_gate
+            )
+        ]
+        assert isinstance(gate_events[-1].payload, WorkflowInterruptedEvent)
+        assert gate_events[-1].payload.reason == "workflow_interrupt"
+        st_gate = await runner4.get_thread_state(_build_gate_workflow, thread_gate)
+        gate_plan_ref = st_gate.node_outputs["planner"].session_ref
+        assert gate_plan_ref is not None
+
+        with pytest.raises(ValueError, match="interrupted"):
+            await anext(
+                runner4.run(_build_gate_workflow, "Skip gate", tmp_path, thread_id=thread_gate)
+            )
+
+        closed_gate = await runner4.discard(_build_gate_workflow, thread_gate)
+        assert closed_gate.status == "aborted"
+        assert closed_gate.resumable is False
+        assert closed_gate.next_nodes == ()
+        assert closed_gate.interrupt_payload == {}
+        assert closed_gate.node_outputs["planner"].session_ref == gate_plan_ref
+
+        gate_restarted = [
+            ev
+            async for ev in runner4.run(
+                _build_gate_workflow, "New plan after discard", tmp_path, thread_id=thread_gate
+            )
+        ]
+        assert isinstance(gate_restarted[-1].payload, WorkflowInterruptedEvent)
+        st_gate2 = await runner4.get_thread_state(_build_gate_workflow, thread_gate)
+        assert st_gate2.node_outputs["planner"].session_ref == gate_plan_ref
 
 
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:
