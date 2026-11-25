@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, StateSnapshot
@@ -39,10 +40,20 @@ from agent_runtime.protocol.events import (
     PendingInterruptKind,
     RuntimeEvent,
     RuntimeEventPayload,
+    TokenUsage,
     WorkflowCompletedEvent,
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
     WorkflowStartedEvent,
+)
+
+_CHECKPOINT_SERDE = JsonPlusSerializer(
+    allowed_msgpack_modules=[
+        (NodeOutput.__module__, NodeOutput.__qualname__),
+        (AgentFailure.__module__, AgentFailure.__qualname__),
+        (InteractionRequestEvent.__module__, InteractionRequestEvent.__qualname__),
+        (TokenUsage.__module__, TokenUsage.__qualname__),
+    ]
 )
 
 
@@ -97,9 +108,8 @@ class WorkflowRunner:
 
         stack = AsyncExitStack()
         try:
-            checkpointer = await stack.enter_async_context(
-                AsyncSqliteSaver.from_conn_string(conn_str)
-            )
+            raw_saver = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(conn_str))
+            checkpointer = AsyncSqliteSaver(raw_saver.conn, serde=_CHECKPOINT_SERDE)
             await checkpointer.setup()
             # 复用同一个 SQLite 连接与并发锁初始化预写表，零额外连接且无锁竞争
             inflight_store = InflightNodeStore(checkpointer.conn, checkpointer.lock)
