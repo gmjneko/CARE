@@ -274,7 +274,7 @@ flowchart TD
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
-    task_id TEXT,
+    task_id TEXT NOT NULL,
     session_ref TEXT,
     pending_interaction_json TEXT,
     updated_at TEXT NOT NULL,
@@ -371,7 +371,7 @@ class WorkflowState(TypedDict):
 
 1. 图里有人工审批或 Agent 等待点时，`Command(resume=...)` 将裁决送回对应的 `interrupt()`。Agent 的冷回复必须匹配持久化的 `request_id`。
 2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_resume` 后沿用同一套回复流程。已完成的上游审批、普通节点和其他 Agent 均保留在原来的图位置。
-3. 已完成线程及处于 `failed`/`aborted` 态的线程可直接调用 `run()` 开启新一轮（跨轮保留节点 `session_ref`）；未决的 `interrupted`/`crashed` 线程在调用 `run()` 时会 fail-fast 拒绝，须通过 `resume()` 恢复或 `discard()` 显式放弃。升级旧版数据库时，Runner 可把旧 Agent 的终态断点一次性导入等待步骤。
+3. 已完成线程及处于 `failed`/`aborted` 态的线程可直接调用 `run()` 开启新一轮（跨轮保留节点 `session_ref`）；未决的 `interrupted`/`crashed` 线程在调用 `run()` 时会 fail-fast 拒绝，须通过 `resume()` 恢复或 `discard()` 显式放弃。
 4. 同一个 Runner 对同一线程串行执行。线程正在线运行时，状态查询返回 `running`，外部通过 `respond_interaction()` 回应热交互。多个 worker 共享一个数据库时，宿主需要在进程间保证单线程所有权。
 
 冷恢复会在已有 Pi 会话上开始一个新 turn。写入文件、部署等工具操作的重复执行保护由工具层负责。

@@ -260,14 +260,7 @@ def build_agent_node(
     graph.add_node("run_turn", run_turn)
     graph.add_node("await_resume", await_resume)
 
-    def entry(state: WorkflowState) -> str:
-        if state["status"] == "running":
-            return "run_turn"
-        # An imported checkpoint from the pre-subgraph runtime enters at its saved pause.
-        prior = state["node_outputs"].get(node_config.id)
-        return "await_resume" if prior and prior.status == state["status"] else END
-
-    graph.add_conditional_edges(START, entry)
+    graph.add_conditional_edges(START, lambda s: "run_turn" if s["status"] == "running" else END)
     graph.add_conditional_edges(
         "run_turn", lambda s: END if s["status"] == "running" else "await_resume"
     )

@@ -218,13 +218,21 @@ class WorkflowRunner:
                     f"Thread '{thread_id}' is already {state.status}; start a new turn with run()"
                 )
 
-            command = None
-            stage_pause = False
+            graph_input: Any = None
+            staged_reply: dict[str, Any] | None = None
             if state.status == "crashed":
-                reason = "crash"
-                # Native replay materializes the unfinished Pi turn as a checkpointed pause.
-                stage_pause = bool(state.inflight_nodes)
-            elif snapshot.interrupts and pause is None:
+                reason: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"] = (
+                    "crash"
+                )
+                text = _format_resume_prompt(
+                    pending_interaction=state.pending_interaction,
+                    interaction_response=interaction_response,
+                    prompt=prompt,
+                )
+                if state.inflight_nodes:
+                    # Native replay materializes the unfinished Pi turn as a checkpointed pause.
+                    staged_reply = {"prompt": text}
+            elif pause is None:
                 reason = "workflow_interrupt"
                 decision = (
                     resume_value
@@ -233,38 +241,28 @@ class WorkflowRunner:
                 )
                 if decision is None:
                     raise ValueError("A workflow interrupt requires a resume value")
-                command = Command(resume=decision)
+                graph_input = Command(resume=decision)
             else:
                 reason = "agent_interaction" if state.status == "interrupted" else "failure"
-                stage_pause = not snapshot.interrupts
-
-            continuation = None
-            if reason != "workflow_interrupt":
                 text = _format_resume_prompt(
                     pending_interaction=state.pending_interaction,
                     interaction_response=interaction_response,
                     prompt=prompt,
                 )
-                continuation = {"prompt": text}
-                if stage_pause and (
-                    not state.next_nodes or any(r.task_id is None for r in state.inflight_nodes)
-                ):
-                    await _import_saved_agent_pause(checkpointer, state)
-                if not stage_pause and reason != "crash":
-                    command = Command(resume=continuation)
+                graph_input = Command(resume={"prompt": text})
 
             async for event in self._stream_execution(
                 compiled=compiled,
                 workflow_name=workflow_name,
                 run_id=effective_run_id,
                 thread_id=thread_id,
-                graph_input=command,
+                graph_input=graph_input,
                 opening_event=WorkflowResumedEvent(
                     preset=workflow_name, thread_id=thread_id, resumed_from=reason
                 ),
                 interaction_handler=interaction_handler,
                 interaction_mode=interaction_mode,
-                staged_reply=continuation if stage_pause else None,
+                staged_reply=staged_reply,
             ):
                 yield event
 
@@ -414,19 +412,11 @@ class WorkflowRunner:
                 continue
             if child.next == ("await_resume",):
                 paused = child.values.get("node_outputs", {}).get(task.name)
-            elif not child.values and status in ("failed", "aborted", "interrupted"):
-                # Import committed but the new subgraph has not started yet.
-                paused = outputs.get(task.name)
-            if paused:
-                outputs[paused.node_id] = paused
+                if paused is not None:
+                    outputs[paused.node_id] = paused
             pending_ids = {step.id for step in child.tasks}
             for row in records:
-                if row.node_id != task.name:
-                    continue
-                # Old rows predate task IDs. Import only at the pre-subgraph checkpoint.
-                if row.task_id not in pending_ids and not (
-                    row.task_id is None and not child.values
-                ):
+                if row.node_id != task.name or row.task_id not in pending_ids:
                     continue
                 live.append(row)
                 node, request = task.name, row.pending_interaction
@@ -440,19 +430,6 @@ class WorkflowRunner:
                     or (existing.session_ref if existing is not None else None),
                     pending_interaction=request,
                 )
-
-        # Old graphs ended on agent failure/suspension. The parent checkpoint identifies
-        # the node that produced that result, even when previous chat turns had failures.
-        if (
-            not snapshot.next
-            and status in ("failed", "aborted", "interrupted")
-            and snapshot.parent_config
-        ):
-            prior = await compiled.aget_state(snapshot.parent_config)
-            if len(prior.next) == 1:
-                candidate = outputs.get(prior.next[0])
-                if candidate and candidate.status == status:
-                    paused = candidate
 
         if finished or thread_id not in self._run_context.active_run_ids:
             for row in records:
@@ -472,7 +449,7 @@ class WorkflowRunner:
         view = ThreadState(
             thread_id=thread_id,
             status=status,
-            resumable=bool(snapshot.next or paused),
+            resumable=bool(snapshot.next),
             node_outputs=outputs,
             next_nodes=snapshot.next,
             pending_interaction=request,
@@ -615,22 +592,13 @@ def _compile_workflow(
     thinking_level: ThinkingLevel | None = None,
     persist_session: bool = True,
 ) -> Any:
-    """编译工作流图，兼容未声明 persist_session 参数的自定义 WorkflowBuilder。"""
-    try:
-        graph = builder(
-            run_context,
-            adapter=adapter,
-            endpoint=endpoint,
-            thinking_level=thinking_level,
-            persist_session=persist_session,
-        )
-    except TypeError:
-        graph = builder(
-            run_context,
-            adapter=adapter,
-            endpoint=endpoint,
-            thinking_level=thinking_level,
-        )
+    graph = builder(
+        run_context,
+        adapter=adapter,
+        endpoint=endpoint,
+        thinking_level=thinking_level,
+        persist_session=persist_session,
+    )
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -655,26 +623,6 @@ async def _close_resumable_turn(
         },
         config={"configurable": {"thread_id": thread_id}},
         durability="sync",
-    )
-
-
-async def _import_saved_agent_pause(checkpointer: AsyncSqliteSaver, state: ThreadState) -> None:
-    """Convert an a5638cf checkpoint before resuming with the current graph.
-
-    The old graph either ended on this agent or crashed before producing a child
-    checkpoint. A one-edge graph seeds its saved node using the public update API.
-    This is a checkpoint write only; no workflow or Pi code runs during import.
-    """
-    node = state.interrupted_node_id
-    assert node is not None
-    output = state.node_outputs[node]
-    importer = StateGraph(WorkflowState)
-    importer.add_node(node, lambda _: {})
-    importer.add_edge(START, node)
-    await importer.compile(checkpointer=checkpointer).aupdate_state(
-        {"configurable": {"thread_id": state.thread_id}},
-        {"status": output.status, "node_outputs": {node: output}},
-        as_node=START,
     )
 
 

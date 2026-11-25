@@ -18,7 +18,7 @@ _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
-    task_id TEXT,
+    task_id TEXT NOT NULL,
     session_ref TEXT,
     pending_interaction_json TEXT,
     updated_at TEXT NOT NULL,
@@ -34,7 +34,7 @@ class InflightNodeRecord(BaseModel):
 
     thread_id: str
     node_id: str
-    task_id: str | None
+    task_id: str
     session_ref: str | None = None
     pending_interaction: InteractionRequestEvent | None = None
     updated_at: str
@@ -51,10 +51,6 @@ class InflightNodeStore:
         """初始化预写表（幂等）。"""
         async with self._lock:
             await self._conn.execute(_CREATE_TABLE_SQL)
-            async with self._conn.execute("PRAGMA table_info(care_inflight_nodes)") as cursor:
-                columns = {row[1] for row in await cursor.fetchall()}
-            if "task_id" not in columns:
-                await self._conn.execute("ALTER TABLE care_inflight_nodes ADD COLUMN task_id TEXT")
             await self._conn.commit()
 
     async def upsert(
@@ -92,7 +88,7 @@ class InflightNodeStore:
         async with self._lock:
             await self._conn.execute(
                 "DELETE FROM care_inflight_nodes WHERE thread_id = ? AND node_id = ? "
-                "AND task_id IS ?",
+                "AND task_id = ?",
                 (record.thread_id, record.node_id, record.task_id),
             )
             await self._conn.commit()
