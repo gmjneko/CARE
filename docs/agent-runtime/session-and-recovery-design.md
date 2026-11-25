@@ -181,12 +181,20 @@ sequenceDiagram
 
 ## 4. Workflow + Agent 双层中断与恢复架构（Step B）
 
-### 4.1 核心联动原则
+### 4.1 为什么把 AgentNode 拆成子图
 
-在多节点工作流（例如 `planner -> executor -> reviewer`）中，**当 `AgentNode` 内部发生中断时，必须与 Workflow 状态联动恢复**：
-- 若只恢复单个 Agent 会话而不恢复 Workflow，下游 `reviewer` 节点不会被触发；
-- 若重新从头运行 Workflow，已完成的上游 `planner` 节点会被白白重跑；
-- 每个 AgentNode 都是一个子图。`run_turn` 执行 Pi 并提交结果，`await_resume` 调用 `interrupt()` 等待决定。`durability="sync"` 让前一步先落盘。恢复等待节点时只重放获取决定的逻辑，随后才进入新的 Pi turn。
+在 `START → A → B → C → END` 中，假设 B 是普通函数节点，执行到 `interrupt()` 时挂起。用原 `thread_id` 发送 `Command(resume=...)` 后，LangGraph 保留 A 已提交的结果，**从 B 函数的第一行重新执行**。再次走到同一个 `interrupt()` 时，它返回这次的回复值。B 完成后才轮到 C。[LangGraph 的中断恢复规则](https://docs.langchain.com/oss/python/langgraph/interrupts#resuming-interrupts)
+
+如果 B 先调用 Agent 生成计划，再调用 `interrupt()` 请用户批准，恢复时就会再次调用 Agent。用户看到的是第一份计划，C 却可能拿到第二份。CARE 因此把执行 Pi 和等待冷回复拆成两个独立的图节点，用同步 checkpoint（`durability="sync"`）保存两步之间的状态。把这两步直接编排在父图也能得到相同的恢复行为。CARE 选择把它们封装成 `AgentNode` 子图，让 Planner 和 Executor 复用同一套逻辑，父图只需编排 `planner → executor`。
+
+以 Planner 读完代码后问“需要兼容旧格式吗？”为例。Pi 工具或扩展可以在运行中发出阻塞请求，之后也可以再提问或请求工具权限。每次交互都属于发起请求的 Agent，只有业务明确要求“计划完成后必须审批”，才需要在父图里添加计划审批节点。
+
+| Planner 提问后 | 用户回答“需要”时如何继续 |
+| :--- | :--- |
+| **Pi 在线，`interaction_mode="wait"`** | `run_turn` 等待回复。`respond_interaction()` 按 `request_id` 把回答发回原 Pi 调用，Planner 在同一个工具调用里拿到回答，继续当前轮。 |
+| **等待期间挂起或 Pi 退出** | `run_turn` 返回待答请求和 `session_ref`，LangGraph 提交 checkpoint，再进入只调用 `interrupt()` 等待回复的 `await_resume`。`runner.resume()` 校验 `request_id`，LangGraph 重放 `await_resume` 取得回答，再进入下一次 `run_turn`。开启会话持久化时，Planner 在原 Pi 会话上用“需要”开始新一轮，计划完成后才启动 Executor。 |
+
+如果整个 worker 在 `run_turn` 提交前被强杀，LangGraph 的 checkpoint 仍决定重放哪个任务。若该任务已有预写记录，`run_turn` 按 `task_id` 取回已写入的 `session_ref` 和待答请求（如有），先补交为子图状态，再进入同一个 `await_resume`（见 §5.3）。
 
 ### 4.2 全场景中断与恢复矩阵
 
@@ -197,7 +205,7 @@ sequenceDiagram
 | **① Agent 节点内在线热交互** | 工具高危权限审批、`ask_question` 提问（进程在线） | 发射 `InteractionRequestEvent(blocking=True)`，流保持挂起等待 | `runner.respond_interaction(run_id, resp)` | 回传 `extension_ui_response` 给存活中的 Pi 子进程，**原地继续当前 tool call，零重跑**。 |
 | **② Agent 节点内冷中断挂起** | 等待热交互时休眠/关软件（`suspend`），或 `interaction_mode="suspend"` | 优雅关闭 Pi、提交 `NodeOutput(status="interrupted", session_ref, pending_interaction)`，发射 `WorkflowInterruptedEvent` | `runner.resume(workflow, thread_id, interaction_response=resp)` | LangGraph 从该节点的等待点继续，用 `--session <session_ref>` 恢复当前节点并送入用户裁决/回答，完成后**自动跑完后续节点**。 |
 | **③ Agent 节点内 `abort` 或 `failed`** | 用户中止、API 限流（429）、网络异常、子进程异常退出 | 保持 fail-fast 语义，发射 `WorkflowCompletedEvent(status="aborted" \| "failed")`，已保留 `session_ref` 与上游输出 | `runner.resume(workflow, thread_id, prompt="继续...")` | LangGraph 从该节点的等待点继续，用 `--session <session_ref>` 带补充指令重入该节点，完成后**自动跑完后续节点**。 |
-| **④ Workflow 节点间主动挂起** | 任意工作流节点调用 LangGraph `interrupt(payload)`（如计划审批门） | 发射 `WorkflowInterruptedEvent(reason="workflow_interrupt", payload=...)` | `runner.resume(workflow, thread_id, resume_value=decision)` | 自动识别 `snapshot.interrupts`，执行 LangGraph `Command(resume=decision)` 从挂起点继续，不重跑上游。 |
+| **④ Workflow 节点间主动挂起** | 任意工作流节点调用 LangGraph `interrupt(payload)`（如计划审批门） | 发射 `WorkflowInterruptedEvent(reason="workflow_interrupt", payload=...)` | `runner.resume(workflow, thread_id, resume_value=decision)` | 自动识别 `snapshot.interrupts`，通过 `Command(resume=decision)` 重放调用 `interrupt()` 的节点，已提交的上游结果保留。 |
 | **⑤ 进程硬崩溃（`kill -9` / 断电）** | 节点执行或等待热交互中途进程突然消失 | 无终态事件；磁盘保留上游 Checkpoint 与 `care_inflight_nodes` 预写记录 | 重启后 `runner.resume(workflow, thread_id, ...)` | 结合 LangGraph 断点与预写表找回 `session_ref` 和未回答的 `pending_interaction`，由 LangGraph 从待执行任务续跑。 |
 
 ### 4.3 节点交互策略（`interaction_mode`）
@@ -288,7 +296,7 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 ### 5.4 热交互与冷恢复在 Pi 层的精确语义边界
 
 - **热交互成功（进程未中断）**：直接向活着的 Pi 子进程回传 `extension_ui_response`，Pi 在原 tool call / `ask_question` 钩子内原地继续，零重发、零额外 Token。
-- **降级为冷恢复（Pi 已退出或进程重启）**：原内存调用栈已销毁，但 `~/.care/sessions/<id>.jsonl` 提供 Pi 已经持久化的消息和工具结果；`runner.resume()` 通过 `--session <session_ref>` 恢复上下文，并将用户的审批决定或提问回答格式化为续接提示词交给模型继续完成后续工作。
+- **降级为冷恢复（Pi 已退出或进程重启）**：原内存调用栈已销毁，但 `~/.care/sessions/<id>.jsonl` 提供 Pi 已经持久化的消息和工具结果；`runner.resume()` 通过 `--session <session_ref>` 恢复上下文，并将用户的审批决定或提问回答格式化为续接提示词。Pi 在原会话上开始新一轮。若它再次发起受保护的工具调用，该调用仍须经过工具层的权限检查。具有副作用的工具也需自行处理重复执行。
 
 ---
 

@@ -309,12 +309,10 @@ class WorkflowState(TypedDict):
 
 ### 6.2 通用 `AgentNode` 生命周期（`node.py`）
 
-`build_agent_node(node_config, run_context)` 将任意 `AgentNodeConfig` 封装为标准的 LangGraph 异步节点：
-1. **短路守卫**：若 `state["status"] != "running"`，直接跳过执行；
-2. **实时流透传**：通过 `langgraph.config.get_stream_writer()` 发射 `StreamPacket(node_id, event)`，将 `node.started`、全部 `AgentEvent` 和 `node.completed` 零缓冲实时推给 `WorkflowRunner`；
-3. **运行中干预注册**：在 `async with adapter.open_session(...) as session:` 期间将活跃会话登记到 `RunContext.active_sessions[run_id]`，并在 `finally` 中安全注销，支撑外部 `runner.steer(run_id, ...)` / `runner.follow_up(run_id, ...)` / `runner.abort(run_id)`；
-4. **阻塞型交互/审批处理**：若收到 `InteractionRequestEvent(blocking=True)`，有注册 `interaction_handler` 时异步回调获取 `InteractionResponse`（`decision: approve|deny|cancel`、`feedback`、`value`）并回传；无头模式下立即回复 `InteractionResponse(decision="cancel")` 防止子进程永久挂起；
-5. **状态写回**：产出紧凑 `NodeOutput`，若 Turn 非 `completed`，将 `status` 切换为 `failed` / `aborted` 并写入 `failure`。
+`build_agent_node(node_config, run_context)` 返回一个编译好的 LangGraph 子图。父图把它作为一个 Agent 节点使用，子图内有两个独立的 checkpoint 步骤。
+
+- **`run_turn` 执行 Agent。** 它打开适配器会话，将会话登记到 `RunContext.active_sessions` 以支持 `steer()`、`follow_up()` 和 `abort()`，通过 `StreamPacket` 转发事件，在退出时注销会话。在线交互在本轮内完成。成功时提交 `NodeOutput` 并结束子图，冷挂起、失败或中止时提交相应状态并进入 `await_resume`。
+- **`await_resume` 等待冷恢复。** 它调用 `interrupt()`。恢复时 LangGraph 从 `await_resume` 的开头重放，取得回复后再进入新一轮 `run_turn`。父图在 Agent 成功交付结果后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
 
 ### 6.3 内置工作流与扩展规范（`workflows/` + `orchestrator/registry.py`）
 
