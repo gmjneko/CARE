@@ -274,6 +274,7 @@ flowchart TD
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    role TEXT NOT NULL,
     task_id TEXT NOT NULL,
     session_ref TEXT,
     pending_interaction_json TEXT,
@@ -283,9 +284,9 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 ```
 
 **写入与清理生命周期**：
-1. **节点打开会话后立即预写**：`open_session()` 握手拿到 `session.session_ref` 后，立即 `UPSERT (thread_id, node_id, task_id, session_ref, NULL)`；
+1. **节点打开会话后立即预写**：`open_session()` 握手拿到 `session.session_ref` 后，立即 `UPSERT (thread_id, node_id, role, task_id, session_ref, NULL)`；
 2. **进入热交互等待前立即预写**：收到阻塞型 `InteractionRequestEvent`、在 `await` 用户回复 **之前**，立即更新该行写入 `pending_interaction_json`；向 Pi 发送回复成功后清空 `pending_interaction_json`；
-3. **按任务对账并清理**。一次图执行结束后读取已提交的 checkpoint，删除已离开执行位置的预写行。若消费者提前退出或 worker 被强杀，后续查询只展示仍匹配待执行 `task_id` 的记录。
+3. **按任务对账并清理**。写操作（执行结束、`run()`、`resume()`、`discard()`）读取已提交的 checkpoint，删除已离开执行位置的预写行。只读查询 `get_thread_state()` 不写库，仅展示仍匹配待执行 `task_id` 的记录。
 
 **强杀重启后的恢复过程**：
 - 即使 `kill -9` 发生在等待弹窗的瞬间，重启后：

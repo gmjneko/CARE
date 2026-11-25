@@ -18,6 +18,7 @@ _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    role TEXT NOT NULL,
     task_id TEXT NOT NULL,
     session_ref TEXT,
     pending_interaction_json TEXT,
@@ -34,6 +35,7 @@ class InflightNodeRecord(BaseModel):
 
     thread_id: str
     node_id: str
+    role: str
     task_id: str
     session_ref: str | None = None
     pending_interaction: InteractionRequestEvent | None = None
@@ -58,6 +60,7 @@ class InflightNodeStore:
         thread_id: str,
         node_id: str,
         *,
+        role: str,
         task_id: str,
         session_ref: str | None,
         pending_interaction: InteractionRequestEvent | None,
@@ -71,15 +74,17 @@ class InflightNodeStore:
             await self._conn.execute(
                 """
                 INSERT INTO care_inflight_nodes
-                    (thread_id, node_id, task_id, session_ref, pending_interaction_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (thread_id, node_id, role, task_id, session_ref,
+                     pending_interaction_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(thread_id, node_id) DO UPDATE SET
+                    role = excluded.role,
                     task_id = excluded.task_id,
                     session_ref = excluded.session_ref,
                     pending_interaction_json = excluded.pending_interaction_json,
                     updated_at = excluded.updated_at
                 """,
-                (thread_id, node_id, task_id, session_ref, interaction_json, now),
+                (thread_id, node_id, role, task_id, session_ref, interaction_json, now),
             )
             await self._conn.commit()
 
@@ -98,7 +103,7 @@ class InflightNodeStore:
         async with self._lock:
             cursor = await self._conn.execute(
                 """
-                SELECT thread_id, node_id, task_id, session_ref,
+                SELECT thread_id, node_id, role, task_id, session_ref,
                        pending_interaction_json, updated_at
                 FROM care_inflight_nodes
                 WHERE thread_id = ?
@@ -109,7 +114,15 @@ class InflightNodeStore:
             rows = await cursor.fetchall()
 
         records: list[InflightNodeRecord] = []
-        for row_thread, row_node, task_id, row_session, row_interaction_json, row_updated in rows:
+        for (
+            row_thread,
+            row_node,
+            row_role,
+            task_id,
+            row_session,
+            row_interaction_json,
+            row_updated,
+        ) in rows:
             interaction = (
                 InteractionRequestEvent.model_validate_json(row_interaction_json)
                 if row_interaction_json
@@ -119,6 +132,7 @@ class InflightNodeStore:
                 InflightNodeRecord(
                     thread_id=row_thread,
                     node_id=row_node,
+                    role=row_role,
                     task_id=task_id,
                     session_ref=row_session,
                     pending_interaction=interaction,

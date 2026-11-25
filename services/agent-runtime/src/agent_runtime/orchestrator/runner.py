@@ -153,7 +153,7 @@ class WorkflowRunner:
         with self._claim_run(effective_thread_id, effective_run_id):
             try:
                 existing_state, _, paused = await self._inspect(
-                    compiled, effective_thread_id, finished=True
+                    compiled, effective_thread_id, cleanup=True
                 )
             except KeyError:
                 existing_state, paused = None, None
@@ -212,7 +212,7 @@ class WorkflowRunner:
 
         effective_run_id = run_id or f"run-{uuid4().hex[:12]}"
         with self._claim_run(thread_id, effective_run_id):
-            state, snapshot, pause = await self._inspect(compiled, thread_id)
+            state, snapshot, pause = await self._inspect(compiled, thread_id, cleanup=True)
             if not state.resumable:
                 raise ValueError(
                     f"Thread '{thread_id}' is already {state.status}; start a new turn with run()"
@@ -232,6 +232,11 @@ class WorkflowRunner:
                 if state.inflight_nodes:
                     # Native replay materializes the unfinished Pi turn as a checkpointed pause.
                     staged_reply = {"prompt": text}
+                elif text is not None:
+                    raise ValueError(
+                        "Cannot pass a continuation prompt when resuming a crash with no started "
+                        "agent turn"
+                    )
             elif pause is None:
                 reason = "workflow_interrupt"
                 decision = (
@@ -278,7 +283,7 @@ class WorkflowRunner:
         compiled = _compile_workflow(builder, self._run_context, checkpointer=checkpointer)
 
         with self._claim_run(thread_id, f"discard-{uuid4().hex[:12]}"):
-            state, _, paused = await self._inspect(compiled, thread_id, finished=True)
+            state, _, paused = await self._inspect(compiled, thread_id, cleanup=True)
             if not state.resumable:
                 return state
 
@@ -309,7 +314,7 @@ class WorkflowRunner:
             for row in state.inflight_nodes:
                 await store.delete(row)
 
-            closed, _, _ = await self._inspect(compiled, thread_id, finished=True)
+            closed, _, _ = await self._inspect(compiled, thread_id, cleanup=True)
             return closed
 
     async def respond_interaction(self, run_id: str, response: InteractionResponse) -> None:
@@ -390,7 +395,7 @@ class WorkflowRunner:
         return view
 
     async def _inspect(
-        self, compiled: Any, thread_id: str, *, finished: bool = False
+        self, compiled: Any, thread_id: str, *, cleanup: bool = False
     ) -> tuple[ThreadState, StateSnapshot, NodeOutput | None]:
         store = self._require_inflight_store()
         records = await store.list_for_thread(thread_id)
@@ -423,7 +428,7 @@ class WorkflowRunner:
                 existing = outputs.get(node)
                 outputs[node] = NodeOutput(
                     node_id=node,
-                    role=existing.role if existing is not None else node,
+                    role=row.role,
                     status="interrupted",
                     summary="",
                     session_ref=row.session_ref
@@ -431,7 +436,7 @@ class WorkflowRunner:
                     pending_interaction=request,
                 )
 
-        if finished or thread_id not in self._run_context.active_run_ids:
+        if cleanup:
             for row in records:
                 if row not in live:
                     await store.delete(row)
@@ -514,7 +519,7 @@ class WorkflowRunner:
                     packet = chunk["data"]
                     if isinstance(packet, StreamPacket):
                         yield _wrap(packet.event, node_id=packet.node_id)
-                state, snapshot, pause = await self._inspect(compiled, thread_id, finished=True)
+                state, snapshot, pause = await self._inspect(compiled, thread_id, cleanup=True)
                 if staged_reply is None:
                     break
                 if not snapshot.interrupts or pause is None:

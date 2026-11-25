@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent_runtime.adapters import (
+    AdapterProtocolError,
     AdapterRegistry,
     InteractionResponse,
     PiRpcAdapter,
@@ -645,13 +647,37 @@ async def test_committed_graph_stays_complete_if_worker_dies_before_stream_clean
         if worker.returncode is None:
             worker.kill()
         await worker.wait()
-    async with _make_runner("standard", checkpoint_db=tmp_path / "checkpoints.sqlite") as runner:
+    db_path = tmp_path / "checkpoints.sqlite"
+    async with _make_runner("standard", checkpoint_db=db_path) as runner:
+        with sqlite3.connect(db_path) as conn:
+            before_rows = conn.execute(
+                "SELECT COUNT(*) FROM care_inflight_nodes WHERE thread_id = ?", ("committed",)
+            ).fetchone()[0]
+        assert before_rows == 1
+
         state = await runner.get_thread_state("single_agent", "committed")
         assert state.status == "completed" and not state.resumable
         assert state.node_outputs["agent"].summary == final_output
         assert not state.inflight_nodes
+
+        # Read-only get_thread_state() must not mutate SQLite.
+        with sqlite3.connect(db_path) as conn:
+            after_read_rows = conn.execute(
+                "SELECT COUNT(*) FROM care_inflight_nodes WHERE thread_id = ?", ("committed",)
+            ).fetchone()[0]
+        assert after_read_rows == 1
+
         with pytest.raises(ValueError, match="already completed"):
             await anext(runner.resume("single_agent", "committed"))
+
+        # Subsequent write operation cleans up the stale WAL row.
+        async for _ in runner.run("single_agent", "Follow up", tmp_path, thread_id="committed"):
+            pass
+        with sqlite3.connect(db_path) as conn:
+            after_write_rows = conn.execute(
+                "SELECT COUNT(*) FROM care_inflight_nodes WHERE thread_id = ?", ("committed",)
+            ).fetchone()[0]
+        assert after_write_rows == 0
 
 
 async def test_aborted_turn_allows_fresh_run_preserving_session_history(tmp_path: Path) -> None:
@@ -929,6 +955,109 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
         assert isinstance(gate_restarted[-1].payload, WorkflowInterruptedEvent)
         st_gate2 = await runner4.get_thread_state(_build_gate_workflow, thread_gate)
         assert st_gate2.node_outputs["planner"].session_ref == gate_plan_ref
+
+
+async def test_first_turn_crash_preserves_configured_role_and_wal_less_crash_rejects_prompt(
+    tmp_path: Path,
+) -> None:
+    """Gaps: Turn-1 WAL crash lost role; WAL-less crash silently dropped continuation prompt."""
+    db_path = tmp_path / "checkpoints.sqlite"
+
+    # 1. Turn-1 crash on single_agent (node_id="agent", role="general") preserves role="general"
+    async with _make_runner("malformed_stdout", checkpoint_db=db_path) as runner1:
+        with pytest.raises(AdapterProtocolError):
+            async for _ in runner1.run(
+                "single_agent", "Crash turn 1", tmp_path, thread_id="crash-role-t1"
+            ):
+                pass
+        st_role = await runner1.get_thread_state("single_agent", "crash-role-t1")
+
+    assert st_role.status == "crashed"
+    assert st_role.node_outputs["agent"].role == "general"
+    assert len(st_role.inflight_nodes) == 1
+    assert st_role.inflight_nodes[0].role == "general"
+
+    # 2. WAL-less crash (fails before any agent turn starts) rejects prompt and replays cleanly
+    attempts = 0
+
+    def _build_wal_less_crash_workflow(
+        run_context: RunContext,
+        *,
+        adapter: str = "pi",
+        endpoint: Any = None,
+        thinking_level: Any = None,
+        persist_session: bool = True,
+    ) -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node(
+            "planner",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="planner",
+                    role="planner",
+                    adapter=adapter,
+                    endpoint=endpoint,
+                    thinking_level=thinking_level,
+                    persist_session=persist_session,
+                    tools=("read", "grep", "find", "ls"),
+                    append_system_prompt="You are the Planner agent.",
+                    prompt_builder=lambda s: f"Plan: {s['prompt']}",
+                ),
+                run_context,
+            ),
+        )
+
+        def _flaky_step(state: WorkflowState) -> dict[str, Any]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("transient non-agent node crash")
+            return {"latest_output": f"REPLAYED:{state['latest_output']}"}
+
+        graph.add_node("post_step", _flaky_step)
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "post_step")
+        graph.add_edge("post_step", END)
+        return graph
+
+    thread_wal_less = "crash-no-wal"
+    async with _make_runner("standard", checkpoint_db=db_path) as runner2:
+        with pytest.raises(RuntimeError, match="transient non-agent node crash"):
+            async for _ in runner2.run(
+                _build_wal_less_crash_workflow,
+                "Run post step",
+                tmp_path,
+                thread_id=thread_wal_less,
+            ):
+                pass
+
+        st_no_wal = await runner2.get_thread_state(_build_wal_less_crash_workflow, thread_wal_less)
+        assert st_no_wal.status == "crashed"
+        assert st_no_wal.inflight_nodes == ()
+        assert st_no_wal.next_nodes == ("post_step",)
+
+        with pytest.raises(ValueError, match="continuation prompt"):
+            await anext(
+                runner2.resume(
+                    _build_wal_less_crash_workflow,
+                    thread_wal_less,
+                    prompt="Should not be silently dropped",
+                )
+            )
+
+        replayed_events = [
+            ev async for ev in runner2.resume(_build_wal_less_crash_workflow, thread_wal_less)
+        ]
+
+    _write_manifest(tmp_path, "wal_less_crash_replay", replayed_events)
+    assert isinstance(replayed_events[0].payload, WorkflowResumedEvent)
+    assert replayed_events[0].payload.resumed_from == "crash"
+    started = [ev.payload.node_id for ev in replayed_events if ev.payload.type == "node.started"]
+    assert started == []
+    final = replayed_events[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    assert final.status == "completed"
+    assert final.final_output.startswith("REPLAYED:[PLAN ")
 
 
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:

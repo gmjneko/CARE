@@ -181,6 +181,7 @@ def build_agent_node(
                 await inflight.upsert(
                     thread_id,
                     node_config.id,
+                    role=node_config.role,
                     task_id=task_id,
                     session_ref=session_ref,
                     pending_interaction=None,
@@ -200,6 +201,7 @@ def build_agent_node(
                             run_id=run_id,
                             thread_id=thread_id,
                             node_id=node_config.id,
+                            role=node_config.role,
                             task_id=task_id,
                             session_ref=session_ref,
                             event=event,
@@ -269,7 +271,12 @@ def build_agent_node(
 
 
 def continue_if_running(next_node: str) -> Callable[[WorkflowState], str]:
-    """Conditional edge router that halts downstream nodes as soon as a node fails or aborts."""
+    """Conditional edge router for non-agent custom nodes (e.g. approval gates).
+
+    Halts downstream nodes when a custom node returns a non-``"running"`` status.
+    ``AgentNode`` subgraphs pause inside ``await_resume`` on failure/abort/interruption
+    rather than exiting to downstream edges.
+    """
 
     def _route(state: WorkflowState) -> str:
         return next_node if state["status"] == "running" else END
@@ -301,6 +308,7 @@ async def _handle_blocking_interaction(
     run_id: str,
     thread_id: str,
     node_id: str,
+    role: str,
     task_id: str,
     session_ref: str | None,
     event: InteractionRequestEvent,
@@ -311,6 +319,7 @@ async def _handle_blocking_interaction(
         await inflight.upsert(
             thread_id,
             node_id,
+            role=role,
             task_id=task_id,
             session_ref=session_ref,
             pending_interaction=event,
@@ -321,6 +330,7 @@ async def _handle_blocking_interaction(
             await inflight.upsert(
                 thread_id,
                 node_id,
+                role=role,
                 task_id=task_id,
                 session_ref=session_ref,
                 pending_interaction=None,
