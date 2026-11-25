@@ -400,22 +400,23 @@ class WorkflowState(TypedDict):
 
 ### 7.1 分步实施计划
 
-| 阶段 | 核心改动文件 | 交付目标 |
-| :--- | :--- | :--- |
-| **Step A（连续对话与持久化）** | `paths.py`、`adapters/pi/transport.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`workflows/single_agent.py`、`workflows/plan_and_execute.py`、`main.py` | `~/.care/sessions/` 与 `~/.care/checkpoints.sqlite` 落盘；内置工作流默认 `persist_session=True`；同 `thread_id` 跨进程无损续聊；`main.py` 开箱体验多轮对话。 |
-| **Step B（双层中断恢复与热交互兜底）** | `protocol/events.py`、`orchestrator/state.py`、`adapters/base.py`、`adapters/pi/transport.py`、`adapters/pi/adapter.py`、`orchestrator/node.py`、`orchestrator/runner.py` | 补齐 `WorkflowInterruptedEvent` / `WorkflowResumedEvent`、`respond_interaction()`、`suspend()` / `suspend_all()`、`resume()`、`wait_closed()` 监听与 `care_inflight_nodes` 预写恢复。 |
-| **Step C（服务化与桌面端对接）** | 新增 `app.py`、`contracts/canonical-event.schema.json` | 暴露 FastAPI HTTP / SSE / WS 接口，导出跨语言契约，接入 Electron 桌面端与 Java 控制面。 |
+| 阶段 | 状态 | 核心改动文件 | 交付目标 |
+| :--- | :--- | :--- | :--- |
+| **Step A（连续对话与持久化）** | ✅ 已完成 | `paths.py`、`adapters/pi/transport.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`workflows/single_agent.py`、`workflows/plan_and_execute.py`、`main.py` | `~/.care/sessions/` 与 `~/.care/checkpoints.sqlite` 落盘；内置工作流默认 `persist_session=True`；同 `thread_id` 跨进程无损续聊；`main.py` 开箱体验多轮对话。 |
+| **Step B（双层中断恢复与热交互兜底）** | ✅ 已完成 | `protocol/events.py`、`orchestrator/state.py`、`orchestrator/inflight.py`、`adapters/base.py`、`adapters/pi/transport.py`、`adapters/pi/adapter.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`scripts/reset_local_state.py` | 补齐 `PendingInterrupt`、`WorkflowInterruptedEvent` / `WorkflowResumedEvent`、`respond_interaction()`、`suspend()` / `suspend_all()`、`resume()`（单分支与批量并发）、`discard()`、`wait_closed()` 监听、`care_inflight_nodes` 预写恢复、并行多 Agent 分支并发挂起与恢复，以及 LangGraph msgpack 白名单。 |
+| **Step C（服务化与桌面端对接）** | ⏳ 待实施 | 新增 `app.py`、`contracts/canonical-event.schema.json` | 暴露 FastAPI HTTP / SSE / WS 接口，导出跨语言契约，接入 Electron 桌面端与 Java 控制面。 |
 
 ### 7.2 端到端验证矩阵（遵循外部边界替身策略）
 
-所有新增能力均通过生产路径 E2E 场景（`tests/e2e/` + 独立子进程 `fake_pi_rpc.py`）和真实本机 `pi --mode rpc` 握手验证：
+所有新增能力均通过生产路径 E2E 场景（`tests/e2e/` + 独立子进程 `fake_pi_rpc.py`，当前 64 项测试全通过）和真实本机 `pi --mode rpc` 握手验证：
 
 1. **多轮连续对话（含跨进程重启）**：使用同一 `thread_id` 连续两次执行 `single_agent`（中间销毁并重建 `WorkflowRunner`），验证第 2 轮精确带上第 1 轮在 `~/.care/sessions/` 生成的 `--session` 文件并保留上下文。
 2. **多节点会话隔离**：执行 `plan_and_execute`，验证 `planner` 与 `executor` 生成各自独立的 `session_ref`，互不混用。
 3. **节点内在线热交互（`approval` & `ask_question`）**：在 `interaction_mode="wait"` 下接收 `InteractionRequestEvent`，异步调用 `runner.respond_interaction()`，验证 Pi 在同一进程原地完成当前轮。
 4. **热交互等待期 Pi 子进程意外死亡**：等待热交互期间强杀 `fake_pi_rpc` 子进程，验证不会死等、自动落盘 `status="interrupted"` 并发出 `WorkflowInterruptedEvent`，随后 `runner.resume()` 带原 `session_ref` 恢复并跑完下游节点。
 5. **优雅挂起与跨重启恢复（`suspend` / `suspend_all`）**：热交互等待期间调用 `suspend_all()`，销毁并重建 `WorkflowRunner` 模拟软件重启，通过 `get_thread_state()` 找回待审批弹窗，再调用 `resume()` 跳过上游 `planner` 直接恢复 `executor` 完成全流程。
-6. **节点 `abort` / `failed` 后断点续跑**：`plan_and_execute` 在 `executor` 阶段触发限流失败或 `abort`，随后 `resume()` 跳过已完成 `planner`，带 `executor` 原 `session_ref` 续跑成功。
-7. **第二轮硬崩溃**。第一轮完成后，在同一线程第二轮的 executor 发出问题时杀死实际 Python worker。重启后检查请求与会话引用，验证只启动 executor 并返回本轮答案。
+6. **节点 `abort` / `failed` 后断点续跑或直接开新轮**：`plan_and_execute` / `single_agent` 在节点触发限流失败或 `abort` 后，既可调用 `resume()` 原地续跑，也可直接调用 `run()` 放弃旧断点并保留已有 `session_ref` 开启新一轮；未决的 `interrupted` / `crashed` 则拦截 `run()`，需通过 `resume()` 恢复或 `discard()` 显式放弃。
+7. **第二轮硬崩溃与 WAL 对账**：第一轮完成后，在同一线程第二轮的 executor 发出问题时杀死实际 Python worker。重启后检查请求与会话引用，验证只启动 executor 并返回本轮答案；图已提交但清理前被杀时 `get_thread_state()` 保持只读且正确识别为 `completed`。
 8. **Workflow 节点间 LangGraph `interrupt()` 跨重启恢复**：自定义含 `interrupt()` 审批门的两节点工作流，挂起后重建 `WorkflowRunner`，调用 `resume(resume_value=...)` 验证上游不重跑、下游正常完成。
-9. **真实 Pi CLI 实机验证**：以本机 `pi --mode rpc --offline` 实测自定义 `base_url`（`PI_CODING_AGENT_DIR` 在 `~/.care/tmp/`）+ `--session-dir ~/.care/sessions/` + `--session <session_ref>` 完整握手与恢复。
+9. **并行多 Agent 分支并发执行、挂起、批量恢复与强杀恢复**：`START -> (worker_a, worker_b) -> aggregator` 验证同 step 无状态冲突完成、并发热交互独立路由、冷挂起逐分支恢复与 `resumes` 批量并发恢复、混合 `interrupted` + `failed` 状态优先级保护，以及双分支同时热等待时强杀 worker 的渐进式恢复。
+10. **真实 Pi CLI 实机验证**：以本机 `pi --mode rpc --offline` 实测自定义 `base_url`（`PI_CODING_AGENT_DIR` 在 `~/.care/tmp/`）+ `--session-dir ~/.care/sessions/` + `--session <session_ref>` 完整握手与恢复。
