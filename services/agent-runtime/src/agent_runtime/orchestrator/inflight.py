@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 )
 """
 
+_EXPECTED_COLUMNS: frozenset[str] = frozenset(
+    {
+        "thread_id",
+        "node_id",
+        "role",
+        "task_id",
+        "session_ref",
+        "pending_interaction_json",
+        "updated_at",
+    }
+)
+
 
 class InflightNodeRecord(BaseModel):
     """一条尚未提交正式 Checkpoint 的活跃节点预写记录。"""
@@ -50,9 +62,19 @@ class InflightNodeStore:
         self._lock = lock
 
     async def setup(self) -> None:
-        """初始化预写表（幂等）。"""
+        """初始化预写表并校验 schema（不兼容时启动阶段立即报错，不静默删表）。"""
         async with self._lock:
             await self._conn.execute(_CREATE_TABLE_SQL)
+            async with self._conn.execute("PRAGMA table_info(care_inflight_nodes)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            if columns != _EXPECTED_COLUMNS:
+                missing = sorted(_EXPECTED_COLUMNS - columns)
+                extra = sorted(columns - _EXPECTED_COLUMNS)
+                raise RuntimeError(
+                    "Incompatible 'care_inflight_nodes' table schema "
+                    f"(missing={missing}, extra={extra}); reset local state with "
+                    "`uv run python scripts/reset_local_state.py` or remove checkpoints.sqlite"
+                )
             await self._conn.commit()
 
     async def upsert(

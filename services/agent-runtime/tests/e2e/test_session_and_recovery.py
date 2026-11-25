@@ -1548,6 +1548,30 @@ async def test_parallel_hard_kill_crash_recovers_progressively_preserving_both_s
     assert st_final.node_outputs["worker_b"].session_ref == ref_b
 
 
+async def test_inflight_table_schema_mismatch_fails_fast_on_startup(tmp_path: Path) -> None:
+    """Gap: stale care_inflight_nodes schema previously crashed lazily on SELECT."""
+    db_path = tmp_path / "stale_schema.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE care_inflight_nodes (
+                thread_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                task_id TEXT,
+                session_ref TEXT,
+                pending_interaction_json TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, node_id)
+            )
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="missing=\\['role'\\]"):
+        async with _make_runner("standard", checkpoint_db=db_path):
+            pass
+
+
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:
     if thread_id == "parallel-hard-kill":
         seen: dict[str, str] = {}
