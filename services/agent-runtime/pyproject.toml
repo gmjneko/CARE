@@ -5,7 +5,7 @@ description = "[CARE] Collaborative Agent Runtime for Enterprises."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "langgraph>=1.0",
+    "langgraph>=1.2.24",
     "langgraph-checkpoint-sqlite>=2.0",
     "pydantic>=2.10",
 ]

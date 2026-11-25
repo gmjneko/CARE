@@ -225,6 +225,14 @@ async def test_live_hot_interaction_respond_in_place_without_restart(tmp_path: P
             ):
                 events.append(ev)
                 if isinstance(ev.payload, InteractionRequestEvent) and ev.payload.blocking:
+                    live = await runner.get_thread_state("single_agent", ev.run_id)
+                    assert live.status == "running" and not live.resumable
+                    with pytest.raises(ValueError, match="already running"):
+                        await anext(runner.resume("single_agent", ev.run_id))
+                    with pytest.raises(ValueError, match="already running"):
+                        await anext(
+                            runner.run("single_agent", "other", tmp_path, thread_id=ev.run_id)
+                        )
                     await runner.respond_interaction(
                         "run-hot-1",
                         InteractionResponse(
@@ -439,96 +447,44 @@ async def test_hard_kill_crash_recovers_session_and_pending_interaction_from_wal
     db_path = tmp_path / "checkpoints.sqlite"
     thread_id = "hard-kill-wal"
 
-    # Step 1: Run planner to completion, then simulate an unrecovered hard crash inside executor
-    # after WAL recorded executor's session_ref + pending_interaction (before executor returns).
-    sess_file = sessions_dir() / "wal-crashed-exec.jsonl"
-    sess_file.parent.mkdir(parents=True, exist_ok=True)
-    sess_file.write_text(json.dumps({"prompt": "original executor turn"}) + "\n", encoding="utf-8")
+    async with _make_runner("standard", checkpoint_db=db_path) as first:
+        async for _ in first.run("plan_and_execute", "First turn", tmp_path, thread_id=thread_id):
+            pass
 
-    pending_req = InteractionRequestEvent(
-        request_id="wal-req-1",
-        kind="user_input",
-        blocking=True,
-        title="Confirm target env",
-        message="Staging or prod?",
-        options=("staging", "prod"),
+    # Kill the actual worker while its RPC child is waiting in the second turn.
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(Path(__file__).resolve()),
+        str(tmp_path),
+        thread_id,
+        stdout=asyncio.subprocess.PIPE,
     )
+    try:
+        assert worker.stdout is not None
+        request_id = (await asyncio.wait_for(worker.stdout.readline(), 15)).decode().strip()
+        assert request_id == "ui-q-1"
+    finally:
+        if worker.returncode is None:
+            worker.kill()
+        await worker.wait()
 
-    def _build_crashing_workflow(
-        run_context: RunContext,
-        *,
-        adapter: str = "pi",
-        endpoint: Any = None,
-        thinking_level: Any = None,
-        persist_session: bool = True,
-    ) -> StateGraph[WorkflowState]:
-        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
-        graph.add_node(
-            "planner",
-            build_agent_node(
-                AgentNodeConfig(
-                    id="planner",
-                    role="planner",
-                    adapter=adapter,
-                    endpoint=endpoint,
-                    thinking_level=thinking_level,
-                    persist_session=persist_session,
-                    tools=("read", "grep", "find", "ls"),
-                    append_system_prompt="You are the Planner agent.",
-                    prompt_builder=lambda s: f"Plan: {s['prompt']}",
-                ),
-                run_context,
-            ),
-        )
-
-        async def _crashing_executor(state: WorkflowState) -> dict[str, Any]:
-            assert run_context.inflight_store is not None
-            await run_context.inflight_store.upsert(
-                state["thread_id"],
-                "executor",
-                session_ref=str(sess_file),
-                pending_interaction=pending_req,
-            )
-            raise RuntimeError("simulated kill -9 before checkpoint commit")
-
-        graph.add_node("executor", _crashing_executor)
-        graph.add_edge(START, "planner")
-        graph.add_edge("planner", "executor")
-        graph.add_edge("executor", END)
-        return graph
-
-    async with _make_runner("standard", checkpoint_db=db_path) as runner1:
-        with pytest.raises(RuntimeError, match="simulated kill -9"):
-            async for _ in runner1.run(
-                _build_crashing_workflow,
-                "Deploy service",
-                tmp_path,
-                thread_id=thread_id,
-            ):
-                pass
-
-    # Step 2: Brand-new Runner with real plan_and_execute recovers from SQLite checkpoint + WAL!
-    resumed_events: list[RuntimeEvent] = []
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner2:
         st = await runner2.get_thread_state("plan_and_execute", thread_id)
         assert st.status == "crashed"
-        assert st.resumable is True
-        assert st.interrupted_node_id == "executor"
-        assert st.pending_interaction == pending_req
-        assert st.node_outputs["executor"].session_ref == str(sess_file)
-
-        async for ev in runner2.resume(
-            "plan_and_execute",
-            thread_id,
-            interaction_response=InteractionResponse(
-                request_id="wal-req-1",
-                decision="approve",
-                value="staging",
-            ),
-        ):
-            resumed_events.append(ev)
-
+        assert st.pending_interaction and st.pending_interaction.request_id == request_id
+        ref = st.node_outputs["executor"].session_ref
+        resumed_events = [
+            ev
+            async for ev in runner2.resume(
+                "plan_and_execute",
+                thread_id,
+                interaction_response=InteractionResponse(
+                    request_id=request_id, decision="approve", value="staging"
+                ),
+            )
+        ]
         after = await runner2.get_thread_state("plan_and_execute", thread_id)
+        assert ref and after.node_outputs["executor"].session_ref == ref
 
     assert isinstance(resumed_events[0].payload, WorkflowResumedEvent)
     assert resumed_events[0].payload.resumed_from == "crash"
@@ -623,7 +579,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
 
     # Brand-new Runner resumes across process restart without re-running planner
     run2_events: list[RuntimeEvent] = []
-    async with _make_runner("standard", checkpoint_db=db_path) as runner2:
+    async with _make_runner("ui_question", checkpoint_db=db_path) as runner2:
         st = await runner2.get_thread_state(_build_gated_workflow, thread_id)
         assert st.status == "interrupted"
         assert st.resumable is True
@@ -633,14 +589,93 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
             _build_gated_workflow,
             thread_id,
             resume_value={"approved": True},
+            interaction_mode="suspend",
         ):
             run2_events.append(ev)
+
+    pause = run2_events[-1].payload
+    assert isinstance(pause, WorkflowInterruptedEvent) and pause.interaction
+    async with _make_runner("ui_question", checkpoint_db=db_path) as runner3:
+        with pytest.raises(ValueError, match="request_id"):
+            async for _ in runner3.resume(
+                _build_gated_workflow,
+                thread_id,
+                interaction_response=InteractionResponse(request_id="stale", decision="deny"),
+            ):
+                pass
+        run3_events = [
+            ev
+            async for ev in runner3.resume(
+                _build_gated_workflow,
+                thread_id,
+                interaction_response=InteractionResponse(
+                    request_id=pause.interaction.request_id, decision="approve", value="redis"
+                ),
+            )
+        ]
 
     assert isinstance(run2_events[0].payload, WorkflowResumedEvent)
     assert run2_events[0].payload.resumed_from == "workflow_interrupt"
     started_nodes = [ev.payload.node_id for ev in run2_events if ev.payload.type == "node.started"]
     assert started_nodes == ["executor"]
-    final = run2_events[-1].payload
+    final = run3_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
-    assert "[EXEC tools=default received_plan=True]" in final.final_output
+    assert "redis" in final.final_output
+
+
+async def test_committed_graph_stays_complete_if_worker_dies_before_stream_cleanup(
+    tmp_path: Path,
+) -> None:
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(Path(__file__).resolve()),
+        str(tmp_path),
+        "committed",
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert worker.stdout is not None
+        final_output = (await asyncio.wait_for(worker.stdout.readline(), 15)).decode().strip()
+        assert final_output
+    finally:
+        if worker.returncode is None:
+            worker.kill()
+        await worker.wait()
+    async with _make_runner("standard", checkpoint_db=tmp_path / "checkpoints.sqlite") as runner:
+        state = await runner.get_thread_state("single_agent", "committed")
+        assert state.status == "completed" and not state.resumable
+        assert state.node_outputs["agent"].summary == final_output
+        assert not state.inflight_nodes
+        with pytest.raises(ValueError, match="already completed"):
+            await anext(runner.resume("single_agent", "committed"))
+
+
+async def _run_until_killed(workspace: Path, thread_id: str) -> None:
+    if thread_id == "committed":
+        async with _make_runner("standard", checkpoint_db=workspace / "checkpoints.sqlite") as r:
+            async for event in r.run("single_agent", "Finish", workspace, thread_id=thread_id):
+                if event.payload.type == "node.completed":
+                    # Stop consuming. Wait until LangGraph commits before signalling the parent.
+                    async with asyncio.timeout(10):
+                        while True:
+                            snap = await r.get_checkpoint_state("single_agent", thread_id)
+                            if snap["node_outputs"].get("agent"):
+                                print(snap["latest_output"], flush=True)
+                                await asyncio.Event().wait()
+                            await asyncio.sleep(0.01)
+        return
+    async with _make_runner("ui_question", checkpoint_db=workspace / "checkpoints.sqlite") as r:
+        async for event in r.run(
+            "plan_and_execute",
+            "Second turn",
+            workspace,
+            thread_id=thread_id,
+            interaction_mode="wait",
+        ):
+            if isinstance(event.payload, InteractionRequestEvent):
+                print(event.payload.request_id, flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(_run_until_killed(Path(sys.argv[1]), sys.argv[2]))

@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.config import get_stream_writer
-from langgraph.graph import END
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import get_runtime
+from langgraph.types import interrupt
 
 from agent_runtime.adapters.base import (
     AgentSession,
@@ -22,7 +25,7 @@ from agent_runtime.adapters.base import (
 from agent_runtime.adapters.errors import AdapterError, AdapterProtocolError
 from agent_runtime.adapters.registry import AdapterRegistry
 from agent_runtime.orchestrator.inflight import InflightNodeStore
-from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
+from agent_runtime.orchestrator.state import AgentChanges, NodeOutput, WorkflowState
 from agent_runtime.protocol.events import (
     AgentEvent,
     InteractionRequestEvent,
@@ -92,23 +95,18 @@ class RunContext:
     inflight_store: InflightNodeStore | None = None
 
 
+class AgentTurnState(WorkflowState):
+    continuation: str | None
+
+
 def build_agent_node(
     node_config: AgentNodeConfig,
     run_context: RunContext,
-) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Create an async LangGraph node function bound to `node_config` and `run_context`."""
+) -> CompiledStateGraph:
+    """Run Pi and await cold decisions in separate checkpointed graph steps."""
 
-    async def _agent_node(state: WorkflowState) -> dict[str, Any]:
-        if state["status"] != "running":
-            return {}
-
+    async def run_turn(state: AgentTurnState) -> dict[str, Any]:
         prev_output = state["node_outputs"].get(node_config.id)
-        is_resume = bool(state.get("resume_mode", False))
-
-        # 恢复模式下自动跳过本轮之前已经 completed 的上游节点，避免重复调用 LLM
-        if is_resume and prev_output is not None and prev_output.status == "completed":
-            return {}
-
         thread_id = state["thread_id"]
         # Command(resume=...) 恢复时 state['run_id'] 可能是挂起前旧值，优先取当前活跃 run_id
         run_id = run_context.active_run_ids.get(thread_id) or state["run_id"]
@@ -120,6 +118,25 @@ def build_agent_node(
             if (node_config.persist_session and prev_output is not None)
             else None
         )
+
+        info = get_runtime().execution_info
+        assert info is not None
+        task_id = info.task_id
+        inflight = run_context.inflight_store
+        if inflight is not None:
+            for row in await inflight.list_for_thread(thread_id):
+                if row.task_id == task_id:
+                    # The worker died inside this specific turn. Commit its Pi data
+                    # before the separate wait step consumes a durable resume command.
+                    output = NodeOutput(
+                        node_id=node_config.id,
+                        role=node_config.role,
+                        status="interrupted",
+                        summary="",
+                        session_ref=row.session_ref,
+                        pending_interaction=row.pending_interaction,
+                    )
+                    return {"status": "interrupted", "node_outputs": {node_config.id: output}}
 
         session_config = SessionConfig(
             cwd=Path(state["workspace_dir"]),
@@ -146,12 +163,16 @@ def build_agent_node(
             )
         )
 
-        prompt = _resolve_node_prompt(node_config, state, prev_session_ref=prev_session_ref)
+        continuation = state.get("continuation")
+        if continuation and prev_session_ref:
+            prompt = continuation
+        else:
+            prompt = node_config.prompt_builder(state)
+            if continuation:
+                prompt = f"{prompt}\n\n{continuation}"
         terminal: TurnCompletedEvent | None = None
         session_ref: str | None = prev_session_ref
         interrupted_interaction: InteractionRequestEvent | None = None
-        inflight = run_context.inflight_store
-
         async with adapter.open_session(session_config) as session:
             run_context.active_sessions[run_id] = session
             session_ref = session.session_ref or session_ref
@@ -160,6 +181,7 @@ def build_agent_node(
                 await inflight.upsert(
                     thread_id,
                     node_config.id,
+                    task_id=task_id,
                     session_ref=session_ref,
                     pending_interaction=None,
                 )
@@ -178,6 +200,7 @@ def build_agent_node(
                             run_id=run_id,
                             thread_id=thread_id,
                             node_id=node_config.id,
+                            task_id=task_id,
                             session_ref=session_ref,
                             event=event,
                         )
@@ -197,80 +220,59 @@ def build_agent_node(
                     del run_context.active_sessions[run_id]
                 run_context.pending_interactions.pop(run_id, None)
 
-        # 情况 1：阻塞交互进入冷挂起，或等待热交互期间底层 Pi 子进程意外死亡
-        if interrupted_interaction is not None:
-            output = NodeOutput(
-                node_id=node_config.id,
-                role=node_config.role,
-                status="interrupted",
-                summary=terminal.final_text if terminal is not None else "",
-                session_ref=session_ref,
-                usage=terminal.usage if terminal is not None else None,
-                pending_interaction=interrupted_interaction,
-            )
-            _emit_node_completed(writer, output)
-            return {
-                "node_outputs": {node_config.id: output},
-                "status": "interrupted",
-                "failure": None,
-                "resume_mode": False,
-                "resume_prompt": None,
-            }
-
-        # 情况 2：非交互等待期触发了 runner.suspend() / suspend_all()（例如关闭软件）
-        if run_id in run_context.suspended_runs and (
-            terminal is None or terminal.status == "aborted"
-        ):
-            output = NodeOutput(
-                node_id=node_config.id,
-                role=node_config.role,
-                status="interrupted",
-                summary=terminal.final_text if terminal is not None else "",
-                session_ref=session_ref,
-                usage=terminal.usage if terminal is not None else None,
-                pending_interaction=None,
-            )
-            _emit_node_completed(writer, output)
-            return {
-                "node_outputs": {node_config.id: output},
-                "status": "interrupted",
-                "failure": None,
-                "resume_mode": False,
-                "resume_prompt": None,
-            }
-
-        if terminal is None:
+        suspended = interrupted_interaction is not None or (
+            run_id in run_context.suspended_runs
+            and (terminal is None or terminal.status == "aborted")
+        )
+        if terminal is None and not suspended:
             raise AdapterProtocolError(
-                f"Agent node '{node_config.id}' ended turn without TurnCompletedEvent"
+                f"Agent node '{node_config.id}' ended without TurnCompletedEvent"
             )
-
         output = NodeOutput(
             node_id=node_config.id,
             role=node_config.role,
-            status=terminal.status,
-            summary=terminal.final_text,
+            status=terminal.status if terminal and not suspended else "interrupted",
+            summary=terminal.final_text if terminal else "",
             session_ref=session_ref,
-            usage=terminal.usage,
-            failure=terminal.failure,
-            pending_interaction=None,
+            usage=terminal.usage if terminal else None,
+            failure=terminal.failure if terminal and not suspended else None,
+            pending_interaction=interrupted_interaction,
         )
         _emit_node_completed(writer, output)
-
-        next_status = "running" if terminal.status == "completed" else terminal.status
         return {
             "node_outputs": {node_config.id: output},
-            "latest_output": terminal.final_text
-            if terminal.status == "completed"
+            "latest_output": output.summary
+            if output.status == "completed"
             else state["latest_output"],
-            "status": next_status,
-            "failure": terminal.failure,
-            # 一旦恢复目标节点执行结束，清空恢复标志，确保下游节点按正常 prompt_builder 执行
-            "resume_mode": False,
-            "resume_prompt": None,
+            "status": "running" if output.status == "completed" else output.status,
+            "failure": output.failure,
         }
 
-    _agent_node.__name__ = f"agent_node_{node_config.id}"
-    return _agent_node
+    def await_resume(state: AgentTurnState) -> dict[str, Any]:
+        output = state["node_outputs"][node_config.id]
+        reply = interrupt({"node_id": output.node_id, "status": output.status})
+        continuation = reply["prompt"]
+        if not continuation and output.session_ref:
+            continuation = "Continue from where you left off."
+        return {"status": "running", "failure": None, "continuation": continuation}
+
+    graph = StateGraph(AgentTurnState, input_schema=WorkflowState, output_schema=AgentChanges)
+    graph.add_node("run_turn", run_turn)
+    graph.add_node("await_resume", await_resume)
+
+    def entry(state: WorkflowState) -> str:
+        if state["status"] == "running":
+            return "run_turn"
+        # An imported checkpoint from the pre-subgraph runtime enters at its saved pause.
+        prior = state["node_outputs"].get(node_config.id)
+        return "await_resume" if prior and prior.status == state["status"] else END
+
+    graph.add_conditional_edges(START, entry)
+    graph.add_conditional_edges(
+        "run_turn", lambda s: END if s["status"] == "running" else "await_resume"
+    )
+    graph.add_edge("await_resume", "run_turn")
+    return graph.compile(name=node_config.id)
 
 
 def continue_if_running(next_node: str) -> Callable[[WorkflowState], str]:
@@ -280,22 +282,6 @@ def continue_if_running(next_node: str) -> Callable[[WorkflowState], str]:
         return next_node if state["status"] == "running" else END
 
     return _route
-
-
-def _resolve_node_prompt(
-    node_config: AgentNodeConfig,
-    state: WorkflowState,
-    *,
-    prev_session_ref: str | None,
-) -> str:
-    """决定本次节点 Turn 发送的提示词：恢复模式优先使用 resume_prompt，否则走 prompt_builder。"""
-    if state.get("resume_mode", False):
-        resume_prompt = state.get("resume_prompt")
-        if resume_prompt:
-            return resume_prompt
-        if prev_session_ref:
-            return "Continue from where you left off."
-    return node_config.prompt_builder(state)
 
 
 def _emit_node_completed(writer: Callable[[Any], None], output: NodeOutput) -> None:
@@ -322,15 +308,37 @@ async def _handle_blocking_interaction(
     run_id: str,
     thread_id: str,
     node_id: str,
+    task_id: str,
     session_ref: str | None,
     event: InteractionRequestEvent,
 ) -> Literal["responded", "interrupted"]:
     """处理节点内阻塞式交互请求：支持回调、无头自动取消、即时冷挂起与在线热等待（含进程退出监听）。"""
+    inflight = run_context.inflight_store
+    if inflight is not None:
+        await inflight.upsert(
+            thread_id,
+            node_id,
+            task_id=task_id,
+            session_ref=session_ref,
+            pending_interaction=event,
+        )
+
+    async def clear_pending() -> None:
+        if inflight is not None:
+            await inflight.upsert(
+                thread_id,
+                node_id,
+                task_id=task_id,
+                session_ref=session_ref,
+                pending_interaction=None,
+            )
+
     handler = run_context.interaction_handlers.get(run_id)
     if handler is not None:
         writer(StreamPacket(node_id=node_id, event=event))
         response = await handler(event)
         await session.respond_interaction(response)
+        await clear_pending()
         return "responded"
 
     mode = run_context.interaction_modes.get(run_id, "cancel")
@@ -340,23 +348,13 @@ async def _handle_blocking_interaction(
         await session.respond_interaction(
             InteractionResponse(request_id=event.request_id, decision="cancel")
         )
+        await clear_pending()
         return "responded"
 
     if mode == "suspend":
         writer(StreamPacket(node_id=node_id, event=event))
         await _gracefully_cancel_for_suspend(session, event.request_id)
         return "interrupted"
-
-    # mode == "wait"：先写 SQLite 预写记录并注册 pending_interactions，再向外部发射事件，
-    # 保证消费者拿到 InteractionRequestEvent 时 WAL 已落盘且 respond_interaction() 随时可用。
-    inflight = run_context.inflight_store
-    if inflight is not None:
-        await inflight.upsert(
-            thread_id,
-            node_id,
-            session_ref=session_ref,
-            pending_interaction=event,
-        )
 
     loop = asyncio.get_running_loop()
     reply_future: asyncio.Future[InteractionResponse | _SuspendSignal] = loop.create_future()
@@ -392,18 +390,12 @@ async def _handle_blocking_interaction(
         return "interrupted"
 
     # 情况 C：收到在线热回复，清除预写中的待回复弹窗并原路回传给存活的 Pi 子进程
-    if inflight is not None:
-        await inflight.upsert(
-            thread_id,
-            node_id,
-            session_ref=session_ref,
-            pending_interaction=None,
-        )
     try:
         await session.respond_interaction(decision)
     except AdapterError:
         # 回传瞬间若子进程刚好断开，平滑降级为冷中断，保留待回复弹窗供 resume 恢复
         return "interrupted"
+    await clear_pending()
     return "responded"
 
 

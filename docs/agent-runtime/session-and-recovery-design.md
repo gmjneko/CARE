@@ -13,7 +13,7 @@
 1. **模型与密钥配置同构**：既支持本地用户在 Electron 设置页直接配置自定义 Base URL、API Key 与模型（BYOK），又能在云端无缝切换为企业统一 AI Gateway，做到 **`agent-runtime` 核心代码零环境分支**。
 2. **连续多轮对话（Vibe Coding 体验）**：同一会话线程（`thread_id`）支持连续多轮交互、跨进程重启不丢上下文，同时严格保持多节点工作流内各节点间的上下文隔离。
 3. **双层中断与恢复（Workflow + Agent 联动）**：不仅支持 Workflow 节点间主动挂起（如 LangGraph `interrupt()`），还完整支持 **Agent 节点内部** 的权限审批、`ask_question` 提问、运行中 `abort` 与限流/崩溃恢复；被中断的节点恢复完成后，Workflow 必须自动继续执行后续下游节点。
-4. **热交互极端故障兜底**：在等待用户审批或回答问题的在线热交互期间，面对 **Pi 子进程被杀**、**用户正常关闭软件** 以及 **极端强杀（`kill -9` / 断电）**，都能确保不卡死、不丢对话历史、重启即可还原现场继续执行。
+4. **热交互极端故障兜底**：在等待用户审批或回答问题的在线热交互期间，面对 **Pi 子进程被杀**、**用户正常关闭软件** 以及 **极端强杀（`kill -9` / 断电）**，重启后应能从已落盘的图步骤和 Pi 会话继续执行。
 
 ---
 
@@ -186,7 +186,7 @@ sequenceDiagram
 在多节点工作流（例如 `planner -> executor -> reviewer`）中，**当 `AgentNode` 内部发生中断时，必须与 Workflow 状态联动恢复**：
 - 若只恢复单个 Agent 会话而不恢复 Workflow，下游 `reviewer` 节点不会被触发；
 - 若重新从头运行 Workflow，已完成的上游 `planner` 节点会被白白重跑；
-- **关键实现约束**：不在 `AgentNode` 内部直接调用 LangGraph `interrupt()`（因为 LangGraph 在 `Command(resume=...)` 时会从头重放调用 `interrupt()` 的节点，若在 `AgentNode` 内调用会导致丢弃未提交的 `session_ref` 且重复触发 LLM）。正确方式是让 `AgentNode` 正常提交包含 `session_ref` 和 `pending_interaction` 的 `NodeOutput` 至 Checkpointer，节点间主动审批才由纯轻量审批节点调用 `interrupt()`。
+- 每个 AgentNode 都是一个子图。`run_turn` 执行 Pi 并提交结果，`await_resume` 调用 `interrupt()` 等待决定。`durability="sync"` 让前一步先落盘。恢复等待节点时只重放获取决定的逻辑，随后才进入新的 Pi turn。
 
 ### 4.2 全场景中断与恢复矩阵
 
@@ -195,10 +195,10 @@ sequenceDiagram
 | 中断类别 | 典型场景 | 挂起 / 结束时产出的事件 | 恢复入口 | 内部恢复行为 |
 | :--- | :--- | :--- | :--- | :--- |
 | **① Agent 节点内在线热交互** | 工具高危权限审批、`ask_question` 提问（进程在线） | 发射 `InteractionRequestEvent(blocking=True)`，流保持挂起等待 | `runner.respond_interaction(run_id, resp)` | 回传 `extension_ui_response` 给存活中的 Pi 子进程，**原地继续当前 tool call，零重跑**。 |
-| **② Agent 节点内冷中断挂起** | 等待热交互时休眠/关软件（`suspend`），或 `interaction_mode="suspend"` | 优雅关闭 Pi、提交 `NodeOutput(status="interrupted", session_ref, pending_interaction)`，发射 `WorkflowInterruptedEvent` | `runner.resume(workflow, thread_id, interaction_response=resp)` | 跳过已 `completed` 的上游节点，用 `--session <session_ref>` 恢复当前节点并送入用户裁决/回答，完成后**自动跑完后续节点**。 |
-| **③ Agent 节点内 `abort` 或 `failed`** | 用户中止、API 限流（429）、网络异常、子进程异常退出 | 保持 fail-fast 语义，发射 `WorkflowCompletedEvent(status="aborted" \| "failed")`，已保留 `session_ref` 与上游输出 | `runner.resume(workflow, thread_id, prompt="继续...")` | 跳过已 `completed` 的上游节点，用 `--session <session_ref>` 带补充指令重入该节点，完成后**自动跑完后续节点**。 |
+| **② Agent 节点内冷中断挂起** | 等待热交互时休眠/关软件（`suspend`），或 `interaction_mode="suspend"` | 优雅关闭 Pi、提交 `NodeOutput(status="interrupted", session_ref, pending_interaction)`，发射 `WorkflowInterruptedEvent` | `runner.resume(workflow, thread_id, interaction_response=resp)` | LangGraph 从该节点的等待点继续，用 `--session <session_ref>` 恢复当前节点并送入用户裁决/回答，完成后**自动跑完后续节点**。 |
+| **③ Agent 节点内 `abort` 或 `failed`** | 用户中止、API 限流（429）、网络异常、子进程异常退出 | 保持 fail-fast 语义，发射 `WorkflowCompletedEvent(status="aborted" \| "failed")`，已保留 `session_ref` 与上游输出 | `runner.resume(workflow, thread_id, prompt="继续...")` | LangGraph 从该节点的等待点继续，用 `--session <session_ref>` 带补充指令重入该节点，完成后**自动跑完后续节点**。 |
 | **④ Workflow 节点间主动挂起** | 任意工作流节点调用 LangGraph `interrupt(payload)`（如计划审批门） | 发射 `WorkflowInterruptedEvent(reason="workflow_interrupt", payload=...)` | `runner.resume(workflow, thread_id, resume_value=decision)` | 自动识别 `snapshot.interrupts`，执行 LangGraph `Command(resume=decision)` 从挂起点继续，不重跑上游。 |
-| **⑤ 进程硬崩溃（`kill -9` / 断电）** | 节点执行或等待热交互中途进程突然消失 | 无终态事件；磁盘保留上游 Checkpoint 与 `care_inflight_nodes` 预写记录 | 重启后 `runner.resume(workflow, thread_id, ...)` | 结合 LangGraph 断点与预写表找回 `session_ref` 和未回答的 `pending_interaction`，跳过已完成上游节点从断点续跑。 |
+| **⑤ 进程硬崩溃（`kill -9` / 断电）** | 节点执行或等待热交互中途进程突然消失 | 无终态事件；磁盘保留上游 Checkpoint 与 `care_inflight_nodes` 预写记录 | 重启后 `runner.resume(workflow, thread_id, ...)` | 结合 LangGraph 断点与预写表找回 `session_ref` 和未回答的 `pending_interaction`，由 LangGraph 从待执行任务续跑。 |
 
 ### 4.3 节点交互策略（`interaction_mode`）
 
@@ -228,7 +228,7 @@ flowchart TD
 
     Interrupted -- "跨进程重启后 runner.resume()" --> ResumeRouter["WorkflowRunner.resume() 自动判定断点类型"]
     Failed -- "用户点击继续/重试 runner.resume()" --> ResumeRouter
-    ResumeRouter -- "跳过已 completed 上游, 带 --session 或 Command(resume)" --> Running
+    ResumeRouter -- "从 checkpoint 继续, 按需带 --session" --> Running
 ```
 
 ---
@@ -255,7 +255,7 @@ flowchart TD
 - **关闭流程**：Electron 主进程退出前（或 Python Sidecar 捕获 `SIGTERM`）调用 `suspend_all()`：
   1. 唤醒所有处于 `"wait"` 的交互 Future 并标记为挂起；
   2. 取消 Pi 当前悬空弹窗并优雅关闭子进程，确保 `~/.care/sessions/<id>.jsonl` 完整刷盘；
-  3. 节点返回 `NodeOutput(status="interrupted", session_ref=..., pending_interaction=...)` 写入 `checkpoints.sqlite`。
+  3. 宿主继续消费各运行的事件流，直到收到终态事件。此时节点返回的 `NodeOutput` 已写入 `checkpoints.sqlite`。
 - **重启体验**：下次启动桌面端查询 `get_thread_state()` 即可还原未完成的权限审批或提问卡片，用户确认后无缝续跑。
 
 ### 5.3 兜底三：极端强杀与断电（`kill -9`）—— SQLite Write-Ahead 预写表
@@ -266,6 +266,7 @@ flowchart TD
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    task_id TEXT,
     session_ref TEXT,
     pending_interaction_json TEXT,
     updated_at TEXT NOT NULL,
@@ -274,9 +275,9 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 ```
 
 **写入与清理生命周期**：
-1. **节点打开会话后立即预写**：`open_session()` 握手拿到 `session.session_ref` 后，立即 `UPSERT (thread_id, node_id, session_ref, NULL)`；
-2. **进入热交互等待前立即预写**：收到阻塞型 `InteractionRequestEvent`、在 `await` 用户回复 **之前**，立即更新该行写入 `pending_interaction_json`；用户回复后清空 `pending_interaction_json`；
-3. **节点提交正式 Checkpoint 后清理**：节点完成（含 `completed` / `interrupted` / `aborted` / `failed`）并提交至 LangGraph 后，在 `finally` / 提交后删除对应预写行。
+1. **节点打开会话后立即预写**：`open_session()` 握手拿到 `session.session_ref` 后，立即 `UPSERT (thread_id, node_id, task_id, session_ref, NULL)`；
+2. **进入热交互等待前立即预写**：收到阻塞型 `InteractionRequestEvent`、在 `await` 用户回复 **之前**，立即更新该行写入 `pending_interaction_json`；向 Pi 发送回复成功后清空 `pending_interaction_json`；
+3. **按任务对账并清理**。一次图执行结束后读取已提交的 checkpoint，删除已离开执行位置的预写行。若消费者提前退出或 worker 被强杀，后续查询只展示仍匹配待执行 `task_id` 的记录。
 
 **强杀重启后的恢复过程**：
 - 即使 `kill -9` 发生在等待弹窗的瞬间，重启后：
@@ -287,7 +288,7 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 ### 5.4 热交互与冷恢复在 Pi 层的精确语义边界
 
 - **热交互成功（进程未中断）**：直接向活着的 Pi 子进程回传 `extension_ui_response`，Pi 在原 tool call / `ask_question` 钩子内原地继续，零重发、零额外 Token。
-- **降级为冷恢复（Pi 已退出或进程重启）**：原内存调用栈已销毁，但 `~/.care/sessions/<id>.jsonl` 保留了中断前全部消息与已完成工具结果；`runner.resume()` 通过 `--session <session_ref>` 恢复上下文，并将用户的审批决定或提问回答格式化为续接提示词交给模型继续完成后续工作。
+- **降级为冷恢复（Pi 已退出或进程重启）**：原内存调用栈已销毁，但 `~/.care/sessions/<id>.jsonl` 提供 Pi 已经持久化的消息和工具结果；`runner.resume()` 通过 `--session <session_ref>` 恢复上下文，并将用户的审批决定或提问回答格式化为续接提示词交给模型继续完成后续工作。
 
 ---
 
@@ -344,8 +345,6 @@ class WorkflowState(TypedDict):
     latest_output: str
     status: Literal["running", "interrupted", "completed", "failed", "aborted"]
     failure: AgentFailure | None
-    resume_mode: bool                # True 时跳过已完成节点，仅恢复中断/失败/未执行节点
-    resume_prompt: str | None        # 恢复节点时注入的用户决策或补充指令
 ```
 
 ### 6.3 `WorkflowRunner` 公共接口设计（`orchestrator/runner.py`）
@@ -361,20 +360,12 @@ class WorkflowState(TypedDict):
 
 ### 6.4 `WorkflowRunner.resume()` 确定性判定顺序
 
-系统根据持久化状态自动判定恢复路径，调用方无需手动区分内部状态：
+1. 图里有人工审批或 Agent 等待点时，`Command(resume=...)` 将裁决送回对应的 `interrupt()`。Agent 的冷回复必须匹配持久化的 `request_id`。
+2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_resume` 后沿用同一套回复流程。已完成的上游审批、普通节点和其他 Agent 均保留在原来的图位置。
+3. `snapshot.next` 为空的正常结束线程用 `run()` 开始新一轮。跨轮只复用节点会话。升级旧版数据库时，Runner 可把旧 Agent 的终态断点一次性导入等待步骤。
+4. 同一个 Runner 对同一线程串行执行。线程正在线运行时，状态查询返回 `running`，外部通过 `respond_interaction()` 回应热交互。多个 worker 共享一个数据库时，宿主需要在进程间保证单线程所有权。
 
-1. **`snapshot.interrupts` 非空**（LangGraph 节点间主动挂起）：
-   - 发射 `WorkflowResumedEvent(resumed_from="workflow_interrupt")`；
-   - 执行 `compiled.astream(Command(resume=resume_value), config=...)`。
-2. **`care_inflight_nodes` 存在残留记录或 `snapshot.next` 非空**（进程硬崩溃 `kill -9`）：
-   - 发射 `WorkflowResumedEvent(resumed_from="crash")`；
-   - 将预写表中的 `session_ref` 与用户回复（`interaction_response` / `prompt`）合成恢复输入，跳过已 `completed` 节点，从中断节点续跑并继续执行下游节点。
-3. **Checkpoint 终态为 `interrupted` / `aborted` / `failed`**（冷挂起或节点中止/失败）：
-   - 发射 `WorkflowResumedEvent(resumed_from="agent_interaction" | "failure")`；
-   - 以 `resume_mode=True` 重入图：已 `completed` 节点直接跳过；被中断/失败节点自动带其 `session_ref`（`--session`）与 `resume_prompt` 恢复执行；后续尚未运行的下游节点照常继续执行。
-4. **不存在对应 `thread_id` 或已正常 `completed`**：
-   - Fail-fast 抛出明确异常（已正常结束的连续对话请直接调用 `run(..., thread_id=...)`）。
-
+冷恢复会在已有 Pi 会话上开始一个新 turn。写入文件、部署等工具操作的重复执行保护由工具层负责。
 ---
 
 ## 7. 实施路线与 E2E 验证矩阵
@@ -397,6 +388,6 @@ class WorkflowState(TypedDict):
 4. **热交互等待期 Pi 子进程意外死亡**：等待热交互期间强杀 `fake_pi_rpc` 子进程，验证不会死等、自动落盘 `status="interrupted"` 并发出 `WorkflowInterruptedEvent`，随后 `runner.resume()` 带原 `session_ref` 恢复并跑完下游节点。
 5. **优雅挂起与跨重启恢复（`suspend` / `suspend_all`）**：热交互等待期间调用 `suspend_all()`，销毁并重建 `WorkflowRunner` 模拟软件重启，通过 `get_thread_state()` 找回待审批弹窗，再调用 `resume()` 跳过上游 `planner` 直接恢复 `executor` 完成全流程。
 6. **节点 `abort` / `failed` 后断点续跑**：`plan_and_execute` 在 `executor` 阶段触发限流失败或 `abort`，随后 `resume()` 跳过已完成 `planner`，带 `executor` 原 `session_ref` 续跑成功。
-7. **极端 `kill -9` 预写恢复模拟**：在 `care_inflight_nodes` 预写记录存在而当前节点尚未提交 Checkpoint 的状态下重建 `WorkflowRunner`，验证 `get_thread_state()` 与 `resume()` 完整找回 `session_ref` 和 `pending_interaction` 并恢复执行。
+7. **第二轮硬崩溃**。第一轮完成后，在同一线程第二轮的 executor 发出问题时杀死实际 Python worker。重启后检查请求与会话引用，验证只启动 executor 并返回本轮答案。
 8. **Workflow 节点间 LangGraph `interrupt()` 跨重启恢复**：自定义含 `interrupt()` 审批门的两节点工作流，挂起后重建 `WorkflowRunner`，调用 `resume(resume_value=...)` 验证上游不重跑、下游正常完成。
 9. **真实 Pi CLI 实机验证**：以本机 `pi --mode rpc --offline` 实测自定义 `base_url`（`PI_CODING_AGENT_DIR` 在 `~/.care/tmp/`）+ `--session-dir ~/.care/sessions/` + `--session <session_ref>` 完整握手与恢复。

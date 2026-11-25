@@ -18,6 +18,7 @@ _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS care_inflight_nodes (
     thread_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
+    task_id TEXT,
     session_ref TEXT,
     pending_interaction_json TEXT,
     updated_at TEXT NOT NULL,
@@ -33,6 +34,7 @@ class InflightNodeRecord(BaseModel):
 
     thread_id: str
     node_id: str
+    task_id: str | None
     session_ref: str | None = None
     pending_interaction: InteractionRequestEvent | None = None
     updated_at: str
@@ -49,6 +51,10 @@ class InflightNodeStore:
         """初始化预写表（幂等）。"""
         async with self._lock:
             await self._conn.execute(_CREATE_TABLE_SQL)
+            async with self._conn.execute("PRAGMA table_info(care_inflight_nodes)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            if "task_id" not in columns:
+                await self._conn.execute("ALTER TABLE care_inflight_nodes ADD COLUMN task_id TEXT")
             await self._conn.commit()
 
     async def upsert(
@@ -56,6 +62,7 @@ class InflightNodeStore:
         thread_id: str,
         node_id: str,
         *,
+        task_id: str,
         session_ref: str | None,
         pending_interaction: InteractionRequestEvent | None,
     ) -> None:
@@ -68,23 +75,25 @@ class InflightNodeStore:
             await self._conn.execute(
                 """
                 INSERT INTO care_inflight_nodes
-                    (thread_id, node_id, session_ref, pending_interaction_json, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (thread_id, node_id, task_id, session_ref, pending_interaction_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(thread_id, node_id) DO UPDATE SET
-                    session_ref = COALESCE(excluded.session_ref, care_inflight_nodes.session_ref),
+                    task_id = excluded.task_id,
+                    session_ref = excluded.session_ref,
                     pending_interaction_json = excluded.pending_interaction_json,
                     updated_at = excluded.updated_at
                 """,
-                (thread_id, node_id, session_ref, interaction_json, now),
+                (thread_id, node_id, task_id, session_ref, interaction_json, now),
             )
             await self._conn.commit()
 
-    async def delete(self, thread_id: str, node_id: str) -> None:
+    async def delete(self, record: InflightNodeRecord) -> None:
         """在节点正式提交 Checkpoint 后清理对应的预写记录。"""
         async with self._lock:
             await self._conn.execute(
-                "DELETE FROM care_inflight_nodes WHERE thread_id = ? AND node_id = ?",
-                (thread_id, node_id),
+                "DELETE FROM care_inflight_nodes WHERE thread_id = ? AND node_id = ? "
+                "AND task_id IS ?",
+                (record.thread_id, record.node_id, record.task_id),
             )
             await self._conn.commit()
 
@@ -93,7 +102,8 @@ class InflightNodeStore:
         async with self._lock:
             cursor = await self._conn.execute(
                 """
-                SELECT thread_id, node_id, session_ref, pending_interaction_json, updated_at
+                SELECT thread_id, node_id, task_id, session_ref,
+                       pending_interaction_json, updated_at
                 FROM care_inflight_nodes
                 WHERE thread_id = ?
                 ORDER BY updated_at ASC
@@ -103,7 +113,7 @@ class InflightNodeStore:
             rows = await cursor.fetchall()
 
         records: list[InflightNodeRecord] = []
-        for row_thread, row_node, row_session, row_interaction_json, row_updated in rows:
+        for row_thread, row_node, task_id, row_session, row_interaction_json, row_updated in rows:
             interaction = (
                 InteractionRequestEvent.model_validate_json(row_interaction_json)
                 if row_interaction_json
@@ -113,6 +123,7 @@ class InflightNodeStore:
                 InflightNodeRecord(
                     thread_id=row_thread,
                     node_id=row_node,
+                    task_id=task_id,
                     session_ref=row_session,
                     pending_interaction=interaction,
                     updated_at=row_updated,

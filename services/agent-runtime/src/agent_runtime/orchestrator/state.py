@@ -31,22 +31,18 @@ def merge_node_outputs(
     return {**left, **right}
 
 
-class WorkflowState(TypedDict):
-    """Minimal state carried across LangGraph nodes and persisted in checkpointers.
+class AgentChanges(TypedDict):
+    node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
+    latest_output: str
+    status: Literal["running", "interrupted", "completed", "failed", "aborted"]
+    failure: AgentFailure | None
 
-    Raw token deltas and verbose Pi transcripts stay on the ephemeral event stream
-    and are deliberately excluded from WorkflowState.
-    """
+
+class WorkflowState(AgentChanges):
+    """Persistent workflow state shared with each agent subgraph."""
 
     run_id: str
     thread_id: str
     workflow_id: str
     prompt: str
     workspace_dir: str
-    node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
-    latest_output: str
-    status: Literal["running", "interrupted", "completed", "failed", "aborted"]
-    failure: AgentFailure | None
-    # 仅在 runner.resume() 恢复中断/失败/崩溃线程时生效；恢复节点成功完成后即清空
-    resume_mode: bool
-    resume_prompt: str | None
