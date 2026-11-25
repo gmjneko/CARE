@@ -87,10 +87,10 @@ class RunContext:
 
     registry: AdapterRegistry
     active_run_ids: dict[str, str] = field(default_factory=dict)
-    active_sessions: dict[str, AgentSession] = field(default_factory=dict)
+    active_sessions: dict[str, dict[str, AgentSession]] = field(default_factory=dict)
     interaction_handlers: dict[str, InteractionHandler] = field(default_factory=dict)
     interaction_modes: dict[str, InteractionMode] = field(default_factory=dict)
-    pending_interactions: dict[str, PendingInteraction] = field(default_factory=dict)
+    pending_interactions: dict[str, dict[str, PendingInteraction]] = field(default_factory=dict)
     suspended_runs: set[str] = field(default_factory=set)
     inflight_store: InflightNodeStore | None = None
 
@@ -174,7 +174,7 @@ def build_agent_node(
         session_ref: str | None = prev_session_ref
         interrupted_interaction: InteractionRequestEvent | None = None
         async with adapter.open_session(session_config) as session:
-            run_context.active_sessions[run_id] = session
+            run_context.active_sessions.setdefault(run_id, {})[node_config.id] = session
             session_ref = session.session_ref or session_ref
             # 握手拿到 session_ref 后立刻写入预写表，防止节点运行中途遭遇 kill -9 丢失会话指针
             if inflight is not None:
@@ -218,9 +218,16 @@ def build_agent_node(
 
                 session_ref = session.session_ref or session_ref
             finally:
-                if run_context.active_sessions.get(run_id) is session:
-                    del run_context.active_sessions[run_id]
-                run_context.pending_interactions.pop(run_id, None)
+                sessions = run_context.active_sessions.get(run_id)
+                if sessions is not None and sessions.get(node_config.id) is session:
+                    del sessions[node_config.id]
+                    if not sessions:
+                        run_context.active_sessions.pop(run_id, None)
+                pending_map = run_context.pending_interactions.get(run_id)
+                if pending_map is not None:
+                    pending_map.pop(node_config.id, None)
+                    if not pending_map:
+                        run_context.pending_interactions.pop(run_id, None)
 
         suspended = interrupted_interaction is not None or (
             run_id in run_context.suspended_runs
@@ -361,21 +368,25 @@ async def _handle_blocking_interaction(
 
     loop = asyncio.get_running_loop()
     reply_future: asyncio.Future[InteractionResponse | _SuspendSignal] = loop.create_future()
-    run_context.pending_interactions[run_id] = PendingInteraction(
+    run_context.pending_interactions.setdefault(run_id, {})[node_id] = PendingInteraction(
         request=event,
         future=reply_future,
     )
     writer(StreamPacket(node_id=node_id, event=event))
 
     # 并发监听底层 Pi 子进程退出，避免等待用户输入期间 Pi 崩溃/被杀导致永久死等
-    closed_task = asyncio.create_task(session.wait_closed(), name=f"wait-closed-{run_id}")
+    closed_task = asyncio.create_task(session.wait_closed(), name=f"wait-closed-{run_id}-{node_id}")
     try:
         await asyncio.wait(
             {reply_future, closed_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
-        run_context.pending_interactions.pop(run_id, None)
+        pending_map = run_context.pending_interactions.get(run_id)
+        if pending_map is not None:
+            pending_map.pop(node_id, None)
+            if not pending_map:
+                run_context.pending_interactions.pop(run_id, None)
         if not closed_task.done():
             closed_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

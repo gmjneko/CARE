@@ -283,16 +283,36 @@ class NodeCompletedEvent(BaseModel):
     failure: AgentFailure | None = None
 
 
+PendingInterruptKind = Literal[
+    "workflow_interrupt",
+    "agent_interaction",
+    "suspended",
+    "failed",
+    "aborted",
+    "crashed",
+]
+
+
+class PendingInterrupt(BaseModel):
+    """一个等待外部决策或恢复的挂起分支（Agent 节点内暂停、Workflow interrupt 或崩溃任务）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    interrupt_id: str | None = None
+    node_id: str
+    kind: PendingInterruptKind
+    interaction: InteractionRequestEvent | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    failure: AgentFailure | None = None
+
+
 class WorkflowInterruptedEvent(BaseModel):
     """工作流因节点间 interrupt() 或节点内待回复交互/挂起而暂停时发射的终态事件。"""
 
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.interrupted"] = "workflow.interrupted"
-    reason: Literal["workflow_interrupt", "agent_interaction", "suspended"]
-    node_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-    interaction: InteractionRequestEvent | None = None
+    interrupts: tuple[PendingInterrupt, ...] = ()
 
 
 class WorkflowCompletedEvent(BaseModel):

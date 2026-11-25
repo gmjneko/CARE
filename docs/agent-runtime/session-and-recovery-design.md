@@ -205,7 +205,7 @@ sequenceDiagram
 | **① Agent 节点内在线热交互** | 工具高危权限审批、`ask_question` 提问（进程在线） | 发射 `InteractionRequestEvent(blocking=True)`，流保持挂起等待 | `runner.respond_interaction(run_id, resp)` | 回传 `extension_ui_response` 给存活中的 Pi 子进程，**原地继续当前 tool call，零重跑**。 |
 | **② Agent 节点内冷中断挂起** | 等待热交互时休眠/关软件（`suspend`），或 `interaction_mode="suspend"` | 优雅关闭 Pi、提交 `NodeOutput(status="interrupted", session_ref, pending_interaction)`，发射 `WorkflowInterruptedEvent` | `runner.resume(workflow, thread_id, interaction_response=resp)` | LangGraph 从该节点的等待点继续，用 `--session <session_ref>` 恢复当前节点并送入用户裁决/回答，完成后**自动跑完后续节点**。 |
 | **③ Agent 节点内 `abort` 或 `failed`** | 用户中止、API 限流（429）、网络异常、子进程异常退出 | 保持 fail-fast 语义，发射 `WorkflowCompletedEvent(status="aborted" \| "failed")`，已保留 `session_ref` 与上游输出 | `runner.resume(workflow, thread_id, prompt="继续...")` 或直接 `runner.run(...)` 开新轮 | `resume()` 从该节点等待点原地续跑并跑完下游；直接 `run()` 则自动放弃旧断点，保留已有 `session_ref` 从 `START` 开启新一轮。 |
-| **④ Workflow 节点间主动挂起** | 任意工作流节点调用 LangGraph `interrupt(payload)`（如计划审批门） | 发射 `WorkflowInterruptedEvent(reason="workflow_interrupt", payload=...)` | `runner.resume(workflow, thread_id, resume_value=decision)` | 自动识别 `snapshot.interrupts`，通过 `Command(resume=decision)` 重放调用 `interrupt()` 的节点，已提交的上游结果保留。 |
+| **④ Workflow 节点间主动挂起** | 任意工作流节点调用 LangGraph `interrupt(payload)`（如计划审批门） | 发射 `WorkflowInterruptedEvent(interrupts=(PendingInterrupt(kind="workflow_interrupt", payload=...),))` | `runner.resume(workflow, thread_id, resume_value=decision)` | 自动识别 `snapshot.interrupts`，通过 `Command(resume={interrupt_id: decision})` 重放调用 `interrupt()` 的节点，已提交的上游结果保留。 |
 | **⑤ 进程硬崩溃（`kill -9` / 断电）** | 节点执行或等待热交互中途进程突然消失 | 无终态事件；磁盘保留上游 Checkpoint 与 `care_inflight_nodes` 预写记录 | 重启后 `runner.resume(workflow, thread_id, ...)` | 结合 LangGraph 断点与预写表找回 `session_ref` 和未回答的 `pending_interaction`，由 LangGraph 从待执行任务续跑。 |
 
 ### 4.3 节点交互策略（`interaction_mode`）
@@ -308,14 +308,32 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 新增两个 Workflow 级事件并加入 `WorkflowEvent` 联合类型（均为非易失事件 `is_ephemeral=False`，进入持久化 Event Log）：
 
 ```python
+PendingInterruptKind = Literal[
+    "workflow_interrupt",
+    "agent_interaction",
+    "suspended",
+    "failed",
+    "aborted",
+    "crashed",
+]
+
+
+class PendingInterrupt(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    interrupt_id: str | None = None
+    node_id: str
+    kind: PendingInterruptKind
+    interaction: InteractionRequestEvent | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    failure: AgentFailure | None = None
+
+
 class WorkflowInterruptedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.interrupted"] = "workflow.interrupted"
-    reason: Literal["workflow_interrupt", "agent_interaction"]
-    node_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-    interaction: InteractionRequestEvent | None = None
+    interrupts: tuple[PendingInterrupt, ...] = ()
 
 
 class WorkflowResumedEvent(BaseModel):
@@ -360,19 +378,19 @@ class WorkflowState(TypedDict):
 
 | 方法 | 作用 |
 | :--- | :--- |
-| `run(workflow, prompt, workspace_dir, *, thread_id=..., endpoint=..., interaction_mode="cancel", ...)` | 发起新任务或对已有 `thread_id` 发起新一轮连续对话；对 `failed`/`aborted` 自动接管并保留 `session_ref`，对未决的 `interrupted`/`crashed` 保持 fail-fast 拦截。 |
-| `resume(workflow, thread_id, *, resume_value=None, interaction_response=None, prompt=None, endpoint=..., interaction_mode="cancel", ...)` | **统一恢复入口**：自动检查 Checkpoint 与预写表，按需恢复 LangGraph `interrupt()`、冷挂起交互、`aborted`/`failed` 或 `kill -9` 崩溃断点。 |
-| `discard(workflow, thread_id)` | 显式放弃当前线程未完成的挂起、崩溃或失败轮次：保留已落盘的 `session_ref`、清理残留 WAL 并收口为不可恢复终态（`resumable=False`）。 |
-| `respond_interaction(run_id, response)` | 在线热交互回传（批准 / 拒绝 / 回答 `ask_question`）。 |
-| `suspend(run_id)` / `suspend_all()` | 将指定或全部活跃运行优雅冷挂起并刷盘 Checkpoint。 |
-| `get_thread_state(workflow, thread_id)` | 查询指定线程的综合恢复视图（合并 LangGraph Checkpoint 与 `care_inflight_nodes` 预写记录，便于桌面端重启后恢复界面与弹窗）。 |
-| `steer()` / `follow_up()` / `abort()` | 既有运行中干预接口保持不变（`abort()` 同时唤醒并取消挂起中的热交互 Future）。 |
+| `run(workflow, prompt, workspace_dir, *, thread_id=..., endpoint=..., interaction_mode="cancel", ...)` | 发起新任务或对已有 `thread_id` 发起新一轮连续对话；对 `failed`/`aborted` 自动接管并保留全部分支的 `session_ref`，对未决的 `interrupted`/`crashed` 保持 fail-fast 拦截。 |
+| `resume(workflow, thread_id, *, node_id=None, resume_value=None, interaction_response=None, prompt=None, resumes=None, endpoint=..., interaction_mode="cancel", ...)` | **统一恢复入口**：自动检查 Checkpoint 与预写表，支持单分支精确恢复（含按 `request_id` 自动匹配）与通过 `resumes={node_id: ResumeInput(...)}` 批量并发恢复多个并行分支。 |
+| `discard(workflow, thread_id)` | 显式放弃当前线程未完成的挂起、崩溃或失败轮次：保留已落盘的全部分支 `session_ref`、清理残留 WAL 并收口为不可恢复终态（`resumable=False`）。 |
+| `respond_interaction(run_id, response, *, node_id=None)` | 在线热交互回传（批准 / 拒绝 / 回答 `ask_question`），多分支并发热等待时按 `request_id` 自动路由（重名时可通过 `node_id` 消歧）。 |
+| `suspend(run_id)` / `suspend_all()` | 将指定或全部活跃运行（含全部并行分支）优雅冷挂起并刷盘 Checkpoint。 |
+| `get_thread_state(workflow, thread_id)` | 纯只读查询指定线程的综合恢复视图（通过 `interrupts: tuple[PendingInterrupt, ...]` 暴露全部挂起/失败/崩溃分支）。 |
+| `steer(run_id, message, *, node_id=None)` / `follow_up(...)` / `abort(run_id)` | 运行中干预接口：`steer`/`follow_up` 在多分支并发时支持通过 `node_id` 定向；`abort()` 同时唤醒全部挂起中的热交互 Future 并中止全部活跃分支。 |
 
 ### 6.4 `WorkflowRunner.resume()` 确定性判定顺序
 
-1. 图里有人工审批或 Agent 等待点时，`Command(resume=...)` 将裁决送回对应的 `interrupt()`。Agent 的冷回复必须匹配持久化的 `request_id`。
-2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_resume` 后沿用同一套回复流程。已完成的上游审批、普通节点和其他 Agent 均保留在原来的图位置。
-3. 已完成线程及处于 `failed`/`aborted` 态的线程可直接调用 `run()` 开启新一轮（跨轮保留节点 `session_ref`）；未决的 `interrupted`/`crashed` 线程在调用 `run()` 时会 fail-fast 拒绝，须通过 `resume()` 恢复或 `discard()` 显式放弃。
+1. 图里有人工审批或 Agent 等待点时，按 `interrupt_id` 构造 `Command(resume={interrupt_id: ...})` 精准投递至对应分支（单分支时无需指定 `node_id`；多分支时可按 `request_id` 自动定位、按 `node_id` 逐个放行，或用 `resumes` 批量并发恢复）。Agent 的冷回复必须匹配持久化的 `request_id`。
+2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_resume` 后沿用同一套按 `interrupt_id` 精准回复的流程。已完成的上游审批、普通节点和其他并行 Agent 均保留在原来的图位置。
+3. 并行分支混合状态按 `crashed > interrupted > failed > aborted > completed` 聚合：只要存在任意未决 `interrupted`/`crashed` 分支，调用 `run()` 会 fail-fast 拒绝；全部分支为 `completed`/`failed`/`aborted` 时可直接 `run()` 开启新一轮（保留所有分支 `session_ref`），或用 `discard()` 显式放弃。
 4. 同一个 Runner 对同一线程串行执行。线程正在线运行时，状态查询返回 `running`，外部通过 `respond_interaction()` 回应热交互。多个 worker 共享一个数据库时，宿主需要在进程间保证单线程所有权。
 
 冷恢复会在已有 Pi 会话上开始一个新 turn。写入文件、部署等工具操作的重复执行保护由工具层负责。

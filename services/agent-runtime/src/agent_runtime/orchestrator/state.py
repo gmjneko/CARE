@@ -31,11 +31,17 @@ def merge_node_outputs(
     return {**left, **right}
 
 
+def _last_value[T](_left: T, right: T) -> T:
+    return right
+
+
 class AgentChanges(TypedDict):
     node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
-    latest_output: str
-    status: Literal["running", "interrupted", "completed", "failed", "aborted"]
-    failure: AgentFailure | None
+    latest_output: Annotated[str, _last_value]
+    status: Annotated[
+        Literal["running", "interrupted", "completed", "failed", "aborted"], _last_value
+    ]
+    failure: Annotated[AgentFailure | None, _last_value]
 
 
 class WorkflowState(AgentChanges):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal
@@ -14,7 +14,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_runtime.adapters.base import InteractionResponse, ModelEndpoint, ThinkingLevel
+from agent_runtime.adapters.base import (
+    AgentSession,
+    InteractionResponse,
+    ModelEndpoint,
+    ThinkingLevel,
+)
 from agent_runtime.adapters.errors import AdapterError
 from agent_runtime.adapters.registry import AdapterRegistry
 from agent_runtime.orchestrator.inflight import InflightNodeRecord, InflightNodeStore
@@ -30,6 +35,8 @@ from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
 from agent_runtime.protocol.events import (
     AgentFailure,
     InteractionRequestEvent,
+    PendingInterrupt,
+    PendingInterruptKind,
     RuntimeEvent,
     RuntimeEventPayload,
     WorkflowCompletedEvent,
@@ -37,6 +44,16 @@ from agent_runtime.protocol.events import (
     WorkflowResumedEvent,
     WorkflowStartedEvent,
 )
+
+
+class ResumeInput(BaseModel):
+    """单个挂起分支的恢复输入（用于多分支批量并发恢复）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    resume_value: Any = None
+    interaction_response: InteractionResponse | None = None
+    prompt: str | None = None
 
 
 class ThreadState(BaseModel):
@@ -49,9 +66,7 @@ class ThreadState(BaseModel):
     resumable: bool
     node_outputs: dict[str, NodeOutput] = Field(default_factory=dict)
     next_nodes: tuple[str, ...] = ()
-    pending_interaction: InteractionRequestEvent | None = None
-    interrupted_node_id: str | None = None
-    interrupt_payload: dict[str, Any] = Field(default_factory=dict)
+    interrupts: tuple[PendingInterrupt, ...] = ()
     inflight_nodes: tuple[InflightNodeRecord, ...] = ()
 
 
@@ -152,11 +167,11 @@ class WorkflowRunner:
 
         with self._claim_run(effective_thread_id, effective_run_id):
             try:
-                existing_state, _, paused = await self._inspect(
+                existing_state, _, paused_outputs = await self._inspect(
                     compiled, effective_thread_id, cleanup=True
                 )
             except KeyError:
-                existing_state, paused = None, None
+                existing_state, paused_outputs = None, {}
 
             if existing_state is not None and existing_state.resumable:
                 if existing_state.status not in ("failed", "aborted"):
@@ -164,9 +179,10 @@ class WorkflowRunner:
                         f"Thread '{effective_thread_id}' is {existing_state.status}; "
                         "call resume() or discard()"
                     )
-                if paused is not None:
+                if paused_outputs:
                     initial_state["node_outputs"] = {
-                        paused.node_id: paused.model_copy(update={"pending_interaction": None})
+                        node_id: out.model_copy(update={"pending_interaction": None})
+                        for node_id, out in paused_outputs.items()
                     }
 
             async for event in self._stream_execution(
@@ -187,9 +203,11 @@ class WorkflowRunner:
         thread_id: str,
         *,
         run_id: str | None = None,
+        node_id: str | None = None,
         resume_value: Any = None,
         interaction_response: InteractionResponse | None = None,
         prompt: str | None = None,
+        resumes: Mapping[str, ResumeInput] | None = None,
         adapter: str = "pi",
         endpoint: ModelEndpoint | None = None,
         thinking_level: ThinkingLevel | None = None,
@@ -197,7 +215,7 @@ class WorkflowRunner:
         interaction_handler: InteractionHandler | None = None,
         interaction_mode: InteractionMode = "cancel",
     ) -> AsyncIterator[RuntimeEvent]:
-        """统一断点恢复入口：自动判定并恢复节点间 interrupt()、冷挂起交互、失败/中止或强杀崩溃。"""
+        """统一断点恢复入口：支持单分支精确恢复与多分支批量并发恢复。"""
         checkpointer = self._require_checkpointer()
         workflow_name, builder = self._resolve_workflow(workflow)
         compiled = _compile_workflow(
@@ -212,49 +230,20 @@ class WorkflowRunner:
 
         effective_run_id = run_id or f"run-{uuid4().hex[:12]}"
         with self._claim_run(thread_id, effective_run_id):
-            state, snapshot, pause = await self._inspect(compiled, thread_id, cleanup=True)
+            state, _, _ = await self._inspect(compiled, thread_id, cleanup=True)
             if not state.resumable:
                 raise ValueError(
                     f"Thread '{thread_id}' is already {state.status}; start a new turn with run()"
                 )
 
-            graph_input: Any = None
-            staged_reply: dict[str, Any] | None = None
-            if state.status == "crashed":
-                reason: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"] = (
-                    "crash"
-                )
-                text = _format_resume_prompt(
-                    pending_interaction=state.pending_interaction,
-                    interaction_response=interaction_response,
-                    prompt=prompt,
-                )
-                if state.inflight_nodes:
-                    # Native replay materializes the unfinished Pi turn as a checkpointed pause.
-                    staged_reply = {"prompt": text}
-                elif text is not None:
-                    raise ValueError(
-                        "Cannot pass a continuation prompt when resuming a crash with no started "
-                        "agent turn"
-                    )
-            elif pause is None:
-                reason = "workflow_interrupt"
-                decision = (
-                    resume_value
-                    if resume_value is not None
-                    else (interaction_response.model_dump() if interaction_response else prompt)
-                )
-                if decision is None:
-                    raise ValueError("A workflow interrupt requires a resume value")
-                graph_input = Command(resume=decision)
-            else:
-                reason = "agent_interaction" if state.status == "interrupted" else "failure"
-                text = _format_resume_prompt(
-                    pending_interaction=state.pending_interaction,
-                    interaction_response=interaction_response,
-                    prompt=prompt,
-                )
-                graph_input = Command(resume={"prompt": text})
+            graph_input, staged_replies, reason = _resolve_resume_plan(
+                state,
+                node_id=node_id,
+                resume_value=resume_value,
+                interaction_response=interaction_response,
+                prompt=prompt,
+                resumes=resumes,
+            )
 
             async for event in self._stream_execution(
                 compiled=compiled,
@@ -267,7 +256,7 @@ class WorkflowRunner:
                 ),
                 interaction_handler=interaction_handler,
                 interaction_mode=interaction_mode,
-                staged_reply=staged_reply,
+                staged_replies=staged_replies,
             ):
                 yield event
 
@@ -283,7 +272,7 @@ class WorkflowRunner:
         compiled = _compile_workflow(builder, self._run_context, checkpointer=checkpointer)
 
         with self._claim_run(thread_id, f"discard-{uuid4().hex[:12]}"):
-            state, _, paused = await self._inspect(compiled, thread_id, cleanup=True)
+            state, _, paused_outputs = await self._inspect(compiled, thread_id, cleanup=True)
             if not state.resumable:
                 return state
 
@@ -297,19 +286,25 @@ class WorkflowRunner:
                     preserved[row.node_id] = existing.model_copy(
                         update={"status": "aborted", "pending_interaction": None}
                     )
-            if paused is not None:
-                preserved[paused.node_id] = paused.model_copy(
-                    update={"status": final_status, "pending_interaction": None}
+            for paused_node_id, paused in paused_outputs.items():
+                node_status: Literal["failed", "aborted"] = (
+                    "failed" if paused.status == "failed" else "aborted"
                 )
+                preserved[paused_node_id] = paused.model_copy(
+                    update={"status": node_status, "pending_interaction": None}
+                )
+            first_failure = (
+                next((out.failure for out in paused_outputs.values() if out.failure), None)
+                if final_status == "failed"
+                else None
+            )
 
             await _close_resumable_turn(
                 checkpointer,
                 thread_id=thread_id,
                 node_outputs=preserved,
                 status=final_status,
-                failure=(
-                    paused.failure if (paused is not None and final_status == "failed") else None
-                ),
+                failure=first_failure,
             )
             for row in state.inflight_nodes:
                 await store.delete(row)
@@ -317,31 +312,68 @@ class WorkflowRunner:
             closed, _, _ = await self._inspect(compiled, thread_id, cleanup=True)
             return closed
 
-    async def respond_interaction(self, run_id: str, response: InteractionResponse) -> None:
+    async def respond_interaction(
+        self,
+        run_id: str,
+        response: InteractionResponse,
+        *,
+        node_id: str | None = None,
+    ) -> None:
         """向正在线热等待的节点回传用户审批结果或提问回答。"""
-        pending = self._run_context.pending_interactions.get(run_id)
-        if pending is None:
+        pending_map = self._run_context.pending_interactions.get(run_id)
+        if not pending_map:
             raise KeyError(f"No pending interaction found for run_id '{run_id}'")
-        if pending.request.request_id != response.request_id:
-            raise ValueError(
-                f"Interaction request_id mismatch for run_id '{run_id}': "
-                f"expected '{pending.request.request_id}', got '{response.request_id}'"
-            )
+        if node_id is not None:
+            pending = pending_map.get(node_id)
+            if pending is None:
+                raise KeyError(
+                    f"No pending interaction found for run_id '{run_id}', node_id '{node_id}'"
+                )
+            if pending.request.request_id != response.request_id:
+                raise ValueError(
+                    f"Interaction request_id mismatch for run_id '{run_id}' node '{node_id}': "
+                    f"expected '{pending.request.request_id}', got '{response.request_id}'"
+                )
+        else:
+            matches = [
+                (nid, item)
+                for nid, item in pending_map.items()
+                if item.request.request_id == response.request_id
+            ]
+            if len(matches) == 1:
+                pending = matches[0][1]
+            elif len(matches) > 1:
+                nodes = ", ".join(nid for nid, _ in matches)
+                raise ValueError(
+                    f"Ambiguous request_id '{response.request_id}' across nodes ({nodes}); "
+                    "specify node_id"
+                )
+            else:
+                expected = ", ".join(item.request.request_id for item in pending_map.values())
+                raise ValueError(
+                    f"Interaction request_id mismatch for run_id '{run_id}': "
+                    f"expected one of [{expected}], got '{response.request_id}'"
+                )
         if not pending.future.done():
             pending.future.set_result(response)
 
     async def suspend(self, run_id: str) -> None:
-        """优雅冷挂起指定活跃运行：落盘 session_ref 与待回复交互，发射 WorkflowInterruptedEvent。"""
+        """优雅冷挂起指定活跃运行：落盘全部活跃分支的 session_ref 与待回复交互。"""
         self._run_context.suspended_runs.add(run_id)
-        pending = self._run_context.pending_interactions.get(run_id)
-        if pending is not None and not pending.future.done():
-            pending.future.set_result(SUSPEND_SIGNAL)
-            return
+        signaled_nodes: set[str] = set()
+        pending_map = self._run_context.pending_interactions.get(run_id)
+        if pending_map:
+            for node_id, pending in list(pending_map.items()):
+                if not pending.future.done():
+                    pending.future.set_result(SUSPEND_SIGNAL)
+                    signaled_nodes.add(node_id)
 
-        session = self._run_context.active_sessions.get(run_id)
-        if session is not None:
-            with contextlib.suppress(AdapterError, OSError):
-                await session.abort()
+        sessions = self._run_context.active_sessions.get(run_id)
+        if sessions:
+            for node_id, session in list(sessions.items()):
+                if node_id not in signaled_nodes:
+                    with contextlib.suppress(AdapterError, OSError):
+                        await session.abort()
 
     async def suspend_all(self) -> None:
         """优雅冷挂起当前全部活跃运行（供桌面端 before-quit / SIGTERM 退出前调用）。"""
@@ -351,23 +383,30 @@ class WorkflowRunner:
         for run_id in list(active_ids):
             await self.suspend(run_id)
 
-    async def steer(self, run_id: str, message: str) -> None:
-        session = self._require_active_session(run_id)
+    async def steer(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
+        session = self._require_active_session(run_id, node_id=node_id)
         await session.steer(message)
 
-    async def follow_up(self, run_id: str, message: str) -> None:
-        session = self._require_active_session(run_id)
+    async def follow_up(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
+        session = self._require_active_session(run_id, node_id=node_id)
         await session.follow_up(message)
 
     async def abort(self, run_id: str) -> None:
-        # 若当前正卡在热交互等待期，先以 cancel 唤醒弹窗再发 abort，防止死锁
-        pending = self._run_context.pending_interactions.get(run_id)
-        if pending is not None and not pending.future.done():
-            pending.future.set_result(
-                InteractionResponse(request_id=pending.request.request_id, decision="cancel")
-            )
-        session = self._require_active_session(run_id)
-        await session.abort()
+        # 若当前正卡在热交互等待期，先以 cancel 唤醒全部等待弹窗再发 abort，防止死锁
+        pending_map = self._run_context.pending_interactions.get(run_id)
+        if pending_map:
+            for pending in list(pending_map.values()):
+                if not pending.future.done():
+                    pending.future.set_result(
+                        InteractionResponse(
+                            request_id=pending.request.request_id, decision="cancel"
+                        )
+                    )
+        sessions = self._run_context.active_sessions.get(run_id)
+        if not sessions:
+            raise KeyError(f"No active agent session found for run_id '{run_id}'")
+        for session in list(sessions.values()):
+            await session.abort()
 
     async def get_checkpoint_state(
         self,
@@ -396,7 +435,7 @@ class WorkflowRunner:
 
     async def _inspect(
         self, compiled: Any, thread_id: str, *, cleanup: bool = False
-    ) -> tuple[ThreadState, StateSnapshot, NodeOutput | None]:
+    ) -> tuple[ThreadState, StateSnapshot, dict[str, NodeOutput]]:
         store = self._require_inflight_store()
         records = await store.list_for_thread(thread_id)
         snapshot = await compiled.aget_state(
@@ -404,65 +443,128 @@ class WorkflowRunner:
         )
         if not snapshot.values and not snapshot.next:
             raise KeyError(f"No checkpoint found for thread_id '{thread_id}'")
+
         outputs = dict(snapshot.values.get("node_outputs", {}))
-        status = snapshot.values.get("status")
-        node = None
-        request = None
-        payload = {}
-        live = []
-        paused = None
+        raw_status = snapshot.values.get("status")
+        live: list[InflightNodeRecord] = []
+        paused_outputs: dict[str, NodeOutput] = {}
+        interrupts: list[PendingInterrupt] = []
+        pending_nodes = set(snapshot.next)
+        seen_pending: set[str] = set()
+
         for task in snapshot.tasks:
-            child = task.state
-            if not isinstance(child, StateSnapshot):
+            if task.result is not None or task.name not in pending_nodes:
                 continue
-            if child.next == ("await_resume",):
-                paused = child.values.get("node_outputs", {}).get(task.name)
-                if paused is not None:
-                    outputs[paused.node_id] = paused
-            pending_ids = {step.id for step in child.tasks}
-            for row in records:
-                if row.node_id != task.name or row.task_id not in pending_ids:
-                    continue
-                live.append(row)
-                node, request = task.name, row.pending_interaction
-                existing = outputs.get(node)
-                outputs[node] = NodeOutput(
-                    node_id=node,
-                    role=row.role,
-                    status="interrupted",
-                    summary="",
-                    session_ref=row.session_ref
-                    or (existing.session_ref if existing is not None else None),
-                    pending_interaction=request,
+            seen_pending.add(task.name)
+            child = task.state
+            if isinstance(child, StateSnapshot):
+                if child.next == ("await_resume",):
+                    paused = child.values.get("node_outputs", {}).get(task.name)
+                    if paused is not None:
+                        paused_outputs[paused.node_id] = paused
+                        outputs[paused.node_id] = paused
+                        intr_id = task.interrupts[0].id if task.interrupts else None
+                        if paused.status == "interrupted":
+                            kind: PendingInterruptKind = (
+                                "agent_interaction" if paused.pending_interaction else "suspended"
+                            )
+                        else:
+                            kind = paused.status
+                        interrupts.append(
+                            PendingInterrupt(
+                                interrupt_id=intr_id,
+                                node_id=paused.node_id,
+                                kind=kind,
+                                interaction=paused.pending_interaction,
+                                failure=paused.failure,
+                            )
+                        )
+                        continue
+
+                pending_ids = {step.id for step in child.tasks}
+                matched_wal = False
+                for row in records:
+                    if row.node_id != task.name or row.task_id not in pending_ids:
+                        continue
+                    matched_wal = True
+                    live.append(row)
+                    existing = outputs.get(task.name)
+                    outputs[task.name] = NodeOutput(
+                        node_id=task.name,
+                        role=row.role,
+                        status="interrupted",
+                        summary="",
+                        session_ref=row.session_ref
+                        or (existing.session_ref if existing is not None else None),
+                        pending_interaction=row.pending_interaction,
+                    )
+                    interrupts.append(
+                        PendingInterrupt(
+                            interrupt_id=None,
+                            node_id=task.name,
+                            kind="crashed",
+                            interaction=row.pending_interaction,
+                        )
+                    )
+                if not matched_wal:
+                    interrupts.append(
+                        PendingInterrupt(interrupt_id=None, node_id=task.name, kind="crashed")
+                    )
+                continue
+
+            if task.interrupts:
+                for intr in task.interrupts:
+                    interrupts.append(
+                        PendingInterrupt(
+                            interrupt_id=intr.id,
+                            node_id=task.name,
+                            kind="workflow_interrupt",
+                            payload=_extract_interrupt_payload((intr,)),
+                        )
+                    )
+            else:
+                interrupts.append(
+                    PendingInterrupt(interrupt_id=None, node_id=task.name, kind="crashed")
+                )
+
+        for node_name in snapshot.next:
+            if node_name not in seen_pending:
+                interrupts.append(
+                    PendingInterrupt(interrupt_id=None, node_id=node_name, kind="crashed")
                 )
 
         if cleanup:
             for row in records:
                 if row not in live:
                     await store.delete(row)
-        if paused is not None:
-            node, status, request = paused.node_id, paused.status, paused.pending_interaction
-        elif snapshot.interrupts:
-            status = "interrupted"
-            node = snapshot.next[0]
-            payload = _extract_interrupt_payload(snapshot.interrupts)
-        elif snapshot.next:
-            status = "crashed"
-            node = node or snapshot.next[0]
-        elif status == "running":
+
+        if interrupts:
+            kinds = {item.kind for item in interrupts}
+            if "crashed" in kinds:
+                status: Literal["completed", "interrupted", "aborted", "failed", "crashed"] = (
+                    "crashed"
+                )
+            elif kinds & {"workflow_interrupt", "agent_interaction", "suspended"}:
+                status = "interrupted"
+            elif "failed" in kinds:
+                status = "failed"
+            else:
+                status = "aborted"
+        elif raw_status == "running":
             status = "completed"
+        else:
+            status = raw_status
+
         view = ThreadState(
             thread_id=thread_id,
             status=status,
             resumable=bool(snapshot.next),
             node_outputs=outputs,
             next_nodes=snapshot.next,
-            pending_interaction=request,
-            interrupted_node_id=node,
-            interrupt_payload=payload,
+            interrupts=tuple(interrupts),
             inflight_nodes=tuple(live),
         )
-        return view, snapshot, paused
+        return view, snapshot, paused_outputs
 
     @contextlib.contextmanager
     def _claim_run(self, thread_id: str, run_id: str) -> Iterator[None]:
@@ -486,9 +588,10 @@ class WorkflowRunner:
         opening_event: WorkflowStartedEvent | WorkflowResumedEvent,
         interaction_handler: InteractionHandler | None,
         interaction_mode: InteractionMode,
-        staged_reply: dict | None = None,
+        staged_replies: dict[str, Any] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         seq = 0
+        pending_replies = dict(staged_replies) if staged_replies else {}
 
         def _wrap(payload: RuntimeEventPayload, *, node_id: str | None = None) -> RuntimeEvent:
             nonlocal seq
@@ -519,36 +622,41 @@ class WorkflowRunner:
                     packet = chunk["data"]
                     if isinstance(packet, StreamPacket):
                         yield _wrap(packet.event, node_id=packet.node_id)
-                state, snapshot, pause = await self._inspect(compiled, thread_id, cleanup=True)
-                if staged_reply is None:
+                state, snapshot, _ = await self._inspect(compiled, thread_id, cleanup=True)
+                if not pending_replies:
                     break
-                if not snapshot.interrupts or pause is None:
-                    raise RuntimeError("Expected the recovered Pi turn to reach its resume gate")
-                graph_input = Command(resume=staged_reply)
-                staged_reply = None
+                interrupt_ids_by_node = {
+                    item.node_id: item.interrupt_id
+                    for item in state.interrupts
+                    if item.interrupt_id is not None
+                }
+                resume_map: dict[str, Any] = {}
+                for target_node, reply_value in pending_replies.items():
+                    intr_id = interrupt_ids_by_node.get(target_node)
+                    if intr_id is None:
+                        raise RuntimeError(
+                            f"Expected recovered node '{target_node}' to reach its resume gate"
+                        )
+                    resume_map[intr_id] = reply_value
+                graph_input = Command(resume=resume_map)
+                pending_replies = {}
 
-            node = state.interrupted_node_id
             if state.status == "interrupted":
-                reason = (
-                    "workflow_interrupt"
-                    if pause is None
-                    else ("agent_interaction" if state.pending_interaction else "suspended")
-                )
+                event_node_id = state.interrupts[0].node_id if len(state.interrupts) == 1 else None
                 yield _wrap(
-                    WorkflowInterruptedEvent(
-                        reason=reason,
-                        node_id=node,
-                        payload=state.interrupt_payload,
-                        interaction=state.pending_interaction,
-                    ),
-                    node_id=node,
+                    WorkflowInterruptedEvent(interrupts=state.interrupts),
+                    node_id=event_node_id,
                 )
             elif state.status in ("failed", "aborted", "completed"):
+                first_failure = next(
+                    (item.failure for item in state.interrupts if item.failure is not None),
+                    snapshot.values.get("failure"),
+                )
                 yield _wrap(
                     WorkflowCompletedEvent(
                         status=state.status,
                         final_output=snapshot.values.get("latest_output", ""),
-                        failure=pause.failure if pause else snapshot.values.get("failure"),
+                        failure=first_failure,
                     )
                 )
             else:
@@ -580,11 +688,23 @@ class WorkflowRunner:
             )
         return self._inflight_store
 
-    def _require_active_session(self, run_id: str):
-        try:
-            return self._run_context.active_sessions[run_id]
-        except KeyError as exc:
-            raise KeyError(f"No active agent session found for run_id '{run_id}'") from exc
+    def _require_active_session(self, run_id: str, *, node_id: str | None = None) -> AgentSession:
+        sessions = self._run_context.active_sessions.get(run_id)
+        if not sessions:
+            raise KeyError(f"No active agent session found for run_id '{run_id}'")
+        if node_id is not None:
+            session = sessions.get(node_id)
+            if session is None:
+                raise KeyError(
+                    f"No active agent session found for run_id '{run_id}', node_id '{node_id}'"
+                )
+            return session
+        if len(sessions) == 1:
+            return next(iter(sessions.values()))
+        nodes = ", ".join(sorted(sessions))
+        raise ValueError(
+            f"Multiple active agent sessions for run_id '{run_id}' ({nodes}); specify node_id"
+        )
 
 
 def _compile_workflow(
@@ -629,6 +749,149 @@ async def _close_resumable_turn(
         config={"configurable": {"thread_id": thread_id}},
         durability="sync",
     )
+
+
+def _resolve_resume_plan(
+    state: ThreadState,
+    *,
+    node_id: str | None,
+    resume_value: Any,
+    interaction_response: InteractionResponse | None,
+    prompt: str | None,
+    resumes: Mapping[str, ResumeInput] | None,
+) -> tuple[
+    Any,
+    dict[str, Any],
+    Literal["workflow_interrupt", "agent_interaction", "failure", "crash"],
+]:
+    """将单分支或批量恢复参数解析为 LangGraph `Command(resume=...)` 或崩溃两阶段回放计划。"""
+    targets: list[tuple[PendingInterrupt, ResumeInput]] = []
+    if resumes is not None:
+        if (
+            node_id is not None
+            or resume_value is not None
+            or interaction_response is not None
+            or prompt is not None
+        ):
+            raise ValueError("Cannot combine 'resumes' with single-branch resume parameters")
+        if not resumes:
+            raise ValueError("'resumes' must specify at least one target node_id")
+        for target_node, inp in resumes.items():
+            matches = [item for item in state.interrupts if item.node_id == target_node]
+            if not matches:
+                pending = ", ".join(item.node_id for item in state.interrupts)
+                raise ValueError(f"Node '{target_node}' is not paused; pending nodes: [{pending}]")
+            if len(matches) > 1:
+                raise ValueError(f"Node '{target_node}' has multiple active interrupts")
+            targets.append((matches[0], inp))
+    else:
+        single = ResumeInput(
+            resume_value=resume_value,
+            interaction_response=interaction_response,
+            prompt=prompt,
+        )
+        if node_id is not None:
+            matches = [item for item in state.interrupts if item.node_id == node_id]
+            if not matches:
+                pending = ", ".join(item.node_id for item in state.interrupts)
+                raise ValueError(f"Node '{node_id}' is not paused; pending nodes: [{pending}]")
+            if len(matches) > 1:
+                raise ValueError(f"Node '{node_id}' has multiple active interrupts")
+            targets.append((matches[0], single))
+        elif len(state.interrupts) == 1:
+            targets.append((state.interrupts[0], single))
+        elif interaction_response is not None:
+            matches = [
+                item
+                for item in state.interrupts
+                if item.interaction is not None
+                and item.interaction.request_id == interaction_response.request_id
+            ]
+            if len(matches) == 1:
+                targets.append((matches[0], single))
+            elif len(matches) > 1:
+                nodes = ", ".join(item.node_id for item in matches)
+                raise ValueError(
+                    f"Multiple pending nodes share request_id "
+                    f"'{interaction_response.request_id}' ({nodes}); specify node_id"
+                )
+            else:
+                raise ValueError("Interaction request_id does not match any pending request")
+        elif (
+            all(item.kind == "crashed" for item in state.interrupts)
+            and not state.inflight_nodes
+            and resume_value is None
+            and not (prompt and prompt.strip())
+        ):
+            targets = [(item, single) for item in state.interrupts]
+        else:
+            pending = ", ".join(item.node_id for item in state.interrupts)
+            raise ValueError(
+                f"Multiple nodes are paused ({pending}); specify node_id, "
+                "a matching interaction_response, or resumes"
+            )
+
+    wal_nodes = {row.node_id for row in state.inflight_nodes}
+    needs_crash_replay = state.status == "crashed"
+    resume_map: dict[str, Any] = {}
+    staged_replies: dict[str, Any] = {}
+
+    for item, inp in targets:
+        if item.kind == "workflow_interrupt":
+            decision = (
+                inp.resume_value
+                if inp.resume_value is not None
+                else (
+                    inp.interaction_response.model_dump()
+                    if inp.interaction_response is not None
+                    else inp.prompt
+                )
+            )
+            if decision is None:
+                raise ValueError(f"Workflow interrupt on '{item.node_id}' requires a resume value")
+            if needs_crash_replay:
+                staged_replies[item.node_id] = decision
+            else:
+                assert item.interrupt_id is not None
+                resume_map[item.interrupt_id] = decision
+        elif item.kind == "crashed":
+            text = _format_resume_prompt(
+                pending_interaction=item.interaction,
+                interaction_response=inp.interaction_response,
+                prompt=inp.prompt,
+            )
+            if item.node_id in wal_nodes:
+                staged_replies[item.node_id] = {"prompt": text}
+            elif text is not None:
+                raise ValueError(
+                    "Cannot pass a continuation prompt when resuming a crash with no started "
+                    "agent turn"
+                )
+        else:
+            text = _format_resume_prompt(
+                pending_interaction=item.interaction,
+                interaction_response=inp.interaction_response,
+                prompt=inp.prompt,
+            )
+            payload = {"prompt": text}
+            if needs_crash_replay:
+                staged_replies[item.node_id] = payload
+            else:
+                assert item.interrupt_id is not None
+                resume_map[item.interrupt_id] = payload
+
+    target_kinds = {item.kind for item, _ in targets}
+    if needs_crash_replay or "crashed" in target_kinds:
+        reason: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"] = "crash"
+    elif "workflow_interrupt" in target_kinds:
+        reason = "workflow_interrupt"
+    elif target_kinds & {"agent_interaction", "suspended"}:
+        reason = "agent_interaction"
+    else:
+        reason = "failure"
+
+    graph_input: Any = None if needs_crash_replay else Command(resume=resume_map)
+    return graph_input, staged_replies, reason
 
 
 def _extract_interrupt_payload(raw_interrupts: Any) -> dict[str, Any]:

@@ -202,11 +202,8 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
             )
     elif isinstance(payload, WorkflowInterruptedEvent):
         _end_stream()
-        print(
-            f"\n[workflow.interrupted] reason={payload.reason} "
-            f"node={payload.node_id} seq={event.seq}",
-            flush=True,
-        )
+        summary = ", ".join(f"{item.node_id}({item.kind})" for item in payload.interrupts)
+        print(f"\n[workflow.interrupted] [{summary}] seq={event.seq}", flush=True)
     elif isinstance(payload, WorkflowCompletedEvent):
         _end_stream()
         print(f"\n[workflow.completed] status={payload.status} seq={event.seq}", flush=True)

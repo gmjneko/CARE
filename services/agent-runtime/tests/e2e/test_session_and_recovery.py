@@ -22,6 +22,7 @@ from agent_runtime.adapters import (
 )
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
+    ResumeInput,
     RunContext,
     WorkflowRunner,
     WorkflowState,
@@ -278,10 +279,12 @@ async def test_hot_interaction_pi_crash_degrades_to_resumable_interrupt_and_cont
     _write_manifest(tmp_path, "pi_crash_run1", run1_events)
     interrupted = run1_events[-1].payload
     assert isinstance(interrupted, WorkflowInterruptedEvent)
-    assert interrupted.reason == "agent_interaction"
-    assert interrupted.node_id == "executor"
-    assert interrupted.interaction is not None
-    assert interrupted.interaction.request_id == "ui-q-1"
+    assert len(interrupted.interrupts) == 1
+    intr = interrupted.interrupts[0]
+    assert intr.kind == "agent_interaction"
+    assert intr.node_id == "executor"
+    assert intr.interaction is not None
+    assert intr.interaction.request_id == "ui-q-1"
 
     # Run 2 in fresh Runner (simulating recovery): planner skipped, executor resumes, reviewer runs!
     run2_events: list[RuntimeEvent] = []
@@ -289,8 +292,9 @@ async def test_hot_interaction_pi_crash_degrades_to_resumable_interrupt_and_cont
         thread_state = await runner2.get_thread_state(_build_three_node_workflow, thread_id)
         assert thread_state.status == "interrupted"
         assert thread_state.resumable is True
-        assert thread_state.interrupted_node_id == "executor"
-        assert thread_state.pending_interaction is not None
+        assert len(thread_state.interrupts) == 1
+        assert thread_state.interrupts[0].node_id == "executor"
+        assert thread_state.interrupts[0].interaction is not None
         exec_session_ref = thread_state.node_outputs["executor"].session_ref
         assert exec_session_ref is not None
 
@@ -340,21 +344,24 @@ async def test_suspend_all_during_hot_interaction_and_resume_after_restart(tmp_p
                 await runner1.suspend_all()
 
     assert isinstance(run1_events[-1].payload, WorkflowInterruptedEvent)
-    assert run1_events[-1].payload.node_id == "executor"
+    assert len(run1_events[-1].payload.interrupts) == 1
+    assert run1_events[-1].payload.interrupts[0].node_id == "executor"
 
     # Brand-new Runner simulates app restart
     run2_events: list[RuntimeEvent] = []
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner2:
         st = await runner2.get_thread_state("plan_and_execute", thread_id)
         assert st.status == "interrupted"
-        assert st.pending_interaction is not None
-        assert st.pending_interaction.title == "Select cache backend"
+        assert len(st.interrupts) == 1
+        pending_req = st.interrupts[0].interaction
+        assert pending_req is not None
+        assert pending_req.title == "Select cache backend"
 
         async for ev in runner2.resume(
             "plan_and_execute",
             thread_id,
             interaction_response=InteractionResponse(
-                request_id=st.pending_interaction.request_id,
+                request_id=pending_req.request_id,
                 decision="approve",
                 value="memory",
             ),
@@ -476,7 +483,9 @@ async def test_hard_kill_crash_recovers_session_and_pending_interaction_from_wal
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner2:
         st = await runner2.get_thread_state("plan_and_execute", thread_id)
         assert st.status == "crashed"
-        assert st.pending_interaction and st.pending_interaction.request_id == request_id
+        assert len(st.interrupts) == 1
+        crash_req = st.interrupts[0].interaction
+        assert crash_req is not None and crash_req.request_id == request_id
         ref = st.node_outputs["executor"].session_ref
         resumed_events = [
             ev
@@ -578,9 +587,11 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
 
     interrupted = run1_events[-1].payload
     assert isinstance(interrupted, WorkflowInterruptedEvent)
-    assert interrupted.reason == "workflow_interrupt"
-    assert interrupted.node_id == "approval_gate"
-    assert "[PLAN tools=read,grep,find,ls]" in interrupted.payload["plan_summary"]
+    assert len(interrupted.interrupts) == 1
+    gate_intr = interrupted.interrupts[0]
+    assert gate_intr.kind == "workflow_interrupt"
+    assert gate_intr.node_id == "approval_gate"
+    assert "[PLAN tools=read,grep,find,ls]" in gate_intr.payload["plan_summary"]
 
     # Brand-new Runner resumes across process restart without re-running planner
     run2_events: list[RuntimeEvent] = []
@@ -588,7 +599,8 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
         st = await runner2.get_thread_state(_build_gated_workflow, thread_id)
         assert st.status == "interrupted"
         assert st.resumable is True
-        assert st.interrupted_node_id == "approval_gate"
+        assert len(st.interrupts) == 1
+        assert st.interrupts[0].node_id == "approval_gate"
 
         async for ev in runner2.resume(
             _build_gated_workflow,
@@ -599,7 +611,9 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
             run2_events.append(ev)
 
     pause = run2_events[-1].payload
-    assert isinstance(pause, WorkflowInterruptedEvent) and pause.interaction
+    assert isinstance(pause, WorkflowInterruptedEvent) and len(pause.interrupts) == 1
+    pause_req = pause.interrupts[0].interaction
+    assert pause_req is not None
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner3:
         with pytest.raises(ValueError, match="request_id"):
             async for _ in runner3.resume(
@@ -614,7 +628,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
                 _build_gated_workflow,
                 thread_id,
                 interaction_response=InteractionResponse(
-                    request_id=pause.interaction.request_id, decision="approve", value="redis"
+                    request_id=pause_req.request_id, decision="approve", value="redis"
                 ),
             )
         ]
@@ -806,7 +820,7 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
         assert discarded.status == "aborted"
         assert discarded.resumable is False
         assert discarded.next_nodes == ()
-        assert discarded.pending_interaction is None
+        assert discarded.interrupts == ()
         assert discarded.node_outputs["planner"].session_ref == plan_ref
         assert discarded.node_outputs["executor"].session_ref == exec_ref
 
@@ -929,7 +943,8 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
             )
         ]
         assert isinstance(gate_events[-1].payload, WorkflowInterruptedEvent)
-        assert gate_events[-1].payload.reason == "workflow_interrupt"
+        assert len(gate_events[-1].payload.interrupts) == 1
+        assert gate_events[-1].payload.interrupts[0].kind == "workflow_interrupt"
         st_gate = await runner4.get_thread_state(_build_gate_workflow, thread_gate)
         gate_plan_ref = st_gate.node_outputs["planner"].session_ref
         assert gate_plan_ref is not None
@@ -943,7 +958,7 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
         assert closed_gate.status == "aborted"
         assert closed_gate.resumable is False
         assert closed_gate.next_nodes == ()
-        assert closed_gate.interrupt_payload == {}
+        assert closed_gate.interrupts == ()
         assert closed_gate.node_outputs["planner"].session_ref == gate_plan_ref
 
         gate_restarted = [
@@ -1060,7 +1075,497 @@ async def test_first_turn_crash_preserves_configured_role_and_wal_less_crash_rej
     assert final.final_output.startswith("REPLAYED:[PLAN ")
 
 
+def _build_parallel_join_workflow(
+    run_context: RunContext,
+    *,
+    adapter: str = "pi",
+    endpoint: Any = None,
+    thinking_level: Any = None,
+    persist_session: bool = True,
+    adapter_a: str | None = None,
+    adapter_b: str | None = None,
+) -> StateGraph[WorkflowState]:
+    """Fan-out / fan-in workflow: START -> (worker_a, worker_b) -> aggregator -> END."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "worker_a",
+        build_agent_node(
+            AgentNodeConfig(
+                id="worker_a",
+                role="researcher_a",
+                adapter=adapter_a or adapter,
+                endpoint=endpoint,
+                thinking_level=thinking_level,
+                persist_session=persist_session,
+                prompt_builder=lambda s: f"Branch A: {s['prompt']}",
+            ),
+            run_context,
+        ),
+    )
+    graph.add_node(
+        "worker_b",
+        build_agent_node(
+            AgentNodeConfig(
+                id="worker_b",
+                role="researcher_b",
+                adapter=adapter_b or adapter,
+                endpoint=endpoint,
+                thinking_level=thinking_level,
+                persist_session=persist_session,
+                prompt_builder=lambda s: f"Branch B: {s['prompt']}",
+            ),
+            run_context,
+        ),
+    )
+
+    def _aggregator(state: WorkflowState) -> dict[str, Any]:
+        out_a = state["node_outputs"]["worker_a"].summary
+        out_b = state["node_outputs"]["worker_b"].summary
+        return {"latest_output": f"JOIN[a={out_a} | b={out_b}]"}
+
+    graph.add_node("aggregator", _aggregator)
+    graph.add_edge(START, "worker_a")
+    graph.add_edge(START, "worker_b")
+    graph.add_edge("worker_a", "aggregator")
+    graph.add_edge("worker_b", "aggregator")
+    graph.add_edge("aggregator", END)
+    return graph
+
+
+async def test_parallel_agents_complete_and_live_hot_interactions_stay_isolated(
+    tmp_path: Path,
+) -> None:
+    """Gap: parallel agents collided on LastValue channels and single-entry RunContext dicts."""
+    db_path = tmp_path / "checkpoints.sqlite"
+
+    # 1. Parallel completion in the same superstep without InvalidUpdateError
+    async with _make_runner("standard", checkpoint_db=db_path) as runner1:
+        events1 = [
+            ev
+            async for ev in runner1.run(
+                _build_parallel_join_workflow, "Parallel task", tmp_path, thread_id="par-ok"
+            )
+        ]
+        st1 = await runner1.get_thread_state(_build_parallel_join_workflow, "par-ok")
+
+    _write_manifest(tmp_path, "parallel_complete", events1)
+    assert isinstance(events1[-1].payload, WorkflowCompletedEvent)
+    assert events1[-1].payload.status == "completed"
+    assert events1[-1].payload.final_output.startswith("JOIN[a=[EXEC ")
+    ref_a = st1.node_outputs["worker_a"].session_ref
+    ref_b = st1.node_outputs["worker_b"].session_ref
+    assert ref_a is not None and ref_b is not None and ref_a != ref_b
+
+    # 2. Concurrent live hot interactions (unique request_ids) + steer ambiguity guard
+    seen_requests: dict[str, str] = {}
+    hot_events: list[RuntimeEvent] = []
+    async with _make_runner("ui_question_unique", checkpoint_db=db_path) as runner2:
+
+        async def _consume() -> None:
+            async for ev in runner2.run(
+                _build_parallel_join_workflow,
+                "Pick two caches",
+                tmp_path,
+                run_id="run-par-hot",
+                thread_id="par-hot",
+                interaction_mode="wait",
+            ):
+                hot_events.append(ev)
+                if isinstance(ev.payload, InteractionRequestEvent) and ev.payload.blocking:
+                    assert ev.node_id is not None
+                    seen_requests[ev.node_id] = ev.payload.request_id
+                    if len(seen_requests) == 2:
+                        with pytest.raises(ValueError, match="Multiple active agent sessions"):
+                            await runner2.steer("run-par-hot", "ambiguous steer")
+                        await runner2.respond_interaction(
+                            "run-par-hot",
+                            InteractionResponse(
+                                request_id=seen_requests["worker_a"],
+                                decision="approve",
+                                value="redis",
+                            ),
+                        )
+                        await runner2.respond_interaction(
+                            "run-par-hot",
+                            InteractionResponse(
+                                request_id=seen_requests["worker_b"],
+                                decision="approve",
+                                value="memory",
+                            ),
+                        )
+
+        await asyncio.wait_for(_consume(), timeout=15.0)
+
+    _write_manifest(tmp_path, "parallel_hot_interactions", hot_events)
+    final_hot = hot_events[-1].payload
+    assert isinstance(final_hot, WorkflowCompletedEvent)
+    assert final_hot.status == "completed"
+    assert "a=QUESTION_ANSWER=redis" in final_hot.final_output
+    assert "b=QUESTION_ANSWER=memory" in final_hot.final_output
+
+
+async def test_parallel_cold_interrupts_progressive_and_batch_concurrent_resume(
+    tmp_path: Path,
+) -> None:
+    """Gap: parallel cold interrupts dropped all but one branch and lacked batch resume."""
+    db_path = tmp_path / "checkpoints.sqlite"
+
+    # Part 1: Progressive single-branch resume via auto-matched request_id (zero re-run of sibling)
+    tid_prog = "par-cold-progressive"
+    async with _make_runner("ui_question_unique", checkpoint_db=db_path) as runner1:
+        pause_events = [
+            ev
+            async for ev in runner1.run(
+                _build_parallel_join_workflow,
+                "Choose caches",
+                tmp_path,
+                thread_id=tid_prog,
+                interaction_mode="suspend",
+            )
+        ]
+        st_both = await runner1.get_thread_state(_build_parallel_join_workflow, tid_prog)
+
+    assert pause_events[-1].node_id is None
+    assert isinstance(pause_events[-1].payload, WorkflowInterruptedEvent)
+    assert {i.node_id for i in pause_events[-1].payload.interrupts} == {"worker_a", "worker_b"}
+    by_node = {i.node_id: i for i in st_both.interrupts}
+    req_a = by_node["worker_a"].interaction
+    req_b = by_node["worker_b"].interaction
+    assert req_a is not None and req_b is not None and req_a.request_id != req_b.request_id
+
+    async with _make_runner("ui_question_unique", checkpoint_db=db_path) as runner2:
+        with pytest.raises(ValueError, match="Multiple nodes are paused"):
+            await anext(runner2.resume(_build_parallel_join_workflow, tid_prog))
+
+        # Resume ONLY worker_a; worker_b must stay paused without re-running Pi.
+        step_a_events = [
+            ev
+            async for ev in runner2.resume(
+                _build_parallel_join_workflow,
+                tid_prog,
+                interaction_response=InteractionResponse(
+                    request_id=req_a.request_id, decision="approve", value="redis"
+                ),
+            )
+        ]
+        started_a = [
+            ev.payload.node_id for ev in step_a_events if ev.payload.type == "node.started"
+        ]
+        assert started_a == ["worker_a"]
+        assert isinstance(step_a_events[-1].payload, WorkflowInterruptedEvent)
+        assert [i.node_id for i in step_a_events[-1].payload.interrupts] == ["worker_b"]
+
+        # Resume worker_b; aggregator automatically runs and joins both branches.
+        step_b_events = [
+            ev
+            async for ev in runner2.resume(
+                _build_parallel_join_workflow,
+                tid_prog,
+                interaction_response=InteractionResponse(
+                    request_id=req_b.request_id, decision="approve", value="memory"
+                ),
+            )
+        ]
+
+    _write_manifest(tmp_path, "parallel_progressive_resume_b", step_b_events)
+    started_b = [ev.payload.node_id for ev in step_b_events if ev.payload.type == "node.started"]
+    assert started_b == ["worker_b"]
+    final_prog = step_b_events[-1].payload
+    assert isinstance(final_prog, WorkflowCompletedEvent)
+    assert final_prog.status == "completed"
+    assert "redis" in final_prog.final_output and "memory" in final_prog.final_output
+
+    # Part 2: Batch concurrent resume via resumes={...} (including duplicate request_id guard)
+    tid_batch = "par-cold-batch"
+    async with _make_runner("ui_question", checkpoint_db=db_path) as runner3:
+        async for _ in runner3.run(
+            _build_parallel_join_workflow,
+            "Batch choose",
+            tmp_path,
+            thread_id=tid_batch,
+            interaction_mode="suspend",
+        ):
+            pass
+        # Both fake subprocesses emitted identical request_id "ui-q-1" -> must require node_id
+        with pytest.raises(ValueError, match="share request_id"):
+            await anext(
+                runner3.resume(
+                    _build_parallel_join_workflow,
+                    tid_batch,
+                    interaction_response=InteractionResponse(
+                        request_id="ui-q-1", decision="approve", value="redis"
+                    ),
+                )
+            )
+        with pytest.raises(ValueError, match="Cannot combine"):
+            await anext(
+                runner3.resume(
+                    _build_parallel_join_workflow,
+                    tid_batch,
+                    prompt="extra",
+                    resumes={"worker_a": ResumeInput(prompt="x")},
+                )
+            )
+
+        batch_events = [
+            ev
+            async for ev in runner3.resume(
+                _build_parallel_join_workflow,
+                tid_batch,
+                resumes={
+                    "worker_a": ResumeInput(
+                        interaction_response=InteractionResponse(
+                            request_id="ui-q-1", decision="approve", value="redis"
+                        )
+                    ),
+                    "worker_b": ResumeInput(
+                        interaction_response=InteractionResponse(
+                            request_id="ui-q-1", decision="approve", value="memory"
+                        )
+                    ),
+                },
+            )
+        ]
+
+    _write_manifest(tmp_path, "parallel_batch_resume", batch_events)
+    batch_started = {ev.payload.node_id for ev in batch_events if ev.payload.type == "node.started"}
+    assert batch_started == {"worker_a", "worker_b"}
+    final_batch = batch_events[-1].payload
+    assert isinstance(final_batch, WorkflowCompletedEvent)
+    assert final_batch.status == "completed"
+    assert "redis" in final_batch.final_output and "memory" in final_batch.final_output
+
+
+async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_supersede(
+    tmp_path: Path,
+) -> None:
+    """Gap: mixed parallel states must prioritize interrupted over failed and preserve all refs."""
+    db_path = tmp_path / "checkpoints.sqlite"
+
+    adapter_q = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "ui_question_unique"),
+            request_timeout_s=10.0,
+        )
+    )
+    adapter_fail = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "fail_executor_once"),
+            request_timeout_s=10.0,
+        )
+    )
+    adapter_ok = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "standard"),
+            request_timeout_s=10.0,
+        )
+    )
+
+    def _build_mixed_workflow(
+        run_context: RunContext,
+        *,
+        adapter: str = "pi",
+        endpoint: Any = None,
+        thinking_level: Any = None,
+        persist_session: bool = True,
+    ) -> StateGraph[WorkflowState]:
+        return _build_parallel_join_workflow(
+            run_context,
+            adapter=adapter,
+            endpoint=endpoint,
+            thinking_level=thinking_level,
+            persist_session=persist_session,
+            adapter_a="pi_q",
+            adapter_b="pi_fail",
+        )
+
+    # 1. Mixed: worker_a interrupted (question) + worker_b failed -> thread status = interrupted
+    tid_mixed = "par-mixed-state"
+    async with WorkflowRunner(
+        AdapterRegistry({"pi_q": adapter_q, "pi_fail": adapter_fail}),
+        create_default_workflow_registry(),
+        checkpoint_db=db_path,
+    ) as runner:
+        events1 = [
+            ev
+            async for ev in runner.run(
+                _build_mixed_workflow,
+                "Mixed parallel",
+                tmp_path,
+                thread_id=tid_mixed,
+                interaction_mode="suspend",
+            )
+        ]
+        st_mixed = await runner.get_thread_state(_build_mixed_workflow, tid_mixed)
+        assert isinstance(events1[-1].payload, WorkflowInterruptedEvent)
+        assert st_mixed.status == "interrupted"
+        kinds = {i.node_id: i.kind for i in st_mixed.interrupts}
+        assert kinds == {"worker_a": "agent_interaction", "worker_b": "failed"}
+
+        # Must block run() while worker_a has an unanswered interaction!
+        with pytest.raises(ValueError, match="interrupted"):
+            await anext(
+                runner.run(_build_mixed_workflow, "Should block", tmp_path, thread_id=tid_mixed)
+            )
+
+        req_a = next(i.interaction for i in st_mixed.interrupts if i.node_id == "worker_a")
+        assert req_a is not None
+        resumed = [
+            ev
+            async for ev in runner.resume(
+                _build_mixed_workflow,
+                tid_mixed,
+                resumes={
+                    "worker_a": ResumeInput(
+                        interaction_response=InteractionResponse(
+                            request_id=req_a.request_id, decision="approve", value="redis"
+                        )
+                    ),
+                    "worker_b": ResumeInput(prompt="Retry worker_b"),
+                },
+            )
+        ]
+
+    _write_manifest(tmp_path, "parallel_mixed_resume", resumed)
+    assert isinstance(resumed[-1].payload, WorkflowCompletedEvent)
+    assert resumed[-1].payload.status == "completed"
+    assert "redis" in resumed[-1].payload.final_output
+    assert "EXECUTOR_RECOVERED(turns=2):Retry worker_b" in resumed[-1].payload.final_output
+
+    # 2. Dual failure -> run() supersedes BOTH failed branches and preserves BOTH session_refs
+    tid_dual_fail = "par-dual-fail"
+    async with WorkflowRunner(
+        AdapterRegistry({"pi": adapter_fail}),
+        create_default_workflow_registry(),
+        checkpoint_db=db_path,
+    ) as runner_fail:
+        fail_events = [
+            ev
+            async for ev in runner_fail.run(
+                _build_parallel_join_workflow, "Fail both", tmp_path, thread_id=tid_dual_fail
+            )
+        ]
+        st_fail = await runner_fail.get_thread_state(_build_parallel_join_workflow, tid_dual_fail)
+
+    assert isinstance(fail_events[-1].payload, WorkflowCompletedEvent)
+    assert fail_events[-1].payload.status == "failed"
+    assert st_fail.status == "failed"
+    assert {i.node_id for i in st_fail.interrupts} == {"worker_a", "worker_b"}
+    fail_ref_a = st_fail.node_outputs["worker_a"].session_ref
+    fail_ref_b = st_fail.node_outputs["worker_b"].session_ref
+    assert fail_ref_a is not None and fail_ref_b is not None
+
+    async with WorkflowRunner(
+        AdapterRegistry({"pi": adapter_ok}),
+        create_default_workflow_registry(),
+        checkpoint_db=db_path,
+    ) as runner_ok:
+        ok_events = [
+            ev
+            async for ev in runner_ok.run(
+                _build_parallel_join_workflow, "Fresh run", tmp_path, thread_id=tid_dual_fail
+            )
+        ]
+        st_ok = await runner_ok.get_thread_state(_build_parallel_join_workflow, tid_dual_fail)
+
+    assert isinstance(ok_events[-1].payload, WorkflowCompletedEvent)
+    assert ok_events[-1].payload.status == "completed"
+    assert st_ok.node_outputs["worker_a"].session_ref == fail_ref_a
+    assert st_ok.node_outputs["worker_b"].session_ref == fail_ref_b
+
+
+async def test_parallel_hard_kill_crash_recovers_progressively_preserving_both_sessions(
+    tmp_path: Path,
+) -> None:
+    """Gap: parallel WAL crashes must materialize both branches and allow progressive resume."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "parallel-hard-kill"
+
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(Path(__file__).resolve()),
+        str(tmp_path),
+        thread_id,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert worker.stdout is not None
+        line = (await asyncio.wait_for(worker.stdout.readline(), 15)).decode().strip()
+        req_by_node = json.loads(line)
+        assert set(req_by_node) == {"worker_a", "worker_b"}
+    finally:
+        if worker.returncode is None:
+            worker.kill()
+        await worker.wait()
+
+    async with _make_runner("ui_question_unique", checkpoint_db=db_path) as runner:
+        st_crash = await runner.get_thread_state(_build_parallel_join_workflow, thread_id)
+        assert st_crash.status == "crashed"
+        assert {i.node_id for i in st_crash.interrupts} == {"worker_a", "worker_b"}
+        assert {r.node_id for r in st_crash.inflight_nodes} == {"worker_a", "worker_b"}
+        ref_a = st_crash.node_outputs["worker_a"].session_ref
+        ref_b = st_crash.node_outputs["worker_b"].session_ref
+        assert ref_a is not None and ref_b is not None
+
+        # Answer worker_a first: Loop 1 materializes both WAL rows; Loop 2 resumes only worker_a.
+        ev_a = [
+            ev
+            async for ev in runner.resume(
+                _build_parallel_join_workflow,
+                thread_id,
+                interaction_response=InteractionResponse(
+                    request_id=req_by_node["worker_a"], decision="approve", value="redis"
+                ),
+            )
+        ]
+        assert isinstance(ev_a[0].payload, WorkflowResumedEvent)
+        assert ev_a[0].payload.resumed_from == "crash"
+        assert [ev.payload.node_id for ev in ev_a if ev.payload.type == "node.started"] == [
+            "worker_a"
+        ]
+        assert isinstance(ev_a[-1].payload, WorkflowInterruptedEvent)
+        assert [i.node_id for i in ev_a[-1].payload.interrupts] == ["worker_b"]
+
+        # Now answer worker_b -> aggregator runs and finishes cleanly with both sessions intact.
+        ev_b = [
+            ev
+            async for ev in runner.resume(
+                _build_parallel_join_workflow,
+                thread_id,
+                interaction_response=InteractionResponse(
+                    request_id=req_by_node["worker_b"], decision="approve", value="memory"
+                ),
+            )
+        ]
+        st_final = await runner.get_thread_state(_build_parallel_join_workflow, thread_id)
+
+    _write_manifest(tmp_path, "parallel_hard_kill_resume_b", ev_b)
+    assert isinstance(ev_b[-1].payload, WorkflowCompletedEvent)
+    assert ev_b[-1].payload.status == "completed"
+    assert "redis" in ev_b[-1].payload.final_output and "memory" in ev_b[-1].payload.final_output
+    assert st_final.status == "completed" and st_final.inflight_nodes == ()
+    assert st_final.node_outputs["worker_a"].session_ref == ref_a
+    assert st_final.node_outputs["worker_b"].session_ref == ref_b
+
+
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:
+    if thread_id == "parallel-hard-kill":
+        seen: dict[str, str] = {}
+        async with _make_runner(
+            "ui_question_unique", checkpoint_db=workspace / "checkpoints.sqlite"
+        ) as r:
+            async for event in r.run(
+                _build_parallel_join_workflow,
+                "Parallel crash",
+                workspace,
+                thread_id=thread_id,
+                interaction_mode="wait",
+            ):
+                if isinstance(event.payload, InteractionRequestEvent) and event.node_id:
+                    seen[event.node_id] = event.payload.request_id
+                    if len(seen) == 2:
+                        print(json.dumps(seen, sort_keys=True), flush=True)
+        return
     if thread_id == "committed":
         async with _make_runner("standard", checkpoint_db=workspace / "checkpoints.sqlite") as r:
             async for event in r.run("single_agent", "Finish", workspace, thread_id=thread_id):

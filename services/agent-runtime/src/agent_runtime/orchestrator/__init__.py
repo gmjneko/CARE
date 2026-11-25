@@ -17,7 +17,7 @@ from agent_runtime.orchestrator.registry import (
     WorkflowDefinition,
     WorkflowRegistry,
 )
-from agent_runtime.orchestrator.runner import ThreadState, WorkflowRunner
+from agent_runtime.orchestrator.runner import ResumeInput, ThreadState, WorkflowRunner
 from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
     "NodeOutput",
     "PendingInteraction",
     "PromptBuilder",
+    "ResumeInput",
     "RunContext",
     "StreamPacket",
     "ThreadState",

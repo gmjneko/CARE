@@ -535,6 +535,7 @@ def _handle_ui_question(
     append_prompt: str,
     tools: str | None,
     crash_while_waiting: bool = False,
+    question_id: str = "ui-q-1",
 ) -> bool:
     """模拟节点内 ask_question 阻塞提问；若已有历史则直接按恢复后回答继续完成。"""
     is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
@@ -573,7 +574,7 @@ def _handle_ui_question(
     _emit(
         {
             "type": "extension_ui_request",
-            "id": "ui-q-1",
+            "id": question_id,
             "method": "select",
             "title": "Select cache backend",
             "message": "Which cache backend should be used?",
@@ -735,6 +736,15 @@ def main() -> int:
                     session_file=session_file,
                     append_prompt=append_prompt,
                     tools=args.tools,
+                )
+            elif scenario == "ui_question_unique":
+                _handle_ui_question(
+                    req_id,
+                    prompt,
+                    session_file=session_file,
+                    append_prompt=append_prompt,
+                    tools=args.tools,
+                    question_id=f"ui-q-{uuid4().hex[:8]}",
                 )
             elif scenario == "ui_question_crash":
                 if _handle_ui_question(
