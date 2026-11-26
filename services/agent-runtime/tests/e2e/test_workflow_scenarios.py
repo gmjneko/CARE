@@ -15,7 +15,7 @@ import pytest
 from agent_runtime.adapters import (
     AdapterProtocolError,
     AdapterRegistry,
-    InteractionResponse,
+    AdapterRpcError,
     ModelEndpoint,
     PiRpcAdapter,
     PiRpcConfig,
@@ -29,6 +29,7 @@ from agent_runtime.config import (
 from agent_runtime.orchestrator import WorkflowRunner, build_approval_node
 from agent_runtime.protocol import (
     InteractionRequestEvent,
+    InteractionResponse,
     RuntimeEvent,
     TextDeltaEvent,
     WorkflowCompletedEvent,
@@ -209,7 +210,7 @@ async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isola
         e["payload"]["node_id"]
         for e in manifest2["events"]
         if e["payload"]["type"] == "node.started"
-    ] == ["executor"]
+    ] == ["plan_approval", "executor"]
     assert [
         e["payload"]["node_id"]
         for e in manifest2["events"]
@@ -295,7 +296,9 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         ]
         st_denied = await runner.get_thread_state("plan_and_execute", thread_deny)
 
-        assert [e.payload.node_id for e in deny_events if e.payload.type == "node.started"] == []
+        assert [e.payload.node_id for e in deny_events if e.payload.type == "node.started"] == [
+            "plan_approval"
+        ]
         assert [e.payload.node_id for e in deny_events if e.payload.type == "node.completed"] == [
             "plan_approval"
         ]
@@ -421,6 +424,71 @@ async def test_mid_turn_steer_injects_guidance_into_active_session(tmp_path: Pat
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
     assert final.final_output == "STEERED=switch to async"
+
+
+async def test_mid_turn_steer_rejection_surfaces_to_caller_without_breaking_turn(
+    tmp_path: Path,
+) -> None:
+    """Gap: steer RPC rejection previously raised inside run_turn() and dropped terminal events."""
+    events: list[RuntimeEvent] = []
+    steer_errors: list[AdapterRpcError] = []
+
+    async with _make_runner("steer_reject_once") as runner:
+        async for event in runner.run(
+            "single_agent",
+            "Initial task",
+            tmp_path,
+            run_id="run-steer-reject-1",
+            thread_id="thread-steer-reject-1",
+        ):
+            events.append(event)
+            if isinstance(event.payload, TextDeltaEvent):
+                with pytest.raises(AdapterRpcError, match="Steer rejected") as exc_info:
+                    await runner.steer("run-steer-reject-1", "bad steer")
+                steer_errors.append(exc_info.value)
+                await runner.steer("run-steer-reject-1", "accepted steer")
+
+    assert len(steer_errors) == 1
+    assert all(ev.thread_id == "thread-steer-reject-1" for ev in events)
+    final = events[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    assert final.status == "completed"
+    assert final.final_output == "STEERED=accepted steer"
+
+
+async def test_pi_rpc_config_injected_directories_override_care_home(tmp_path: Path) -> None:
+    """Gap: PiRpcTransport previously hardcoded global CARE_HOME paths for sessions and tmp."""
+    custom_sessions = tmp_path / "tenant-a" / "sessions"
+    custom_tmp = tmp_path / "tenant-a" / "tmp"
+    adapter = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "inspect_endpoint"),
+            request_timeout_s=10.0,
+            sessions_dir=custom_sessions,
+            tmp_dir=custom_tmp,
+        )
+    )
+    events: list[RuntimeEvent] = []
+    async with WorkflowRunner(
+        AdapterRegistry({"pi": adapter}),
+        create_default_workflow_registry(),
+    ) as runner:
+        async for ev in runner.run(
+            "single_agent",
+            "Check dirs",
+            tmp_path,
+            thread_id="tenant-a-thread",
+            endpoint=ModelEndpoint(model="local-m", base_url="http://localhost:11434/v1"),
+        ):
+            events.append(ev)
+        state = await runner.get_thread_state("single_agent", "tenant-a-thread")
+
+    final = events[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    report = json.loads(final.final_output)
+    assert Path(report["agent_dir"]).parent == custom_tmp
+    assert state.node_outputs["agent"].session_ref is not None
+    assert Path(state.node_outputs["agent"].session_ref).parent == custom_sessions
 
 
 async def test_planner_failure_halts_downstream_executor_and_redacts_secrets(

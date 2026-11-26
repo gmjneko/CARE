@@ -20,8 +20,8 @@ from agent_runtime.protocol.events import (
     ToolOutputDeltaEvent,
     ToolStartedEvent,
     UsageUpdatedEvent,
-    redact_sensitive_text,
 )
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 _USER_INPUT_UI_METHODS: frozenset[str] = frozenset({"select", "input", "editor"})
 _IGNORED_UI_METHODS: frozenset[str] = frozenset(

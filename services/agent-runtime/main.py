@@ -11,7 +11,6 @@ from uuid import uuid4
 
 from agent_runtime.adapters import (
     AdapterRegistry,
-    InteractionResponse,
     ModelEndpoint,
     PiRpcAdapter,
     PiRpcConfig,
@@ -21,6 +20,7 @@ from agent_runtime.config import checkpoints_db_path, load_local_settings
 from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
     InteractionRequestEvent,
+    InteractionResponse,
     NodeCompletedEvent,
     NodeStartedEvent,
     PendingInterrupt,
@@ -110,8 +110,10 @@ def run(
         if thinking_level is not None
         else (resolved_profile.thinking_level if resolved_profile is not None else None)
     )
-    # Pi 可执行文件优先级：显式入参 > settings.json > 环境变量 PI_BIN > "pi"
-    effective_pi_bin = pi_bin or settings.pi_bin or os.environ.get("PI_BIN", "pi")
+    # Pi 可执行文件优先级：显式入参 > settings.json adapter_bins["pi"] > 环境变量 PI_BIN > "pi"
+    effective_pi_bin = (
+        pi_bin or settings.resolve_adapter_bin("pi") or os.environ.get("PI_BIN", "pi")
+    )
     effective_checkpoint_db = checkpoint_db if checkpoint_db is not None else checkpoints_db_path()
     workspace_dir = Path(cwd).expanduser()
     effective_thread_id = thread_id or f"cli-{uuid4().hex[:12]}"
@@ -122,7 +124,7 @@ def run(
             {"pi": PiRpcAdapter(PiRpcConfig(command=(effective_pi_bin,)))}
         )
 
-        render_state: dict[str, object] = {"stream": None, "saw_text": False}
+        render_state: dict[str, object] = {"stream": None, "saw_text": False, "is_agent": False}
         exit_code = 0
         pending_interrupts: tuple[PendingInterrupt, ...] = ()
 
@@ -385,19 +387,20 @@ def _render_human(event: RuntimeEvent, state: dict[str, object]) -> None:
     payload = event.payload
 
     if isinstance(payload, WorkflowStartedEvent):
-        print(f"[workflow.started] workflow={payload.preset} run_id={event.run_id}", flush=True)
+        print(f"[workflow.started] workflow={event.workflow_id} run_id={event.run_id}", flush=True)
     elif isinstance(payload, WorkflowResumedEvent):
         print(
-            f"[workflow.resumed] workflow={payload.preset} "
-            f"thread_id={payload.thread_id} from={payload.resumed_from}",
+            f"[workflow.resumed] workflow={event.workflow_id} "
+            f"thread_id={event.thread_id} from={payload.resumed_from}",
             flush=True,
         )
     elif isinstance(payload, NodeStartedEvent):
         _end_stream(state)
         state["saw_text"] = False
+        state["is_agent"] = payload.adapter is not None
+        adapter_suffix = f" adapter={payload.adapter}" if payload.adapter is not None else ""
         print(
-            f"\n[node.started] node={payload.node_id} "
-            f"role={payload.role} adapter={payload.adapter}",
+            f"\n[node.started] node={payload.node_id} role={payload.role}{adapter_suffix}",
             flush=True,
         )
     elif isinstance(payload, ThinkingDeltaEvent):
@@ -427,9 +430,10 @@ def _render_human(event: RuntimeEvent, state: dict[str, object]) -> None:
         print(f"[tool.completed] {payload.tool_name} [{status}{duration}]", flush=True)
     elif isinstance(payload, NodeCompletedEvent):
         _end_stream(state)
-        if not state["saw_text"] and payload.summary and payload.role != "approval":
+        if state["is_agent"] and not state["saw_text"] and payload.summary:
             print(payload.summary, flush=True)
         state["saw_text"] = False
+        state["is_agent"] = False
         usage = f" tokens={payload.usage.total_tokens}" if payload.usage else ""
         print(f"[node.completed] node={payload.node_id} status={payload.status}{usage}", flush=True)
         if payload.failure:

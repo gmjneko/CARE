@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime.adapters.base import (
     AgentSession,
-    InteractionResponse,
     ModelEndpoint,
     ThinkingLevel,
 )
@@ -37,6 +36,7 @@ from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
 from agent_runtime.protocol.events import (
     AgentFailure,
     InteractionRequestEvent,
+    InteractionResponse,
     PendingInterrupt,
     PendingInterruptKind,
     RuntimeEvent,
@@ -202,7 +202,7 @@ class WorkflowRunner:
                 run_id=effective_run_id,
                 thread_id=effective_thread_id,
                 graph_input=initial_state,
-                opening_event=WorkflowStartedEvent(preset=workflow_name, prompt=prompt),
+                opening_event=WorkflowStartedEvent(prompt=prompt),
                 interaction_handler=interaction_handler,
                 interaction_mode=interaction_mode,
             ):
@@ -262,9 +262,7 @@ class WorkflowRunner:
                 run_id=effective_run_id,
                 thread_id=thread_id,
                 graph_input=graph_input,
-                opening_event=WorkflowResumedEvent(
-                    preset=workflow_name, thread_id=thread_id, resumed_from=reason
-                ),
+                opening_event=WorkflowResumedEvent(resumed_from=reason),
                 interaction_handler=interaction_handler,
                 interaction_mode=interaction_mode,
                 staged_replies=staged_replies,
@@ -619,6 +617,7 @@ class WorkflowRunner:
             return RuntimeEvent(
                 seq=seq,
                 run_id=run_id,
+                thread_id=thread_id,
                 workflow_id=workflow_name,
                 node_id=node_id,
                 payload=payload,

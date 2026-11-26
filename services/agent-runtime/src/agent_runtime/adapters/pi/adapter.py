@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from agent_runtime.adapters.base import AgentCapabilities, InteractionResponse, SessionConfig
+from agent_runtime.adapters.base import AgentCapabilities, SessionConfig
 from agent_runtime.adapters.errors import (
     AdapterError,
     AdapterProtocolError,
@@ -19,6 +19,7 @@ from agent_runtime.protocol.events import (
     AgentEvent,
     AgentFailure,
     InteractionRequestEvent,
+    InteractionResponse,
     TurnCompletedEvent,
     TurnStartedEvent,
 )
@@ -196,7 +197,9 @@ class PiRpcSession:
             self._turn_active = False
 
     async def steer(self, message: str) -> None:
-        await self._transport.send(
+        # Use ID-correlated request() so RPC rejections surface directly to the steer() caller
+        # without terminating the concurrent run_turn() event stream.
+        await self._transport.request(
             {
                 "id": self._transport.next_id("steer"),
                 "type": "prompt",
@@ -206,7 +209,7 @@ class PiRpcSession:
         )
 
     async def follow_up(self, message: str) -> None:
-        await self._transport.send(
+        await self._transport.request(
             {
                 "id": self._transport.next_id("follow-up"),
                 "type": "prompt",

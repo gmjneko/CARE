@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from agent_runtime.adapters.errors import AdapterProtocolError
-from agent_runtime.protocol.events import redact_sensitive_text
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024  # 16 MiB
 

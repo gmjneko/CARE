@@ -17,7 +17,6 @@ from langgraph.types import interrupt
 from agent_runtime.adapters import (
     AdapterProtocolError,
     AdapterRegistry,
-    InteractionResponse,
     PiRpcAdapter,
     PiRpcConfig,
 )
@@ -33,6 +32,7 @@ from agent_runtime.orchestrator import (
 from agent_runtime.paths import sessions_dir
 from agent_runtime.protocol import (
     InteractionRequestEvent,
+    InteractionResponse,
     RuntimeEvent,
     TextDeltaEvent,
     WorkflowCompletedEvent,
@@ -628,7 +628,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
     assert isinstance(run2_events[0].payload, WorkflowResumedEvent)
     assert run2_events[0].payload.resumed_from == "workflow_interrupt"
     started_nodes = [ev.payload.node_id for ev in run2_events if ev.payload.type == "node.started"]
-    assert started_nodes == ["executor"]
+    assert started_nodes == ["plan_approval", "executor"]
     final = run3_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
@@ -780,8 +780,10 @@ async def test_failed_multinode_turn_allows_fresh_run_preserving_all_node_sessio
         st2 = await runner2.get_thread_state("plan_and_execute", thread_id)
 
     _write_manifest(tmp_path, "fail_then_new_run", events2)
-    started_nodes = [ev.payload.node_id for ev in events2 if ev.payload.type == "node.started"]
-    assert started_nodes == ["planner", "executor"]
+    started_plan = [ev.payload.node_id for ev in events2_plan if ev.payload.type == "node.started"]
+    started_exec = [ev.payload.node_id for ev in events2_exec if ev.payload.type == "node.started"]
+    assert started_plan == ["planner", "plan_approval"]
+    assert started_exec == ["plan_approval", "executor"]
     assert isinstance(events2[-1].payload, WorkflowCompletedEvent)
     assert events2[-1].payload.status == "completed"
     assert st2.status == "completed" and st2.resumable is False

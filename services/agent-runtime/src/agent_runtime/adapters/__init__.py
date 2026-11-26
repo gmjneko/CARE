@@ -5,12 +5,13 @@ from agent_runtime.adapters.base import (
     AgentCapabilities,
     AgentSession,
     ApiProtocol,
-    InteractionResponse,
     ModelEndpoint,
     SessionConfig,
     ThinkingLevel,
+    ToolPolicy,
 )
 from agent_runtime.adapters.errors import (
+    AdapterCapabilityError,
     AdapterError,
     AdapterProtocolError,
     AdapterRpcError,
@@ -21,6 +22,7 @@ from agent_runtime.adapters.pi import PiRpcAdapter, PiRpcConfig
 from agent_runtime.adapters.registry import AdapterRegistry
 
 __all__ = [
+    "AdapterCapabilityError",
     "AdapterError",
     "AdapterProtocolError",
     "AdapterRegistry",
@@ -31,10 +33,10 @@ __all__ = [
     "AgentCapabilities",
     "AgentSession",
     "ApiProtocol",
-    "InteractionResponse",
     "ModelEndpoint",
     "PiRpcAdapter",
     "PiRpcConfig",
     "SessionConfig",
     "ThinkingLevel",
+    "ToolPolicy",
 ]

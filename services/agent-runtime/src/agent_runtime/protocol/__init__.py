@@ -1,4 +1,4 @@
-"""Canonical protocol models shared across adapters and orchestrator."""
+"""Canonical protocol models shared across adapters, orchestrator, and runtime."""
 
 from agent_runtime.protocol.events import (
     EPHEMERAL_EVENT_TYPES,
@@ -7,6 +7,7 @@ from agent_runtime.protocol.events import (
     CompactionEvent,
     FailureClass,
     InteractionRequestEvent,
+    InteractionResponse,
     MessageCompletedEvent,
     NodeCompletedEvent,
     NodeStartedEvent,
@@ -29,8 +30,8 @@ from agent_runtime.protocol.events import (
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
     WorkflowStartedEvent,
-    redact_sensitive_text,
 )
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 __all__ = [
     "EPHEMERAL_EVENT_TYPES",
@@ -39,6 +40,7 @@ __all__ = [
     "CompactionEvent",
     "FailureClass",
     "InteractionRequestEvent",
+    "InteractionResponse",
     "MessageCompletedEvent",
     "NodeCompletedEvent",
     "NodeStartedEvent",

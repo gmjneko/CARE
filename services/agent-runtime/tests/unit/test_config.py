@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime.adapters import ModelEndpoint
+from agent_runtime.adapters import ModelEndpoint, SessionConfig
 from agent_runtime.config import (
     CARE_HOME_ENV,
     LocalSettings,
@@ -29,7 +29,8 @@ def test_missing_settings_file_returns_empty_defaults(tmp_path: Path) -> None:
     loaded = load_local_settings(care_home=tmp_path / "missing-home")
     assert loaded.active_profile is None
     assert loaded.profiles == {}
-    assert loaded.pi_bin is None
+    assert loaded.adapter_bins == {}
+    assert loaded.resolve_adapter_bin("pi") is None
     assert loaded.resolve_profile() is None
 
 
@@ -58,7 +59,7 @@ def test_save_and_load_round_trip_masks_secret_in_memory_and_sets_permissions(
     secret = "sk-local-roundtrip-secret"
     original = LocalSettings(
         active_profile="deepseek",
-        pi_bin="/opt/homebrew/bin/pi",
+        adapter_bins={"pi": "  /opt/homebrew/bin/pi  "},
         profiles={
             "deepseek": ModelProfile(
                 model="  deepseek-chat  ",
@@ -92,6 +93,8 @@ def test_save_and_load_round_trip_masks_secret_in_memory_and_sets_permissions(
     assert secret not in repr(profile)
     assert secret not in profile.model_dump_json()
     assert loaded.resolve_profile("ollama") == loaded.profiles["ollama"]
+    assert loaded.resolve_adapter_bin("pi") == "/opt/homebrew/bin/pi"
+    assert loaded.resolve_adapter_bin("codex", default="codex") == "codex"
 
 
 def test_extra_desktop_keys_in_settings_json_are_tolerated(tmp_path: Path) -> None:
@@ -153,3 +156,14 @@ def test_resolve_unknown_profile_raises_key_error() -> None:
 def test_invalid_model_endpoint_fails_fast(kwargs: dict[str, str], match: str) -> None:
     with pytest.raises(ValidationError, match=match):
         ModelEndpoint(**kwargs)
+
+
+def test_invalid_adapter_bins_and_session_tool_policy_fail_fast(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="adapter_bins"):
+        LocalSettings(adapter_bins={"  ": "/usr/bin/pi"})
+    with pytest.raises(ValidationError, match="Executable path"):
+        LocalSettings(adapter_bins={"pi": "   "})
+    with pytest.raises(ValidationError, match="tool_policy"):
+        SessionConfig(cwd=tmp_path, tool_policy="read_only", tools=("read",))
+    with pytest.raises(ValidationError, match="persist_session"):
+        SessionConfig(cwd=tmp_path, session_ref="s1.jsonl", persist_session=False)

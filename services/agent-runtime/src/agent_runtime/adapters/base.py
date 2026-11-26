@@ -9,9 +9,10 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
-from agent_runtime.protocol.events import AgentEvent
+from agent_runtime.protocol.events import AgentEvent, InteractionResponse
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+ToolPolicy = Literal["full", "read_only", "none"]
 ApiProtocol = Literal[
     "openai-completions",
     "openai-responses",
@@ -87,30 +88,18 @@ class SessionConfig(BaseModel):
     thinking_level: ThinkingLevel | None = None
     system_prompt: str | None = None
     append_system_prompt: str | None = None
+    tool_policy: ToolPolicy = "full"
     tools: tuple[str, ...] | None = None
-    no_tools: bool = False
-    extensions: tuple[Path, ...] = ()
     session_ref: str | None = None
     persist_session: bool = False
 
     @model_validator(mode="after")
     def _validate_combinations(self) -> SessionConfig:
-        if self.no_tools and self.tools is not None:
-            raise ValueError("Cannot set both 'no_tools=True' and explicit 'tools'")
+        if self.tools is not None and self.tool_policy != "full":
+            raise ValueError("Cannot combine explicit 'tools' with non-default 'tool_policy'")
         if self.session_ref and not self.persist_session:
             raise ValueError("'session_ref' requires 'persist_session=True'")
         return self
-
-
-class InteractionResponse(BaseModel):
-    """Host decision/input answering a blocking InteractionRequestEvent."""
-
-    model_config = ConfigDict(frozen=True)
-
-    request_id: str
-    decision: Literal["approve", "deny", "cancel"] = "cancel"
-    feedback: str | None = None
-    value: str | None = None
 
 
 @runtime_checkable

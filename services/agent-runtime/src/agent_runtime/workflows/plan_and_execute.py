@@ -55,7 +55,7 @@ def build_plan_and_execute_workflow(
                 endpoint=endpoint,
                 thinking_level=thinking_level,
                 persist_session=persist_session,
-                tools=("read", "grep", "find", "ls"),
+                tool_policy="read_only",
                 append_system_prompt=(
                     "You are the Planner agent in a multi-agent workflow. "
                     "Inspect the workspace using read-only tools and produce a concise, "

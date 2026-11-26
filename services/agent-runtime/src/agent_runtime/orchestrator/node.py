@@ -17,10 +17,10 @@ from langgraph.types import interrupt
 
 from agent_runtime.adapters.base import (
     AgentSession,
-    InteractionResponse,
     ModelEndpoint,
     SessionConfig,
     ThinkingLevel,
+    ToolPolicy,
 )
 from agent_runtime.adapters.errors import AdapterError, AdapterProtocolError
 from agent_runtime.adapters.registry import AdapterRegistry
@@ -29,6 +29,7 @@ from agent_runtime.orchestrator.state import AgentChanges, NodeOutput, WorkflowS
 from agent_runtime.protocol.events import (
     AgentEvent,
     InteractionRequestEvent,
+    InteractionResponse,
     NodeCompletedEvent,
     NodeStartedEvent,
     TurnCompletedEvent,
@@ -73,11 +74,10 @@ class AgentNodeConfig:
     adapter: str = "pi"
     system_prompt: str | None = None
     append_system_prompt: str | None = None
+    tool_policy: ToolPolicy = "full"
     tools: tuple[str, ...] | None = None
-    no_tools: bool = False
     endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
-    extensions: tuple[Path, ...] = ()
     persist_session: bool = False
 
 
@@ -144,9 +144,8 @@ def build_agent_node(
             thinking_level=node_config.thinking_level,
             system_prompt=node_config.system_prompt,
             append_system_prompt=node_config.append_system_prompt,
+            tool_policy=node_config.tool_policy,
             tools=node_config.tools,
-            no_tools=node_config.no_tools,
-            extensions=node_config.extensions,
             persist_session=node_config.persist_session,
             session_ref=prev_session_ref,
         )
@@ -342,6 +341,13 @@ def build_approval_node(
         if content:
             interrupt_payload["content"] = content
 
+        writer = get_stream_writer()
+        writer(
+            StreamPacket(
+                node_id=clean_id,
+                event=NodeStartedEvent(node_id=clean_id, role="approval", adapter=None),
+            )
+        )
         decision, feedback = parse_approval_decision(interrupt(interrupt_payload), node_id=clean_id)
         label = _APPROVAL_DECISION_LABELS[decision]
         summary = f"{label}: {feedback}" if feedback else label
@@ -352,7 +358,7 @@ def build_approval_node(
             status="completed" if approved else "aborted",
             summary=summary,
         )
-        _emit_node_completed(get_stream_writer(), output)
+        _emit_node_completed(writer, output)
         return {
             "node_outputs": {clean_id: output},
             "status": "running" if approved else "aborted",

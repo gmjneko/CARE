@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from agent_runtime.protocol.events import redact_sensitive_text
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 
 class AdapterError(Exception):
     """Base error for all adapter failures."""
+
+
+class AdapterCapabilityError(AdapterError):
+    """Raised when an operation requires a capability the configured adapter does not support."""
 
 
 class AdapterStartupError(AdapterError):

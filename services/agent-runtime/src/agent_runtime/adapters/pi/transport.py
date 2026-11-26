@@ -26,11 +26,12 @@ from agent_runtime.adapters.errors import (
 )
 from agent_runtime.adapters.pi.framing import DEFAULT_MAX_LINE_BYTES, JsonlFramer
 from agent_runtime.paths import runtime_tmp_dir, sessions_dir
-from agent_runtime.protocol.events import redact_sensitive_text
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 _STDERR_MAX_BYTES = 16 * 1024
 _API_KEY_ENV_VAR = "CARE_LLM_API_KEY"
 _DEFAULT_CUSTOM_PROVIDER = "care"
+_READ_ONLY_PI_TOOLS: tuple[str, ...] = ("read", "grep", "find", "ls")
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,10 @@ class PiRpcConfig(BaseModel):
     shutdown_grace_s: float = 1.0
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
     offline: bool = False
+    extensions: tuple[Path, ...] = ()
+    # Optional explicit directories for multi-tenant / cloud isolation (default: CARE_HOME).
+    sessions_dir: Path | None = None
+    tmp_dir: Path | None = None
 
 
 def resolve_pi_executable(executable: str) -> str:
@@ -84,26 +89,26 @@ def resolve_pi_executable(executable: str) -> str:
 
 def build_pi_argv(
     *,
-    base_command: tuple[str, ...],
+    rpc_config: PiRpcConfig,
     session_config: SessionConfig,
     runtime_dir: Path,
-    offline: bool = False,
 ) -> tuple[list[str], dict[str, str] | None]:
     """Construct `pi --mode rpc` argv and optional isolated env, staging files in `runtime_dir`."""
-    if not base_command:
+    if not rpc_config.command:
         raise AdapterStartupError("PiRpcConfig.command must contain at least one element")
 
-    resolved_exe = resolve_pi_executable(base_command[0])
-    argv: list[str] = [resolved_exe, *base_command[1:], "--mode", "rpc"]
+    resolved_exe = resolve_pi_executable(rpc_config.command[0])
+    argv: list[str] = [resolved_exe, *rpc_config.command[1:], "--mode", "rpc"]
     env: dict[str, str] | None = None
 
     if session_config.session_ref:
         # 显式传入 session_ref 时恢复既有的 Pi JSONL 会话历史
         argv.extend(["--session", session_config.session_ref])
     elif session_config.persist_session:
-        # 持久化会话文件统一落盘到 ~/.care/sessions/（受 CARE_HOME 覆盖），
-        # 与临时 runtime_dir（~/.care/tmp/care-pi-*）彻底解耦，退出时不删除。
-        sess_dir = sessions_dir()
+        # 优先使用注入的 sessions_dir，未注入时落盘到 ~/.care/sessions/（受 CARE_HOME 覆盖）
+        sess_dir = (
+            rpc_config.sessions_dir if rpc_config.sessions_dir is not None else sessions_dir()
+        )
         sess_dir.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             os.chmod(sess_dir, 0o700)
@@ -111,34 +116,27 @@ def build_pi_argv(
     else:
         argv.append("--no-session")
 
-    if offline:
+    if rpc_config.offline:
         argv.append("--offline")
 
     endpoint = session_config.endpoint
     if endpoint is not None:
         if endpoint.base_url is not None or endpoint.api_key is not None:
-            # 指定自定义 base_url 或 api_key 时，在会话临时目录生成独立 models.json，
-            # 并通过 PI_CODING_AGENT_DIR 指向该目录：
-            # 1) 不污染宿主机 ~/.pi/agent，也避免宿主机旧 auth.json 静默覆盖本次凭据；
-            # 2) 多任务/多节点并发使用不同网关或模型时互不冲突，会话结束随临时目录自动清理。
             effective_provider = endpoint.provider or _DEFAULT_CUSTOM_PROVIDER
             provider_entry: dict[str, Any] = {}
             if endpoint.base_url is not None:
                 provider_entry["baseUrl"] = endpoint.base_url
                 provider_entry["api"] = endpoint.api_protocol
-                # Pi 的 models.json 支持 "$ENV_VAR" 环境变量插值，避免明文密钥报错；
                 provider_entry["apiKey"] = (
                     f"${_API_KEY_ENV_VAR}" if endpoint.api_key is not None else "no-key"
                 )
                 provider_entry["models"] = [
                     {
                         "id": endpoint.model,
-                        # 仅在显式开启 thinking_level 时标记 reasoning=True，
                         "reasoning": session_config.thinking_level not in (None, "off"),
                     }
                 ]
             else:
-                # 未指定 base_url 时仅覆写内置 provider 的 apiKey，
                 provider_entry["apiKey"] = f"${_API_KEY_ENV_VAR}"
 
             models_file = runtime_dir / "models.json"
@@ -147,18 +145,15 @@ def build_pi_argv(
                 encoding="utf-8",
             )
 
-            # 密钥仅经子进程环境变量传入，不通过命令行 --api-key 暴露给 ps 等进程查看工具
             env = dict(os.environ)
             env["PI_CODING_AGENT_DIR"] = str(runtime_dir)
             if endpoint.api_key is not None:
                 env[_API_KEY_ENV_VAR] = endpoint.api_key.get_secret_value()
             else:
-                # 清理父进程可能残留的同名环境变量，防止串入无密钥端点
                 env.pop(_API_KEY_ENV_VAR, None)
 
             argv.extend(["--provider", effective_provider, "--model", endpoint.model])
         else:
-            # 直接沿用 Pi 本机登录态与默认目录。
             if endpoint.provider:
                 argv.extend(["--provider", endpoint.provider])
             argv.extend(["--model", endpoint.model])
@@ -176,12 +171,14 @@ def build_pi_argv(
         append_file.write_text(session_config.append_system_prompt, encoding="utf-8")
         argv.extend(["--append-system-prompt", str(append_file)])
 
-    if session_config.no_tools:
+    if session_config.tool_policy == "none":
         argv.append("--no-tools")
+    elif session_config.tool_policy == "read_only":
+        argv.extend(["--tools", ",".join(_READ_ONLY_PI_TOOLS)])
     elif session_config.tools is not None:
         argv.extend(["--tools", ",".join(session_config.tools)])
 
-    for ext in session_config.extensions:
+    for ext in rpc_config.extensions:
         argv.extend(["--extension", str(ext)])
 
     return argv, env
@@ -224,8 +221,7 @@ class PiRpcTransport:
         if not session_config.cwd.exists():
             raise AdapterStartupError(f"Working directory does not exist: {session_config.cwd}")
 
-        # 统一放到 ~/.care/tmp/（支持 CARE_HOME 覆盖），会话结束时自动删除子目录
-        tmp_root = runtime_tmp_dir()
+        tmp_root = rpc_config.tmp_dir if rpc_config.tmp_dir is not None else runtime_tmp_dir()
         tmp_root.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             os.chmod(tmp_root, 0o700)
@@ -233,10 +229,9 @@ class PiRpcTransport:
         runtime_dir = tempfile.TemporaryDirectory(prefix="care-pi-", dir=tmp_root)
         try:
             argv, env = build_pi_argv(
-                base_command=rpc_config.command,
+                rpc_config=rpc_config,
                 session_config=session_config,
                 runtime_dir=Path(runtime_dir.name),
-                offline=rpc_config.offline,
             )
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -245,7 +240,6 @@ class PiRpcTransport:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                # On POSIX, isolate Pi in its own process group so close() reaps descendants.
                 start_new_session=(os.name != "nt"),
             )
         except AdapterError:
@@ -368,7 +362,6 @@ class PiRpcTransport:
             self.inbound_queue.put_nowait(TransportClosed(error=None))
             return
 
-        # Wait briefly for exit code so diagnostics reflect process termination rather than EOF.
         try:
             exit_code = await asyncio.wait_for(self._process.wait(), timeout=0.5)
         except TimeoutError:
@@ -389,7 +382,6 @@ class PiRpcTransport:
                     break
                 self._stderr_bytes += len(chunk)
                 self._stderr_chunks.append(chunk)
-                # Keep only the most recent bounded tail in memory.
                 while sum(len(c) for c in self._stderr_chunks) > _STDERR_MAX_BYTES:
                     self._stderr_chunks.popleft()
         except asyncio.CancelledError:
@@ -433,8 +425,6 @@ class PiRpcTransport:
 
         pid = self._process.pid
         if os.name == "nt":
-            # Windows process.terminate() only stops cmd.exe when invoked via pi.cmd,
-            # leaving Node and tool children alive. `taskkill /T /F` reaps the whole tree.
             killer = await asyncio.create_subprocess_exec(
                 "taskkill",
                 "/PID",
@@ -449,7 +439,6 @@ class PiRpcTransport:
                 await asyncio.wait_for(self._process.wait(), timeout=2.0)
             return
 
-        # POSIX: signal the process group created via start_new_session=True.
         if pid > 1:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(pid, signal.SIGTERM)

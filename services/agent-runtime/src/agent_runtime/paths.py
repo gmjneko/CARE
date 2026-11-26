@@ -33,7 +33,7 @@ def checkpoints_db_path(care_home: str | Path | None = None) -> Path:
 
 
 def sessions_dir(care_home: str | Path | None = None) -> Path:
-    """返回 `<care_home>/sessions` 路径，用于持久化 Pi 会话历史 `.jsonl`。"""
+    """返回 `<care_home>/sessions` 路径，用于持久化 Agent 会话历史。"""
     return resolve_care_home(care_home) / DEFAULT_SESSIONS_DIRNAME
 
 

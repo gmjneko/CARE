@@ -1,12 +1,13 @@
-"""Canonical event, usage, and failure models for CARE Agent Runtime."""
+"""Canonical event, interaction, usage, and failure models for CARE Agent Runtime."""
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from agent_runtime.protocol.redaction import redact_sensitive_text
 
 EPHEMERAL_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -15,37 +16,6 @@ EPHEMERAL_EVENT_TYPES: frozenset[str] = frozenset(
         "tool.output_delta",
     }
 )
-
-_MAX_FAILURE_MESSAGE_CHARS = 4096
-
-_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Authorization header / bearer / basic tokens
-    (re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [REDACTED]"),
-    # URL userinfo credentials (https://user:pass@host)
-    (re.compile(r"(https?://)([^/\s:@]+):([^/\s@]+)@"), r"\1[REDACTED]:[REDACTED]@"),
-    # Common API key prefixes (OpenAI / Anthropic / DeepSeek / generic sk-...)
-    (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b"), "[REDACTED_KEY]"),
-    # JSON-style secret fields
-    (
-        re.compile(
-            r'(?i)("(?:api[_-]?key|token|access[_-]?token|secret|password|authorization)"\s*:\s*")([^"]+)(")'
-        ),
-        r"\1[REDACTED]\3",
-    ),
-)
-
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-
-
-def redact_sensitive_text(text: str, *, max_chars: int = _MAX_FAILURE_MESSAGE_CHARS) -> str:
-    """Strip credentials, control characters, and excessive length from diagnostic text."""
-    sanitized = text
-    for pattern, replacement in _REDACTION_PATTERNS:
-        sanitized = pattern.sub(replacement, sanitized)
-    sanitized = _CONTROL_CHARS_RE.sub("", sanitized).strip()
-    if len(sanitized) > max_chars:
-        return sanitized[: max_chars - 3] + "..."
-    return sanitized
 
 
 class TokenUsage(BaseModel):
@@ -94,6 +64,17 @@ class AgentFailure(BaseModel):
             code=code,
             retryable=retryable,
         )
+
+
+class InteractionResponse(BaseModel):
+    """Host decision/input answering a blocking InteractionRequestEvent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str
+    decision: Literal["approve", "deny", "cancel"] = "cancel"
+    feedback: str | None = None
+    value: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +228,6 @@ class WorkflowStartedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.started"] = "workflow.started"
-    preset: str
     prompt: str
 
 
@@ -257,8 +237,6 @@ class WorkflowResumedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.resumed"] = "workflow.resumed"
-    preset: str
-    thread_id: str
     resumed_from: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
 
 
@@ -268,7 +246,7 @@ class NodeStartedEvent(BaseModel):
     type: Literal["node.started"] = "node.started"
     node_id: str
     role: str
-    adapter: str
+    adapter: str | None = None
 
 
 class NodeCompletedEvent(BaseModel):
@@ -365,6 +343,7 @@ class RuntimeEvent(BaseModel):
     seq: int
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     run_id: str
+    thread_id: str
     workflow_id: str
     node_id: str | None = None
     payload: RuntimeEventPayload

@@ -51,16 +51,16 @@ class LocalSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    active_profile: str | None = None  # 默认启用的 Profile 名称；None 表示沿用 Pi 本机默认配置
+    active_profile: str | None = None  # 默认启用的 Profile 名称；None 表示沿用后端本机默认配置
     profiles: dict[str, ModelProfile] = Field(default_factory=dict)  # 按名称索引的模型配置表
-    pi_bin: str | None = None  # 可选 Pi 可执行文件路径（解决 GUI 启动时 PATH 缺失问题）
+    # 按 adapter kind 映射可执行文件路径（如 {"pi": "/opt/homebrew/bin/pi"}）
+    adapter_bins: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_settings(self) -> LocalSettings:
         if any(not name.strip() for name in self.profiles):
             raise ValueError("Profile names in 'profiles' must be non-empty strings")
 
-        # 若指定了 active_profile，必须在 profiles 中存在，避免运行时静默回退
         if self.active_profile is not None:
             active = self.active_profile.strip()
             if not active:
@@ -71,14 +71,18 @@ class LocalSettings(BaseModel):
                     f"active_profile '{active}' is not defined in 'profiles' "
                     f"(available: {available})"
                 )
-            # 模型已设为 frozen=True，在校验阶段通过 object.__setattr__ 完成去空白归一化
             object.__setattr__(self, "active_profile", active)
 
-        if self.pi_bin is not None:
-            pi_bin = self.pi_bin.strip()
-            if not pi_bin:
-                raise ValueError("'pi_bin' must be non-empty when provided")
-            object.__setattr__(self, "pi_bin", pi_bin)
+        normalized_bins: dict[str, str] = {}
+        for kind, bin_path in self.adapter_bins.items():
+            clean_kind = kind.strip()
+            clean_bin = bin_path.strip()
+            if not clean_kind:
+                raise ValueError("Adapter names in 'adapter_bins' must be non-empty strings")
+            if not clean_bin:
+                raise ValueError(f"Executable path for adapter '{clean_kind}' must be non-empty")
+            normalized_bins[clean_kind] = clean_bin
+        object.__setattr__(self, "adapter_bins", normalized_bins)
 
         return self
 
@@ -94,6 +98,10 @@ class LocalSettings(BaseModel):
             raise KeyError(
                 f"Unknown model profile '{target}'. Configured profiles: {available}"
             ) from exc
+
+    def resolve_adapter_bin(self, adapter: str, *, default: str | None = None) -> str | None:
+        """解析指定 Adapter 的可执行文件路径，未配置时回退到 `default`。"""
+        return self.adapter_bins.get(adapter, default)
 
 
 def load_local_settings(care_home: str | Path | None = None) -> LocalSettings:
@@ -119,12 +127,11 @@ def save_local_settings(
     payload = _serialize_settings(settings)
     encoded = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
-    # 先写入同目录临时文件再 os.replace，避免写入中途异常导致原 settings.json 损坏
     fd, tmp_name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=home_dir)
     tmp_path = Path(tmp_name)
     try:
         if os.name != "nt":
-            os.chmod(tmp_path, 0o600)  # settings.json 含明文 API Key，限制同机其他用户读取
+            os.chmod(tmp_path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(encoded)
         os.replace(tmp_path, target_path)
@@ -139,7 +146,6 @@ def _serialize_profile(profile: ModelProfile) -> dict[str, Any]:
     """序列化单条 Profile；仅在写入本地 settings.json 时显式解包 SecretStr 明文。"""
     data = profile.model_dump(mode="json", exclude_none=True)
     if profile.api_key is not None:
-        # Pydantic 默认会将 SecretStr 序列化为 "**********"，落盘前需还原真实密钥
         data["api_key"] = profile.api_key.get_secret_value()
     return data
 
@@ -152,8 +158,8 @@ def _serialize_settings(settings: LocalSettings) -> dict[str, Any]:
             name: _serialize_profile(profile) for name, profile in settings.profiles.items()
         },
     }
-    if settings.pi_bin is not None:
-        data["pi_bin"] = settings.pi_bin
+    if settings.adapter_bins:
+        data["adapter_bins"] = dict(settings.adapter_bins)
     return data
 
 

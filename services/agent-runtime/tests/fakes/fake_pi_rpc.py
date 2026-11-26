@@ -300,7 +300,7 @@ def _handle_abortable(req_id: str | None, prompt: str, session_file: str | None)
             )
 
 
-def _handle_steerable(req_id: str | None) -> None:
+def _handle_steerable(req_id: str | None, *, reject_first_steer: bool = False) -> None:
     _emit(
         {
             "type": "response",
@@ -317,11 +317,24 @@ def _handle_steerable(req_id: str | None) -> None:
         }
     )
     steered_text = ""
+    rejected = False
     while True:
         cmd = _read_record()
         if cmd is None:
             return
         if cmd.get("type") == "prompt" and cmd.get("streamingBehavior") == "steer":
+            if reject_first_steer and not rejected:
+                rejected = True
+                _emit(
+                    {
+                        "type": "response",
+                        "id": cmd.get("id"),
+                        "command": "prompt",
+                        "success": False,
+                        "error": "Steer rejected while tool is running",
+                    }
+                )
+                continue
             steered_text = str(cmd.get("message", ""))
             _emit(
                 {
@@ -721,6 +734,8 @@ def main() -> int:
                 _handle_abortable(req_id, prompt, session_file)
             elif scenario == "steerable":
                 _handle_steerable(req_id)
+            elif scenario == "steer_reject_once":
+                _handle_steerable(req_id, reject_first_steer=True)
             elif scenario == "provider_fail_planner":
                 _handle_provider_fail_planner(req_id, args.tools)
             elif scenario == "compaction_race":
