@@ -35,7 +35,7 @@
 
 | 目录 / 文件 | 生命周期 | 职责说明 |
 | :--- | :--- | :--- |
-| `~/.care/settings.json` | 持久 | 存放多套模型 Profile、当前激活 Profile（`active_profile`）及可选 `pi_bin`；支持 Electron 写入额外 UI 字段（`extra="ignore"`）。 |
+| `~/.care/settings.json` | 持久 | 存放多套模型 Profile、当前激活 Profile（`active_profile`）及可选 `adapter_bins`（按后端映射可执行文件路径）；支持 Electron 写入额外 UI 字段（`extra="ignore"`）。 |
 | `~/.care/tmp/care-pi-*` | 瞬态（随子进程销毁） | 存放单次会话专属的 `models.json`、`system_prompt.txt`、`append_system_prompt.txt`；保证并发多任务/多节点使用不同网关时互不覆盖。 |
 | `~/.care/sessions/` | 持久 | 经 Pi 原生 `--session-dir` 传入，集中保存所有节点产生的 `.jsonl` 对话树，与 `tmp/` 彻底解耦，永不随子进程退出被误删。 |
 | `~/.care/checkpoints.sqlite` | 持久 | 存放 LangGraph `AsyncSqliteSaver` 工作流断点及轻量预写表 `care_inflight_nodes`。 |
@@ -47,7 +47,9 @@
 ```json
 {
   "active_profile": "deepseek",
-  "pi_bin": null,
+  "adapter_bins": {
+    "pi": "/opt/homebrew/bin/pi"
+  },
   "profiles": {
     "deepseek": {
       "model": "deepseek-chat",
@@ -340,14 +342,14 @@ class WorkflowResumedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.resumed"] = "workflow.resumed"
-    preset: str
-    thread_id: str
     resumed_from: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
 ```
 
+> `workflow_id` 与 `thread_id` 统一承载在最外层 `RuntimeEvent` 信封上，`InteractionResponse` 归位在 `protocol/` 与 `InteractionRequestEvent` 对称。
+
 ### 6.2 状态模型扩展（`orchestrator/state.py`）
 
-保持 `WorkflowState` 紧凑防膨胀，只增加必要的恢复指针：
+保持 `WorkflowState` 紧凑防膨胀，并将跨轮会话引用（`node_sessions`）与本轮交接产物（`node_outputs`）拆离：
 
 ```python
 class NodeOutput(BaseModel):
@@ -363,15 +365,20 @@ class NodeOutput(BaseModel):
     pending_interaction: InteractionRequestEvent | None = None
 
 
-class WorkflowState(TypedDict):
+class AgentChanges(TypedDict):
+    node_outputs: Annotated[dict[str, NodeOutput], reduce_node_outputs]
+    node_sessions: Annotated[dict[str, str], merge_node_sessions]
+    latest_output: Annotated[str, _last_value]
+
+
+class WorkflowState(AgentChanges):
     run_id: str
+    thread_id: str
     workflow_id: str
     prompt: str
     workspace_dir: str
-    node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
-    latest_output: str
-    status: Literal["running", "interrupted", "completed", "failed", "aborted"]
-    failure: AgentFailure | None
+    status: Annotated[WorkflowStatus, reduce_workflow_status]
+    failure: Annotated[AgentFailure | None, reduce_failure]
 ```
 
 ### 6.3 `WorkflowRunner` 公共接口设计（`orchestrator/runner.py`）
@@ -403,12 +410,12 @@ class WorkflowState(TypedDict):
 | 阶段 | 状态 | 核心改动文件 | 交付目标 |
 | :--- | :--- | :--- | :--- |
 | **Step A（连续对话与持久化）** | ✅ 已完成 | `paths.py`、`adapters/pi/transport.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`workflows/single_agent.py`、`workflows/plan_and_execute.py`、`main.py` | `~/.care/sessions/` 与 `~/.care/checkpoints.sqlite` 落盘；内置工作流默认 `persist_session=True`；同 `thread_id` 跨进程无损续聊；`main.py` 开箱体验多轮对话。 |
-| **Step B（双层中断恢复与热交互兜底）** | ✅ 已完成 | `protocol/events.py`、`orchestrator/state.py`、`orchestrator/inflight.py`、`adapters/base.py`、`adapters/pi/transport.py`、`adapters/pi/adapter.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`scripts/reset_local_state.py` | 补齐 `PendingInterrupt`、`WorkflowInterruptedEvent` / `WorkflowResumedEvent`、`respond_interaction()`、`suspend()` / `suspend_all()`、`resume()`（单分支与批量并发）、`discard()`、`wait_closed()` 监听、`care_inflight_nodes` 预写恢复、并行多 Agent 分支并发挂起与恢复，以及 LangGraph msgpack 白名单。 |
-| **Step C（服务化与桌面端对接）** | ⏳ 待实施 | 新增 `app.py`、`contracts/canonical-event.schema.json` | 暴露 FastAPI HTTP / SSE / WS 接口，导出跨语言契约，接入 Electron 桌面端与 Java 控制面。 |
+| **Step B（双层中断恢复、架构分层收口与 RunManager）** | ✅ 已完成 | `protocol/`、`adapters/`、`config.py`、`orchestrator/{state,live_runs,node,recovery,runner,registry}.py`、`orchestrator/persistence/`、`runtime/manager.py`、`scripts/reset_local_state.py` | 补齐双层中断恢复与并行分支并发挂起/恢复；拆出 `PersistenceBackend`（支持非 SQLite 替换）、`LiveRunRegistry`、`recovery.py` 与应用层 `RunManager`（后台任务托管、多订阅扇出与 `after_seq` 重放）；分离 `node_sessions` / `node_outputs` 与静态工作流拓扑，支持 `node_overrides` 异构节点覆盖与 `AgentCapabilities` 强校验。 |
+| **Step C（服务化与桌面端对接）** | ⏳ 待实施 | 新增 `app.py`、`contracts/canonical-event.schema.json` | 直接基于 `RunManager` 暴露 FastAPI HTTP / SSE / WS 接口，导出跨语言契约，接入 Electron 桌面端与 Java 控制面。 |
 
 ### 7.2 端到端验证矩阵（遵循外部边界替身策略）
 
-所有新增能力均通过生产路径 E2E 场景（`tests/e2e/` + 独立子进程 `fake_pi_rpc.py`，当前 64 项测试全通过）和真实本机 `pi --mode rpc` 握手验证：
+所有新增能力均通过生产路径 E2E 场景（`tests/e2e/` + 独立子进程 `fake_pi_rpc.py`，当前 81 项测试全通过）和真实本机 `pi --mode rpc` 握手验证：
 
 1. **多轮连续对话（含跨进程重启）**：使用同一 `thread_id` 连续两次执行 `single_agent`（中间销毁并重建 `WorkflowRunner`），验证第 2 轮精确带上第 1 轮在 `~/.care/sessions/` 生成的 `--session` 文件并保留上下文。
 2. **多节点会话隔离**：执行 `plan_and_execute`，验证 `planner` 与 `executor` 生成各自独立的 `session_ref`，互不混用。

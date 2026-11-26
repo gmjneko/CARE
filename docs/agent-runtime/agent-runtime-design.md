@@ -28,12 +28,15 @@
 
 ```mermaid
 flowchart TD
-    Entry["main.py (组装根 / 后续 Step 2 扩展 app.py)"] --> WF["workflows/ (一文件一工作流 + create_default_workflow_registry)"]
-    Entry --> Orch["orchestrator/ (纯引擎: WorkflowRunner, WorkflowRegistry, AgentNode, WorkflowState)"]
+    Entry["main.py (组装根 / 后续 Step 2 扩展 app.py)"] --> Runtime["runtime/ (RunManager: 后台任务托管、多订阅扇出与 after_seq 重放)"]
+    Entry --> WF["workflows/ (纯拓扑定义，一文件一工作流 + create_default_workflow_registry)"]
     Entry --> Adapters["adapters/ (AdapterRegistry, PiRpcAdapter)"]
+    Entry --> Persist["orchestrator/persistence/ (PersistenceBackend -> SqlitePersistenceBackend)"]
+    Runtime --> Orch["orchestrator/ (WorkflowRunner, LiveRunRegistry, recovery, node, state, registry)"]
     WF --> Orch
-    Orch --> AdapterBase["adapters/base.py & registry.py (AgentAdapter / AgentSession Protocol)"]
-    Orch --> Protocol["protocol/events.py (AgentEvent, WorkflowEvent, RuntimeEvent)"]
+    Orch --> Persist
+    Orch --> AdapterBase["adapters/base.py & registry.py (AgentAdapter / AgentSession / ToolPolicy)"]
+    Orch --> Protocol["protocol/ (events.py, redaction.py)"]
     Adapters --> AdapterBase
     Adapters --> Protocol
     PiImpl["adapters/pi/ (framing, normalizer, transport, adapter)"] --> AdapterBase
@@ -46,35 +49,46 @@ flowchart TD
 ```text
 services/agent-runtime/
 ├── pyproject.toml                         # Python >=3.14, 轻量依赖 (langgraph, checkpoint-sqlite, pydantic)
-├── main.py                                # 直接右键运行的 main() 入口（直接配置参数并流式查看事件）
+├── main.py                                # 直接右键运行的 main() 入口（经 RunManager 驱动与非阻塞控制台交互）
 ├── src/agent_runtime/
 │   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
-│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json)
+│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json，含 adapter_bins)
 │   ├── protocol/
-│   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent / AgentFailure / 凭据脱敏
+│   │   ├── redaction.py                   # 凭据脱敏与诊断文本裁剪 (redact_sensitive_text)
+│   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent(含 thread_id) / InteractionResponse / AgentFailure
 │   ├── adapters/
-│   │   ├── base.py                        # AgentAdapter / AgentSession Protocol, ModelEndpoint, SessionConfig, AgentCapabilities
-│   │   ├── errors.py                      # AdapterError 分层异常体系
+│   │   ├── base.py                        # AgentAdapter / AgentSession Protocol, ModelEndpoint, SessionConfig, ToolPolicy, AgentCapabilities
+│   │   ├── errors.py                      # AdapterError 分层异常体系（含 AdapterCapabilityError）
 │   │   ├── registry.py                    # 显式 AdapterRegistry 容器
 │   │   └── pi/
 │   │       ├── framing.py                 # 严格 LF-only 字节分帧器 (JsonlFramer)
 │   │       ├── normalizer.py              # 无 I/O 的 Pi 原生事件归一化状态机 (PiEventNormalizer)
-│   │       ├── transport.py               # 子进程生命周期、隔离 models.json/环境变量注入与跨平台进程树回收 (PiRpcTransport)
-│   │       └── adapter.py                 # PiRpcAdapter & PiRpcSession 实现
+│   │       ├── transport.py               # 子进程生命周期、隔离 models.json/环境变量注入、可注入目录与跨平台进程树回收
+│   │       └── adapter.py                 # PiRpcAdapter & PiRpcSession 实现（steer/follow_up 走 ID 关联 request）
 │   ├── orchestrator/                      # 【纯执行引擎，不感知具体业务工作流】
-│   │   ├── state.py                       # 防膨胀 WorkflowState & NodeOutput
-│   │   ├── node.py                        # 通用节点工厂 (build_agent_node, build_approval_node), continue_if_running, RunContext
-│   │   ├── registry.py                    # WorkflowDefinition & WorkflowRegistry（与 AdapterRegistry 对称）
-│   │   └── runner.py                      # 生产总入口 WorkflowRunner (AsyncSqliteSaver + 流式定序)
-│   └── workflows/                         # 【具体业务工作流集合，一文件一工作流，彼此互不依赖】
+│   │   ├── state.py                       # 防膨胀 WorkflowState（拆离跨轮 node_sessions 与本轮 node_outputs，确定性 status 归约）
+│   │   ├── live_runs.py                   # LiveRunRegistry、RunOptions、NodeRuntimeOverride、ExecutionContext 与能力门禁
+│   │   ├── node.py                        # 无状态节点工厂 (build_agent_node, build_approval_node), continue_if_running
+│   │   ├── persistence/
+│   │   │   ├── base.py                    # PersistenceBackend / InflightNodeStore 协议与 CHECKPOINT_SERDE
+│   │   │   └── sqlite.py                  # SqlitePersistenceBackend 与 SqliteInflightNodeStore
+│   │   ├── recovery.py                    # Snapshot+WAL 对账 (inspect_thread)、ResumePlan 解析与 ThreadState
+│   │   ├── registry.py                    # 纯拓扑 WorkflowBuilder、WorkflowDefinition & WorkflowRegistry
+│   │   └── runner.py                      # 精简 WorkflowRunner（图编译缓存、LangGraph context 注入、aupdate_state 放弃）
+│   ├── runtime/                           # 【应用服务层，承接 CLI / FastAPI SSE / WS】
+│   │   └── manager.py                     # RunManager / RunSnapshot（后台 Task 托管、断连不中断、多订阅扇出与 after_seq 重放）
+│   └── workflows/                         # 【具体业务工作流集合，纯拓扑定义，彼此互不依赖】
 │       ├── __init__.py                    # BUILTIN_WORKFLOWS 与 create_default_workflow_registry() 显式注册
 │       ├── single_agent.py                # SINGLE_AGENT_WORKFLOW (START -> agent -> END)
-│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner -> plan_approval -> executor -> END)
+│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner[read_only] -> plan_approval -> executor -> END)
 └── tests/
     ├── fakes/fake_pi_rpc.py               # 独立子进程 Fake Pi RPC 协议替身（外部边界注入）
-    ├── e2e/test_workflow_scenarios.py     # 生产路径全链路端到端场景测试
+    ├── e2e/test_workflow_scenarios.py     # 生产路径工作流与适配层 E2E 场景测试
+    ├── e2e/test_session_and_recovery.py   # 多轮持久化、双层中断恢复、并行分支与异构覆盖 E2E 测试
+    ├── e2e/test_run_manager.py            # RunManager 断连续传、多订阅 Observe 与异常传播 E2E 测试
+    ├── e2e/test_main_cli.py               # main.py 控制台交互与非 TTY 审批 E2E 测试
     └── unit/
-        ├── test_config.py                 # ModelEndpoint 与 ~/.care/settings.json 失败模式测试
+        ├── test_config.py                 # ModelEndpoint、SessionConfig 与 ~/.care/settings.json 失败模式测试
         ├── test_framing.py                # JsonlFramer 失败模式隔离测试
         └── test_normalizer.py             # PiEventNormalizer 失败模式隔离测试
 ```
@@ -92,7 +106,8 @@ class RuntimeEvent(BaseModel, frozen=True):
     seq: int                        # 单次 run 内从 1 开始严格递增，用于断点续传与排序
     timestamp: datetime             # UTC 时间戳
     run_id: str                     # 本次工作流运行实例 ID
-    workflow_id: str                # 预设或自定义工作流名称
+    thread_id: str                  # 所属会话线程 ID
+    workflow_id: str                # 工作流名称
     node_id: str | None = None      # 节点内事件带节点 ID，工作流级事件为 None
     payload: AgentEvent | WorkflowEvent  # Pydantic v2 Discriminated Union (discriminator="type")
 
@@ -124,9 +139,11 @@ class RuntimeEvent(BaseModel, frozen=True):
 | **Agent** | `interaction.request` | 否 | `request_id`, `kind(approval\|user_input\|notify)`, `blocking`, `title`, `message`, `tool_call_id`, `tool_name`, `arguments`, `input_mode`, `options` | 后端无关的人机交互/工具审批请求（统一兼容 Pi 扩展弹窗、Claude `canUseTool`/`AskUserQuestion`、Codex/ACP 工具审批） |
 | **Agent** | `usage.updated` | 否 | `usage(TokenUsage)` | 实时 Token 用量更新 |
 | **Agent** | `turn.completed` | 否 | `turn_id`, `status(completed\|aborted\|failed)`, `final_text`, `usage`, `failure`, `session_reusable` | Turn 权威终态，显式告知会话是否可复用 |
-| **Workflow** | `workflow.started` | 否 | `preset`, `prompt` | 工作流开始执行 |
-| **Workflow** | `node.started` | 否 | `node_id`, `role`, `adapter` | LangGraph 某个 Agent 节点开始执行 |
+| **Workflow** | `workflow.started` | 否 | `prompt` | 工作流开始执行（`workflow_id`/`thread_id` 由 `RuntimeEvent` 信封承载） |
+| **Workflow** | `workflow.resumed` | 否 | `resumed_from` | 工作流从断点恢复执行 |
+| **Workflow** | `node.started` | 否 | `node_id`, `role`, `adapter`（非 Agent 节点为 `None`） | LangGraph 节点（含 Agent 与审批门）开始执行 |
 | **Workflow** | `node.completed` | 否 | `node_id`, `role`, `status`, `summary`, `usage`, `failure` | 节点执行结束与结构化交接摘要 |
+| **Workflow** | `workflow.interrupted` | 否 | `interrupts` | 工作流因审批门、节点内交互或挂起暂停 |
 | **Workflow** | `workflow.completed` | 否 | `status(completed\|failed\|aborted)`, `final_output`, `failure` | 工作流最终状态与汇总产出 |
 
 ### 3.4 结构化失败分类与凭据脱敏
@@ -178,9 +195,10 @@ class AgentAdapter(Protocol):
   - 当传入自定义 `base_url` 或 `api_key` 时，`PiRpcTransport` 在 `~/.care/tmp/care-pi-*`（按会话隔离的临时目录，支持 `CARE_HOME` 覆盖）生成 `models.json`（使用 `"apiKey": "$CARE_LLM_API_KEY"` 引用，无明文落盘），通过子进程环境变量注入 `PI_CODING_AGENT_DIR` 与 `CARE_LLM_API_KEY`，避免污染宿主机 `~/.pi/agent` 且天然支持多节点/多任务并发隔离，会话结束自动清理。
 - **`ModelEndpoint` / `SessionConfig` 构造期 fail-fast 校验**：
   - `model` 不可为空；传入 `base_url` 时须为 `http://` 或 `https://`；未指定 `base_url` 而传入 `api_key` 时必须同时指定内置 `provider`；
-  - `no_tools=True` 与显式 `tools=(...)` 互斥；
+  - `SessionConfig` 使用后端无关的 `tool_policy: Literal["full", "read_only", "none"] = "full"`（由各 Adapter 映射到具体实现，如 Pi 的 `read,grep,find,ls` / `--no-tools`），与显式 `tools=(...)` 互斥；Pi 专属的 `extensions` / `sessions_dir` / `tmp_dir` 收口在 `PiRpcConfig`；
   - 传入 `session_ref` 恢复会话时必须设置 `persist_session=True`。
 - **异常分层（`adapters/errors.py`）**：
+  - `AdapterCapabilityError`：调用方或编排层请求了当前 Adapter 能力矩阵（`AgentCapabilities`）未声明支持的能力（如 `steering`、`follow_up`、`abort`、`session_resume`、`interactions`）；
   - `AdapterStartupError`：二进制未找到、工作目录不存在或握手失败；
   - `AdapterTransportError`：子进程异常退出、管道断开或控制 RPC 超时；
   - `AdapterProtocolError`：对端输出违反线协议（非 JSON、超长帧、缺少必填字段）；
@@ -262,8 +280,8 @@ sequenceDiagram
    - 逐 chunk 累积字节时实时校验 `max_line_bytes`（默认 16 MiB），超限前即截断报错防 OOM；
    - 遇到空行、非法 UTF-8、非 JSON 文本、非 JSON Object 或 EOF 截断帧，立即抛 `AdapterProtocolError`，绝不静默丢弃。
 2. **控制 RPC 与非阻塞 `prompt` 通道分离（`transport.py` & `adapter.py`）**：
-   - `get_state`、`clear_queue`、`abort` 通过 `id -> asyncio.Future` 同步关联（带超时）；
-   - `prompt`、`steer`、`follow_up`、`extension_ui_response` 走非阻塞 `send()`，其响应通过 `inbound_queue` 统一消费，彻底消除“扩展处理 `prompt` 时弹窗等待 `extension_ui_response`”导致的互锁。
+   - `get_state`、`clear_queue`、`abort`、`steer`、`follow_up` 均通过 `id -> asyncio.Future` 同步关联（带超时），控制指令被后端拒绝时直接向指令调用方抛 `AdapterRpcError`，不会误杀并发的 `run_turn()` 事件流；
+   - `prompt` 与 `extension_ui_response` 走非阻塞 `send()`，其响应通过 `inbound_queue` 统一消费，彻底消除“扩展处理 `prompt` 时弹窗等待 `extension_ui_response`”导致的互锁。
 3. **以 `agent_settled` + `get_state` 为 Turn 终态**：
    - `agent_end` 仅表示单次模型循环结束，后续仍可能触发自动重试或压缩；收到 `agent_settled` 后再调用一次 `get_state` 确认 `isStreaming=false && isCompacting=false && pendingMessageCount==0` 才结案。
 4. **队列清理与压缩竞态处理**：
@@ -287,103 +305,98 @@ sequenceDiagram
 class NodeOutput(BaseModel, frozen=True):
     node_id: str
     role: str
-    status: Literal["completed", "failed", "aborted"]
+    status: Literal["completed", "interrupted", "failed", "aborted"]
     summary: str                   # 供下游节点消费的结构化交接文本
     session_ref: str | None = None # 若开启持久化会话，记录会话文件引用
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
+    pending_interaction: InteractionRequestEvent | None = None
 
-class WorkflowState(TypedDict):
+class AgentChanges(TypedDict):
+    node_outputs: Annotated[dict[str, NodeOutput], reduce_node_outputs]  # 轮内合并、新轮自动清空
+    node_sessions: Annotated[dict[str, str], merge_node_sessions]        # 跨轮持久保留 per-node session_ref
+    latest_output: Annotated[str, _last_value]
+
+class WorkflowState(AgentChanges):
     run_id: str
+    thread_id: str
     workflow_id: str
     prompt: str
     workspace_dir: str
-    node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
-    latest_output: str
-    status: Literal["running", "completed", "failed", "aborted"]
-    failure: AgentFailure | None
+    status: Annotated[WorkflowStatus, reduce_workflow_status]            # 确定性优先级归约 (failed > aborted > ...)
+    failure: Annotated[AgentFailure | None, reduce_failure]
 ```
 
-- 每个新节点都在独立干净的 Agent 会话中启动，只通过 `prompt_builder(state)` 按需读取 `prompt` 与上游 `node_outputs[...].summary`，避免上下文无限增长。
-- 所有状态字段均为基础类型与 Pydantic v2 模型，与 `langgraph-checkpoint-sqlite` 的 `JsonPlusSerializer` 在 Python 3.14 下原生兼容。
+- **跨轮会话绑定与单轮交接产物彻底分离**：`node_sessions` 跨轮保留每个节点的 `session_ref`，而 `node_outputs` 在新一轮 `run()` 启动时清空，避免条件分支跳过历史节点时残留上一轮的脏摘要。
+- **子图私有循环状态与父图状态解耦**：`AgentTurnState` 使用私有 `turn_status` 驱动 `run_turn -> await_resume` 循环，仅在节点成功完成后通过 `AgentChanges` 回写父图，不会覆写并行分支的全局 `status` / `failure`。
+- 所有状态字段均为基础类型与 Pydantic v2 模型，通过 `CHECKPOINT_SERDE`（白名单 `JsonPlusSerializer`）与任意 `BaseCheckpointSaver` 原生兼容。
 
 ### 6.2 通用 `AgentNode` 生命周期（`node.py`）
 
-`build_agent_node(node_config, run_context)` 返回一个编译好的 LangGraph 子图。父图把它作为一个 Agent 节点使用，子图内有两个独立的 checkpoint 步骤。
+`build_agent_node(node_config)` 是纯拓扑节点工厂（不接收 `RunContext` 或具体模型参数），返回编译好的 LangGraph 子图。运行期依赖（`run_id`、`RunOptions`、`node_overrides`、`AdapterRegistry`、`LiveRunRegistry`、`InflightNodeStore`）全部通过 LangGraph 原生 `context=ExecutionContext(...)` 动态注入：
 
-- **`run_turn` 执行 Agent。** 它打开适配器会话，将会话登记到 `RunContext.active_sessions` 以支持 `steer()`、`follow_up()` 和 `abort()`，通过 `StreamPacket` 转发事件，在退出时注销会话。在线交互在本轮内完成。成功时提交 `NodeOutput` 并结束子图，冷挂起、失败或中止时提交相应状态并进入 `await_resume`。
+- **`run_turn` 执行 Agent。** 按 `NodeRuntimeOverride > AgentNodeConfig > RunOptions` 优先级解析当前节点的后端、模型端点、推理深度与工具策略，先校验 `AdapterCapabilities`（如 `session_resume`、`interactions`），打开会话并登记到 `LiveRunRegistry` 以支持 `steer()`、`follow_up()`、`abort()` 与 `suspend()`，通过 `StreamPacket` 转发事件，在退出时注销会话。成功时提交 `NodeOutput` 与 `node_sessions` 并结束子图，冷挂起、失败或中止时保留会话并进入 `await_resume`。
 - **`await_resume` 等待冷恢复。** 它调用 `interrupt()`。恢复时 LangGraph 从 `await_resume` 的开头重放，取得回复后再进入新一轮 `run_turn`。父图在 Agent 成功交付结果后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
 
-除 Agent 节点外，`orchestrator/node.py` 同时提供内置人工审批节点工厂 `build_approval_node(node_id, *, message, title=None, content_builder=None)`：调用 LangGraph `interrupt()` 挂起，将审批请求归一化为强类型 `PendingInterrupt.interaction`（`InteractionRequestEvent(kind="approval", title, message)`）并在 `payload["content"]` 携带待审内容；恢复时在 `WorkflowRunner.resume()` 写入检查点之前严格校验 `{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`（兼容 `InteractionResponse` 并校验 `request_id`），将审批结果写入 `node_outputs[node_id]` 并发出 `NodeCompletedEvent`；批准时返回 `status="running"` 继续下游，拒绝或取消时返回 `status="aborted"` 配合 `continue_if_running()` 短路终止。
+除 Agent 节点外，`orchestrator/node.py` 同时提供内置人工审批节点工厂 `build_approval_node(node_id, *, message, title=None, content_builder=None)`：进入门控时发射 `NodeStartedEvent(adapter=None)` 并调用 LangGraph `interrupt()` 挂起，将审批请求归一化为强类型 `PendingInterrupt.interaction`（`InteractionRequestEvent(kind="approval", title, message)`）并在 `payload["content"]` 携带待审内容；恢复时严格校验 `{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`（兼容 `InteractionResponse` 并校验 `request_id`），写入 `node_outputs[node_id]` 并发出 `NodeCompletedEvent`；批准时不修改父图 `status` 继续下游，拒绝或取消时写入 `status="aborted"` 配合 `continue_if_running()` 短路终止。
 
 ### 6.3 内置工作流与扩展规范（`workflows/` + `orchestrator/registry.py`）
 
 工作流层与执行引擎层通过 `WorkflowRegistry` 解耦：
-- 每个工作流独立放在 `src/agent_runtime/workflows/<name>.py`，导出一个自包含的 `WorkflowDefinition(name, description, build)`；
-- 工作流模块只依赖 `orchestrator/` 提供的原语，工作流之间**互不 import**；单个工作流代码长大后可直接从 `<name>.py` 升级为同名子包 `<name>/`，对外路径不变；
-- 所有内置工作流在 `workflows/__init__.py` 中显式注册到 `create_default_workflow_registry()`（不做动态目录扫描黑魔法，重名立即 fail-fast），由组装根与 `AdapterRegistry` 对称注入 `WorkflowRunner(adapter_registry, workflow_registry)`。
+- 每个工作流独立放在 `src/agent_runtime/workflows/<name>.py`，导出纯无参拓扑构造器 `WorkflowBuilder = () -> StateGraph[WorkflowState]` 与自包含 `WorkflowDefinition(name, description, build)`；
+- 工作流模块只依赖 `orchestrator/` 提供的原语，工作流之间**互不 import**，且不感知 `RunContext` 或具体后端工具名；单个工作流代码长大后可直接升级为同名子包 `<name>/`；
+- 所有内置工作流在 `workflows/__init__.py` 中显式注册到 `create_default_workflow_registry()`，编译后的图在 `WorkflowRunner` 中按名称缓存复用；同一工作流可在运行期通过 `node_overrides` 为不同节点指定不同后端与模型实现多 Agent 异构混编。
 
 ```mermaid
 flowchart LR
     subgraph single_agent ["工作流 1: single_agent"]
-        S1((START)) --> A1["agent (full tools)"] --> E1((END))
+        S1((START)) --> A1["agent (tool_policy=full)"] --> E1((END))
     end
 
     subgraph plan_and_execute ["工作流 2: plan_and_execute"]
-        S2((START)) --> P["planner (tools: read,grep,find,ls)"]
-        P -- "status == running" --> G["plan_approval (是否按照plan执行)"]
-        P -- "failed / aborted" --> E2((END))
-        G -- "approve" --> C["executor (full tools + planner summary)"]
-        G -- "deny / cancel" --> E2
+        S2((START)) --> P["planner (tool_policy=read_only)"] --> G["plan_approval (是否按照plan执行)"]
+        G -- "approve" --> C["executor (tool_policy=full + planner summary)"]
+        G -- "deny / cancel" --> E2((END))
         C --> E2
     end
 ```
 
 1. **`single_agent`**（`workflows/single_agent.py`）：1 节点通用图，对应总体架构中的 `SingleVibeGraph`。
 2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：3 节点审批串行图：
-   - `planner` 通过 `--tools read,grep,find,ls` 从工具边界强制限制为只读，分析工作区并产出分步执行计划；
+   - `planner` 通过 `tool_policy="read_only"` 声明只读边界（由各 Adapter 映射，如 Pi 映射为 `--tools read,grep,find,ls`），分析工作区并产出分步执行计划；
    - `plan_approval` 由 `build_approval_node()` 构造，挂起并携带计划摘要询问“是否按照plan执行”；拒绝或取消时短路结束并保留计划摘要，批准（可选附带审批备注）后放行下游；
    - `executor` 读取 `state["node_outputs"]["planner"].summary`（及可选审批备注）与原始 `prompt`，以全量工具执行计划并验证。
 
 #### 如何新增工作流
 
-新增 `src/agent_runtime/workflows/security_audit.py`，导出 `SECURITY_AUDIT_WORKFLOW` 并在 `workflows/__init__.py` 的 `BUILTIN_WORKFLOWS` 追加一行即可（`WorkflowRunner.run()` 也支持直接传入任意自定义 `WorkflowBuilder` 函数）：
+新增 `src/agent_runtime/workflows/security_audit.py`，导出 `SECURITY_AUDIT_WORKFLOW` 并在 `workflows/__init__.py` 的 `BUILTIN_WORKFLOWS` 追加一行即可（`WorkflowRunner.run()` / `RunManager.start_run()` 也支持直接传入任意自定义 `WorkflowBuilder` 函数）：
 
 ```python
 from langgraph.graph import END, START, StateGraph
 from agent_runtime.orchestrator import (
-    AgentNodeConfig, RunContext, WorkflowDefinition, WorkflowState,
-    build_agent_node, continue_if_running,
+    AgentNodeConfig, WorkflowDefinition, WorkflowState, build_agent_node,
 )
 
-def build_security_audit_workflow(
-    run_context: RunContext, *, adapter="pi", **kwargs
-) -> StateGraph[WorkflowState]:
+def build_security_audit_workflow() -> StateGraph[WorkflowState]:
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
     graph.add_node("analyst", build_agent_node(
         AgentNodeConfig(
             id="analyst",
             role="analyst",
-            adapter=adapter,
-            tools=("read", "grep", "find", "ls"),
+            tool_policy="read_only",
             append_system_prompt="Analyze security risks only.",
             prompt_builder=lambda s: f"Audit: {s['prompt']}",
-            **kwargs,
         ),
-        run_context,
     ))
     graph.add_node("fixer", build_agent_node(
         AgentNodeConfig(
             id="fixer",
             role="fixer",
-            adapter=adapter,
             prompt_builder=lambda s: f"Fix issues:\n{s['node_outputs']['analyst'].summary}",
-            **kwargs,
         ),
-        run_context,
     ))
     graph.add_edge(START, "analyst")
-    graph.add_conditional_edges("analyst", continue_if_running("fixer"), {"fixer": "fixer", END: END})
+    graph.add_edge("analyst", "fixer")
     graph.add_edge("fixer", END)
     return graph
 
@@ -394,13 +407,14 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
 )
 ```
 
-### 6.4 `WorkflowRunner` 与 Checkpoint（`runner.py`）
+### 6.4 `WorkflowRunner`、`PersistenceBackend` 与应用层 `RunManager`
 
-- 采用 `async with WorkflowRunner(adapter_registry, workflow_registry, checkpoint_db=...) as runner:` 管理 `AsyncSqliteSaver` 生命周期（默认 `:memory:`，传文件路径则持久化到 SQLite，退出自动关闭 `aiosqlite` 连接）。
-- 消费 `compiled.astream(initial_state, config={"configurable": {"thread_id": ...}}, stream_mode=["custom", "updates"], version="v2")`：
-  - `custom` 通道实时包装节点内事件并分配单调递增 `seq`；
-  - `updates` 通道追踪最终状态与产出，并在图执行完毕后统一发射 `WorkflowCompletedEvent`。
-- 提供 `get_checkpoint_state(workflow, thread_id)` 直接读取已落盘的节点状态快照。
+- **可插拔持久化（`orchestrator/persistence/`）**：`WorkflowRunner(adapter_registry, workflow_registry, persistence=...)` 面向 `PersistenceBackend`（`BaseCheckpointSaver` + `InflightNodeStore`）编程，默认使用内存 `SqlitePersistenceBackend(":memory:")`，磁盘持久化传 `SqlitePersistenceBackend(path)`，云端模式可直接替换为 `PostgresPersistenceBackend` 而无需改动编排核心。
+- **后台任务托管与多订阅扇出（`runtime/manager.py`）**：`RunManager(runner)` 作为应用服务层，通过 `start_run()` / `start_resume()` 先同步完成预校验与首事件推进，再将执行流托管至独立后台 `asyncio.Task`：
+  - 客户端断开 `subscribe(run_id)` 不会中止后台执行；
+  - 断线重连携带 `after_seq` 可无损补齐缺失事件并无缝切入实时流；
+  - 多端并发调用 `subscribe(run_id)` 可同时 Observe 同一运行实例。
+- **`discard()` 官方游标收口**：图编译时自动挂载不可达终态节点 `_care_close -> END`，`discard()` 直接调用 `compiled.aupdate_state(..., as_node="_care_close")` 收口挂起或崩溃线程并保留全部分支 `node_sessions`，不再依赖构造外部伪图。
 
 ---
 
