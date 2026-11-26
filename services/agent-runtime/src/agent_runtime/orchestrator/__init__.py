@@ -1,6 +1,5 @@
 """LangGraph multi-agent workflow orchestration engine."""
 
-from agent_runtime.orchestrator.inflight import InflightNodeRecord, InflightNodeStore
 from agent_runtime.orchestrator.node import (
     AgentNodeConfig,
     InteractionHandler,
@@ -13,6 +12,14 @@ from agent_runtime.orchestrator.node import (
     build_approval_node,
     continue_if_running,
 )
+from agent_runtime.orchestrator.persistence import (
+    CHECKPOINT_SERDE,
+    InflightNodeRecord,
+    InflightNodeStore,
+    PersistenceBackend,
+    SqliteInflightNodeStore,
+    SqlitePersistenceBackend,
+)
 from agent_runtime.orchestrator.registry import (
     WorkflowBuilder,
     WorkflowDefinition,
@@ -22,6 +29,7 @@ from agent_runtime.orchestrator.runner import ResumeInput, ThreadState, Workflow
 from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
 
 __all__ = [
+    "CHECKPOINT_SERDE",
     "AgentNodeConfig",
     "InflightNodeRecord",
     "InflightNodeStore",
@@ -29,9 +37,12 @@ __all__ = [
     "InteractionMode",
     "NodeOutput",
     "PendingInteraction",
+    "PersistenceBackend",
     "PromptBuilder",
     "ResumeInput",
     "RunContext",
+    "SqliteInflightNodeStore",
+    "SqlitePersistenceBackend",
     "StreamPacket",
     "ThreadState",
     "WorkflowBuilder",

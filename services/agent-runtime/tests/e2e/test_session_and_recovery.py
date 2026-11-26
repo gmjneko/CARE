@@ -7,10 +7,12 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -22,8 +24,10 @@ from agent_runtime.adapters import (
 )
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
+    InflightNodeRecord,
     ResumeInput,
     RunContext,
+    SqlitePersistenceBackend,
     WorkflowRunner,
     WorkflowState,
     build_agent_node,
@@ -54,7 +58,7 @@ def _make_runner(scenario: str, *, checkpoint_db: str | Path) -> WorkflowRunner:
     return WorkflowRunner(
         AdapterRegistry({"pi": adapter}),
         create_default_workflow_registry(),
-        checkpoint_db=checkpoint_db,
+        persistence=SqlitePersistenceBackend(checkpoint_db),
     )
 
 
@@ -1405,7 +1409,7 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
     async with WorkflowRunner(
         AdapterRegistry({"pi_q": adapter_q, "pi_fail": adapter_fail}),
         create_default_workflow_registry(),
-        checkpoint_db=db_path,
+        persistence=SqlitePersistenceBackend(db_path),
     ) as runner:
         events1 = [
             ev
@@ -1458,7 +1462,7 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
     async with WorkflowRunner(
         AdapterRegistry({"pi": adapter_fail}),
         create_default_workflow_registry(),
-        checkpoint_db=db_path,
+        persistence=SqlitePersistenceBackend(db_path),
     ) as runner_fail:
         fail_events = [
             ev
@@ -1479,7 +1483,7 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
     async with WorkflowRunner(
         AdapterRegistry({"pi": adapter_ok}),
         create_default_workflow_registry(),
-        checkpoint_db=db_path,
+        persistence=SqlitePersistenceBackend(db_path),
     ) as runner_ok:
         ok_events = [
             ev
@@ -1589,6 +1593,87 @@ async def test_inflight_table_schema_mismatch_fails_fast_on_startup(tmp_path: Pa
     with pytest.raises(RuntimeError, match="missing=\\['role'\\]"):
         async with _make_runner("standard", checkpoint_db=db_path):
             pass
+
+
+async def test_workflow_runner_operates_with_custom_non_sqlite_persistence_backend(
+    tmp_path: Path,
+) -> None:
+    """Gap: WorkflowRunner was previously hardcoded to AsyncSqliteSaver and SQLite WAL."""
+
+    class _MemoryInflightStore:
+        def __init__(self) -> None:
+            self._rows: dict[tuple[str, str], InflightNodeRecord] = {}
+
+        async def upsert(
+            self,
+            thread_id: str,
+            node_id: str,
+            *,
+            role: str,
+            task_id: str,
+            session_ref: str | None,
+            pending_interaction: InteractionRequestEvent | None,
+        ) -> None:
+            self._rows[(thread_id, node_id)] = InflightNodeRecord(
+                thread_id=thread_id,
+                node_id=node_id,
+                role=role,
+                task_id=task_id,
+                session_ref=session_ref,
+                pending_interaction=pending_interaction,
+                updated_at=datetime.now(UTC).isoformat(),
+            )
+
+        async def delete(self, record: InflightNodeRecord) -> None:
+            key = (record.thread_id, record.node_id)
+            if key in self._rows and self._rows[key].task_id == record.task_id:
+                del self._rows[key]
+
+        async def list_for_thread(self, thread_id: str) -> list[InflightNodeRecord]:
+            return [r for (tid, _), r in self._rows.items() if tid == thread_id]
+
+    class _MemoryPersistenceBackend:
+        def __init__(self) -> None:
+            self.checkpointer = InMemorySaver()
+            self.inflight_store = _MemoryInflightStore()
+
+        async def __aenter__(self) -> _MemoryPersistenceBackend:
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+    adapter = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "standard"),
+            request_timeout_s=10.0,
+        )
+    )
+    backend = _MemoryPersistenceBackend()
+    async with WorkflowRunner(
+        AdapterRegistry({"pi": adapter}),
+        create_default_workflow_registry(),
+        persistence=backend,
+    ) as runner:
+        run1 = [
+            ev
+            async for ev in runner.run(
+                "plan_and_execute", "Memory backend", tmp_path, thread_id="m1"
+            )
+        ]
+        assert isinstance(run1[-1].payload, WorkflowInterruptedEvent)
+        run2 = [
+            ev
+            async for ev in runner.resume(
+                "plan_and_execute", "m1", resume_value={"decision": "approve"}
+            )
+        ]
+        st = await runner.get_thread_state("plan_and_execute", "m1")
+
+    assert isinstance(run2[-1].payload, WorkflowCompletedEvent)
+    assert run2[-1].payload.status == "completed"
+    assert st.status == "completed"
+    assert st.inflight_nodes == ()
 
 
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:

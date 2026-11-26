@@ -26,7 +26,11 @@ from agent_runtime.config import (
     load_local_settings,
     save_local_settings,
 )
-from agent_runtime.orchestrator import WorkflowRunner, build_approval_node
+from agent_runtime.orchestrator import (
+    SqlitePersistenceBackend,
+    WorkflowRunner,
+    build_approval_node,
+)
 from agent_runtime.protocol import (
     InteractionRequestEvent,
     InteractionResponse,
@@ -51,7 +55,7 @@ def _make_runner(scenario: str, *, checkpoint_db: str | Path = ":memory:") -> Wo
     return WorkflowRunner(
         AdapterRegistry({"pi": adapter}),
         create_default_workflow_registry(),
-        checkpoint_db=checkpoint_db,
+        persistence=SqlitePersistenceBackend(checkpoint_db),
     )
 
 

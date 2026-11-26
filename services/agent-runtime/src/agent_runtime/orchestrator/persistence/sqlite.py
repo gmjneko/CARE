@@ -1,17 +1,17 @@
-"""SQLite Write-Ahead 预写表：在节点运行或等待热交互期间持久化 session_ref 与待回复弹窗。
-
-复用 LangGraph `AsyncSqliteSaver` 已打开的连接与并发锁（零额外连接、支持 `:memory:` 与磁盘文件），
-避免节点尚未返回提交 Checkpoint 时遭遇 `kill -9` / 断电导致会话指针或交互上下文丢失。
-"""
+"""SQLite persistence backend for local mode (`AsyncSqliteSaver` + `care_inflight_nodes` WAL)."""
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from agent_runtime.orchestrator.persistence.base import CHECKPOINT_SERDE, InflightNodeRecord
 from agent_runtime.protocol.events import InteractionRequestEvent
 
 _CREATE_TABLE_SQL = """
@@ -40,22 +40,8 @@ _EXPECTED_COLUMNS: frozenset[str] = frozenset(
 )
 
 
-class InflightNodeRecord(BaseModel):
-    """一条尚未提交正式 Checkpoint 的活跃节点预写记录。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    thread_id: str
-    node_id: str
-    role: str
-    task_id: str
-    session_ref: str | None = None
-    pending_interaction: InteractionRequestEvent | None = None
-    updated_at: str
-
-
-class InflightNodeStore:
-    """基于 `checkpoints.sqlite` 同库存储的轻量预写日志（WAL）操作封装。"""
+class SqliteInflightNodeStore:
+    """基于 `checkpoints.sqlite` 同库存储的轻量预写日志（WAL）实现。"""
 
     def __init__(self, conn: Any, lock: asyncio.Lock) -> None:
         self._conn = conn
@@ -162,3 +148,62 @@ class InflightNodeStore:
                 )
             )
         return records
+
+
+class SqlitePersistenceBackend:
+    """SQLite-backed PersistenceBackend sharing one connection across checkpoints and WAL."""
+
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        self._db_path = str(db_path)
+        self._exit_stack: AsyncExitStack | None = None
+        self._checkpointer: AsyncSqliteSaver | None = None
+        self._inflight_store: SqliteInflightNodeStore | None = None
+
+    @property
+    def checkpointer(self) -> BaseCheckpointSaver[Any]:
+        if self._checkpointer is None:
+            raise RuntimeError("SqlitePersistenceBackend must be entered before accessing storage")
+        return self._checkpointer
+
+    @property
+    def inflight_store(self) -> SqliteInflightNodeStore:
+        if self._inflight_store is None:
+            raise RuntimeError("SqlitePersistenceBackend must be entered before accessing storage")
+        return self._inflight_store
+
+    async def __aenter__(self) -> SqlitePersistenceBackend:
+        if self._db_path != ":memory:":
+            expanded = Path(self._db_path).expanduser()
+            expanded.parent.mkdir(parents=True, exist_ok=True)
+            conn_str = str(expanded)
+        else:
+            conn_str = ":memory:"
+
+        stack = AsyncExitStack()
+        try:
+            raw_saver = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(conn_str))
+            checkpointer = AsyncSqliteSaver(raw_saver.conn, serde=CHECKPOINT_SERDE)
+            await checkpointer.setup()
+            inflight_store = SqliteInflightNodeStore(checkpointer.conn, checkpointer.lock)
+            await inflight_store.setup()
+        except BaseException:
+            await stack.aclose()
+            raise
+
+        self._exit_stack = stack
+        self._checkpointer = checkpointer
+        self._inflight_store = inflight_store
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+        self._exit_stack = None
+        self._checkpointer = None
+        self._inflight_store = None
+
+
+__all__ = [
+    "SqliteInflightNodeStore",
+    "SqlitePersistenceBackend",
+]

@@ -24,7 +24,7 @@ from agent_runtime.adapters.base import (
 )
 from agent_runtime.adapters.errors import AdapterError, AdapterProtocolError
 from agent_runtime.adapters.registry import AdapterRegistry
-from agent_runtime.orchestrator.inflight import InflightNodeStore
+from agent_runtime.orchestrator.persistence import InflightNodeStore
 from agent_runtime.orchestrator.state import AgentChanges, NodeOutput, WorkflowState
 from agent_runtime.protocol.events import (
     AgentEvent,

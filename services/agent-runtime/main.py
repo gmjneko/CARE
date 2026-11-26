@@ -17,7 +17,7 @@ from agent_runtime.adapters import (
     ThinkingLevel,
 )
 from agent_runtime.config import checkpoints_db_path, load_local_settings
-from agent_runtime.orchestrator import WorkflowRunner
+from agent_runtime.orchestrator import SqlitePersistenceBackend, WorkflowRunner
 from agent_runtime.protocol import (
     InteractionRequestEvent,
     InteractionResponse,
@@ -151,7 +151,7 @@ def run(
         async with WorkflowRunner(
             adapter_registry,
             workflow_registry,
-            checkpoint_db=effective_checkpoint_db,
+            persistence=SqlitePersistenceBackend(effective_checkpoint_db),
         ) as runner:
             if json_output:
                 assert prompt is not None

@@ -1,16 +1,14 @@
-"""WorkflowRunner: compiles LangGraph workflows with SQLite checkpoints and event streams."""
+"""WorkflowRunner: executes LangGraph workflows with pluggable persistence and event streams."""
 
 from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator, Iterator, Mapping
-from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +20,6 @@ from agent_runtime.adapters.base import (
 )
 from agent_runtime.adapters.errors import AdapterError
 from agent_runtime.adapters.registry import AdapterRegistry
-from agent_runtime.orchestrator.inflight import InflightNodeRecord, InflightNodeStore
 from agent_runtime.orchestrator.node import (
     SUSPEND_SIGNAL,
     InteractionHandler,
@@ -30,6 +27,12 @@ from agent_runtime.orchestrator.node import (
     RunContext,
     StreamPacket,
     parse_approval_decision,
+)
+from agent_runtime.orchestrator.persistence import (
+    InflightNodeRecord,
+    InflightNodeStore,
+    PersistenceBackend,
+    SqlitePersistenceBackend,
 )
 from agent_runtime.orchestrator.registry import WorkflowBuilder, WorkflowRegistry
 from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
@@ -41,20 +44,10 @@ from agent_runtime.protocol.events import (
     PendingInterruptKind,
     RuntimeEvent,
     RuntimeEventPayload,
-    TokenUsage,
     WorkflowCompletedEvent,
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
     WorkflowStartedEvent,
-)
-
-_CHECKPOINT_SERDE = JsonPlusSerializer(
-    allowed_msgpack_modules=[
-        (NodeOutput.__module__, NodeOutput.__qualname__),
-        (AgentFailure.__module__, AgentFailure.__qualname__),
-        (InteractionRequestEvent.__module__, InteractionRequestEvent.__qualname__),
-        (TokenUsage.__module__, TokenUsage.__qualname__),
-    ]
 )
 
 
@@ -90,47 +83,23 @@ class WorkflowRunner:
         adapter_registry: AdapterRegistry,
         workflow_registry: WorkflowRegistry | None = None,
         *,
-        checkpoint_db: str | Path = ":memory:",
+        persistence: PersistenceBackend | None = None,
     ) -> None:
         self._run_context = RunContext(registry=adapter_registry)
         self._workflow_registry = workflow_registry or WorkflowRegistry()
-        self._checkpoint_db = str(checkpoint_db)
-        self._exit_stack: AsyncExitStack | None = None
-        self._checkpointer: AsyncSqliteSaver | None = None
-        self._inflight_store: InflightNodeStore | None = None
+        self._persistence: PersistenceBackend = persistence or SqlitePersistenceBackend(":memory:")
+        self._entered = False
 
     async def __aenter__(self) -> WorkflowRunner:
-        # 磁盘 SQLite 路径自动创建父目录（如 ~/.care/）
-        if self._checkpoint_db != ":memory:":
-            Path(self._checkpoint_db).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            conn_str = str(Path(self._checkpoint_db).expanduser())
-        else:
-            conn_str = ":memory:"
-
-        stack = AsyncExitStack()
-        try:
-            raw_saver = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(conn_str))
-            checkpointer = AsyncSqliteSaver(raw_saver.conn, serde=_CHECKPOINT_SERDE)
-            await checkpointer.setup()
-            # 复用同一个 SQLite 连接与并发锁初始化预写表，零额外连接且无锁竞争
-            inflight_store = InflightNodeStore(checkpointer.conn, checkpointer.lock)
-            await inflight_store.setup()
-        except BaseException:
-            await stack.aclose()
-            raise
-        self._exit_stack = stack
-        self._checkpointer = checkpointer
-        self._inflight_store = inflight_store
-        self._run_context.inflight_store = inflight_store
+        await self._persistence.__aenter__()
+        self._entered = True
+        self._run_context.inflight_store = self._persistence.inflight_store
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._exit_stack is not None:
-            await self._exit_stack.aclose()
-        self._exit_stack = None
-        self._checkpointer = None
-        self._inflight_store = None
+        self._entered = False
         self._run_context.inflight_store = None
+        await self._persistence.__aexit__(exc_type, exc, tb)
 
     async def run(
         self,
@@ -693,19 +662,19 @@ class WorkflowRunner:
         name = getattr(workflow, "__name__", "custom_workflow")
         return name, workflow
 
-    def _require_checkpointer(self) -> AsyncSqliteSaver:
-        if self._checkpointer is None:
+    def _require_checkpointer(self) -> BaseCheckpointSaver[Any]:
+        if not self._entered:
             raise RuntimeError(
                 "WorkflowRunner must be used inside 'async with WorkflowRunner(...)'"
             )
-        return self._checkpointer
+        return self._persistence.checkpointer
 
     def _require_inflight_store(self) -> InflightNodeStore:
-        if self._inflight_store is None:
+        if not self._entered:
             raise RuntimeError(
                 "WorkflowRunner must be used inside 'async with WorkflowRunner(...)'"
             )
-        return self._inflight_store
+        return self._persistence.inflight_store
 
     def _require_active_session(self, run_id: str, *, node_id: str | None = None) -> AgentSession:
         sessions = self._run_context.active_sessions.get(run_id)
@@ -730,7 +699,7 @@ def _compile_workflow(
     builder: WorkflowBuilder,
     run_context: RunContext,
     *,
-    checkpointer: AsyncSqliteSaver,
+    checkpointer: BaseCheckpointSaver[Any],
     adapter: str = "pi",
     endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
@@ -747,7 +716,7 @@ def _compile_workflow(
 
 
 async def _close_resumable_turn(
-    checkpointer: AsyncSqliteSaver,
+    checkpointer: BaseCheckpointSaver[Any],
     *,
     thread_id: str,
     node_outputs: dict[str, NodeOutput],
