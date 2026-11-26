@@ -200,7 +200,7 @@ def run(
                         if not text:
                             continue
                         if text.lower() in ("/next", "/done"):
-                            resume_kwargs["resume_value"] = {"action": "complete"}
+                            resume_kwargs["complete"] = True
                         elif text.lower() == "/discard":
                             await manager.discard(workflow, effective_thread_id)
                             pending_interrupts = ()

@@ -2059,12 +2059,12 @@ async def test_interactive_node_chats_across_restarts_and_advances_on_handoff_to
             )
         with pytest.raises(ValueError, match="requires a non-empty 'prompt'"):
             await anext(runner2.resume(_build_interactive_handoff_workflow, thread_id))
-        with pytest.raises(ValueError, match="only accepts"):
+        with pytest.raises(ValueError, match="does not accept resume_value"):
             await anext(
                 runner2.resume(
                     _build_interactive_handoff_workflow,
                     thread_id,
-                    resume_value={"action": "unknown"},
+                    resume_value={"action": "complete"},
                 )
             )
         with pytest.raises(ValueError, match="cannot combine"):
@@ -2073,7 +2073,7 @@ async def test_interactive_node_chats_across_restarts_and_advances_on_handoff_to
                     _build_interactive_handoff_workflow,
                     thread_id,
                     prompt="both",
-                    resume_value={"action": "complete"},
+                    complete=True,
                 )
             )
         with pytest.raises(ValueError, match="does not accept interaction_response"):
@@ -2188,7 +2188,7 @@ async def test_interactive_node_explicit_completion_skips_extra_turn_and_support
             async for ev in runner.resume(
                 _build_explicit_handoff_workflow,
                 thread_id,
-                resume_value={"action": "complete"},
+                complete=True,
             )
         ]
         st_done = await runner.get_thread_state(_build_explicit_handoff_workflow, thread_id)
@@ -2206,6 +2206,12 @@ async def test_interactive_node_explicit_completion_skips_extra_turn_and_support
         exec_payload = json.loads(e3[-1].payload.final_output)
         assert "Add rollback section" in exec_payload["history"][0]
         assert st_done.status == "completed" and not st_done.resumable
+
+        # complete=True on a non-awaiting_input interrupt (plan_approval) must fail fast.
+        async for _ in runner.run("plan_and_execute", "Check gate", tmp_path, thread_id="gate-chk"):
+            pass
+        with pytest.raises(ValueError, match="only valid for awaiting_input"):
+            await anext(runner.resume("plan_and_execute", "gate-chk", complete=True))
 
         # Discard while awaiting_input preserves planner session_ref for a fresh run.
         thread_discard = "explicit-handoff-discard"
@@ -2269,7 +2275,7 @@ async def test_parallel_interactive_branches_chat_and_complete_independently(
                 thread_id,
                 resumes={
                     "worker_a": ResumeInput(prompt="Expand section A"),
-                    "worker_b": ResumeInput(resume_value={"action": "complete"}),
+                    "worker_b": ResumeInput(complete=True),
                 },
             )
         ]
@@ -2287,7 +2293,7 @@ async def test_parallel_interactive_branches_chat_and_complete_independently(
             async for ev in runner.resume(
                 _build_parallel_interactive_workflow,
                 thread_id,
-                resume_value={"action": "complete"},
+                complete=True,
             )
         ]
 

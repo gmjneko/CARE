@@ -195,7 +195,7 @@ sequenceDiagram
 | :--- | :--- |
 | **Pi 在线，`interaction_mode="wait"`** | `run_turn` 等待回复。`respond_interaction()` 按 `request_id` 把回答发回原 Pi 调用，Planner 在同一个工具调用里拿到回答，继续当前轮。 |
 | **等待期间挂起或 Pi 退出** | `run_turn` 返回待答请求和 `session_ref`，LangGraph 提交 checkpoint，再进入只调用 `interrupt()` 等待回复的 `await_input`。`runner.resume()` 校验 `request_id`，LangGraph 重放 `await_input` 取得回答，再进入下一次 `run_turn`。开启会话持久化时，Planner 在原 Pi 会话上用“需要”开始新一轮，计划完成后才启动 Executor。 |
-| **交互式节点完成一轮（`should_complete` 返回 `False`）** | `run_turn` 提交 `NodeOutput(status="waiting")` 与 `session_ref` 并进入 `await_input`（对外呈现 `PendingInterrupt(kind="awaiting_input")`）。用户调用 `runner.resume(..., prompt="...")` 在原会话继续聊，或调用 `runner.resume(..., resume_value={"action": "complete"})` 直接结束该节点进入下游。 |
+| **交互式节点完成一轮（`should_complete` 返回 `False`）** | `run_turn` 提交 `NodeOutput(status="waiting")` 与 `session_ref` 并进入 `await_input`（对外呈现 `PendingInterrupt(kind="awaiting_input")`）。用户调用 `runner.resume(..., prompt="...")` 在原会话继续聊，或调用 `runner.resume(..., complete=True)` 直接结束该节点进入下游。 |
 
 如果整个 worker 在 `run_turn` 提交前被强杀，LangGraph 的 checkpoint 仍决定重放哪个任务。若该任务已有预写记录，`run_turn` 按 `task_id` 取回已写入的 `session_ref` 和待答请求（如有），先补交为子图状态，再进入同一个 `await_input`（见 §5.3）。
 
@@ -390,7 +390,7 @@ class WorkflowState(AgentChanges):
 | 方法 | 作用 |
 | :--- | :--- |
 | `run(workflow, prompt, workspace_dir, *, thread_id=..., endpoint=..., interaction_mode="cancel", ...)` | 发起新任务或对已有 `thread_id` 发起新一轮连续对话；对 `failed`/`aborted` 自动接管并保留全部分支的 `session_ref`，对未决的 `interrupted`/`crashed` 保持 fail-fast 拦截。 |
-| `resume(workflow, thread_id, *, node_id=None, resume_value=None, interaction_response=None, prompt=None, resumes=None, endpoint=..., interaction_mode="cancel", ...)` | **统一恢复入口**：自动检查 Checkpoint 与预写表，支持单分支精确恢复（含按 `request_id` 自动匹配）与通过 `resumes={node_id: ResumeInput(...)}` 批量并发恢复多个并行分支。 |
+| `resume(workflow, thread_id, *, node_id=None, resume_value=None, interaction_response=None, prompt=None, complete=False, resumes=None, endpoint=..., interaction_mode="cancel", ...)` | **统一恢复入口**：自动检查 Checkpoint 与预写表，支持单分支精确恢复（含按 `request_id` 自动匹配与 `complete=True` 显式结束等待节点）与通过 `resumes={node_id: ResumeInput(...)}` 批量并发恢复多个并行分支。 |
 | `discard(workflow, thread_id)` | 显式放弃当前线程未完成的挂起、崩溃或失败轮次：保留已落盘的全部分支 `session_ref`、清理残留 WAL 并收口为不可恢复终态（`resumable=False`）。 |
 | `respond_interaction(run_id, response, *, node_id=None)` | 在线热交互回传（批准 / 拒绝 / 回答 `ask_question`），多分支并发热等待时按 `request_id` 自动路由（重名时可通过 `node_id` 消歧）。 |
 | `suspend(run_id)` / `suspend_all()` | 将指定或全部活跃运行（含全部并行分支）优雅冷挂起并刷盘 Checkpoint。 |

@@ -173,6 +173,7 @@ class WorkflowRunner:
         resume_value: Any = None,
         interaction_response: InteractionResponse | None = None,
         prompt: str | None = None,
+        complete: bool = False,
         resumes: Mapping[str, ResumeInput] | None = None,
         adapter: str = "pi",
         endpoint: ModelEndpoint | None = None,
@@ -209,6 +210,7 @@ class WorkflowRunner:
                 resume_value=resume_value,
                 interaction_response=interaction_response,
                 prompt=prompt,
+                complete=complete,
                 resumes=resumes,
             )
 

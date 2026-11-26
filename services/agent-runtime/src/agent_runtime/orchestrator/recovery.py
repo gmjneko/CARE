@@ -38,6 +38,7 @@ class ResumeInput(BaseModel):
     resume_value: Any = None
     interaction_response: InteractionResponse | None = None
     prompt: str | None = None
+    complete: bool = False
 
 
 class ThreadState(BaseModel):
@@ -249,6 +250,7 @@ def resolve_resume_plan(
     resume_value: Any,
     interaction_response: InteractionResponse | None,
     prompt: str | None,
+    complete: bool = False,
     resumes: Mapping[str, ResumeInput] | None,
 ) -> ResumePlan:
     """将单分支或批量恢复参数解析为 LangGraph `Command(resume=...)` 或崩溃两阶段回放计划。"""
@@ -259,6 +261,7 @@ def resolve_resume_plan(
             or resume_value is not None
             or interaction_response is not None
             or prompt is not None
+            or complete
         ):
             raise ValueError("Cannot combine 'resumes' with single-branch resume parameters")
         if not resumes:
@@ -276,6 +279,7 @@ def resolve_resume_plan(
             resume_value=resume_value,
             interaction_response=interaction_response,
             prompt=prompt,
+            complete=complete,
         )
         if node_id is not None:
             matches = [item for item in state.interrupts if item.node_id == node_id]
@@ -308,6 +312,7 @@ def resolve_resume_plan(
             all(item.kind == "crashed" for item in state.interrupts)
             and not state.inflight_nodes
             and resume_value is None
+            and not complete
             and not (prompt and prompt.strip())
         ):
             targets = [(item, single) for item in state.interrupts]
@@ -324,6 +329,11 @@ def resolve_resume_plan(
     staged_replies: dict[str, Any] = {}
 
     for item, inp in targets:
+        if inp.complete and item.kind != "awaiting_input":
+            raise ValueError(
+                f"complete=True is only valid for awaiting_input nodes, "
+                f"not '{item.node_id}' ({item.kind})"
+            )
         if item.kind == "workflow_interrupt":
             if item.interaction is not None:
                 if inp.interaction_response is not None:
@@ -377,20 +387,17 @@ def resolve_resume_plan(
                 raise ValueError(
                     f"Waiting node '{item.node_id}' does not accept interaction_response"
                 )
-            has_prompt = bool(inp.prompt and inp.prompt.strip())
-            if inp.resume_value is not None and has_prompt:
-                raise ValueError(
-                    f"Waiting node '{item.node_id}' cannot combine 'prompt' and 'resume_value'"
-                )
             if inp.resume_value is not None:
-                if (
-                    not isinstance(inp.resume_value, Mapping)
-                    or inp.resume_value.get(AGENT_RESUME_ACTION_KEY) != "complete"
-                ):
-                    raise ValueError(
-                        f"Waiting node '{item.node_id}' only accepts "
-                        "resume_value={'action': 'complete'} or a non-empty 'prompt'"
-                    )
+                raise ValueError(
+                    f"Waiting node '{item.node_id}' does not accept resume_value; "
+                    "pass a non-empty 'prompt' or complete=True"
+                )
+            has_prompt = bool(inp.prompt and inp.prompt.strip())
+            if inp.complete and has_prompt:
+                raise ValueError(
+                    f"Waiting node '{item.node_id}' cannot combine 'prompt' and complete=True"
+                )
+            if inp.complete:
                 payload: dict[str, Any] = {AGENT_RESUME_ACTION_KEY: "complete"}
             elif has_prompt:
                 assert inp.prompt is not None
@@ -400,8 +407,7 @@ def resolve_resume_plan(
                 }
             else:
                 raise ValueError(
-                    f"Waiting node '{item.node_id}' requires a non-empty 'prompt' "
-                    "or resume_value={'action': 'complete'}"
+                    f"Waiting node '{item.node_id}' requires a non-empty 'prompt' or complete=True"
                 )
             if needs_crash_replay:
                 staged_replies[item.node_id] = payload
