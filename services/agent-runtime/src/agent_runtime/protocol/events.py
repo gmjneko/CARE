@@ -237,7 +237,9 @@ class WorkflowResumedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.resumed"] = "workflow.resumed"
-    resumed_from: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
+    resumed_from: Literal[
+        "workflow_interrupt", "agent_interaction", "awaiting_input", "failure", "crash"
+    ]
 
 
 class NodeStartedEvent(BaseModel):
@@ -264,6 +266,7 @@ class NodeCompletedEvent(BaseModel):
 PendingInterruptKind = Literal[
     "workflow_interrupt",
     "agent_interaction",
+    "awaiting_input",
     "suspended",
     "failed",
     "aborted",

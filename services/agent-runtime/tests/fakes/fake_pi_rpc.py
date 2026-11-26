@@ -730,6 +730,82 @@ def _handle_fail_executor_once(
     _emit({"type": "agent_settled", "aborted": False})
 
 
+def _handle_interactive_handoff(
+    req_id: str | None,
+    prompt: str,
+    *,
+    session_file: str | None,
+    append_prompt: str,
+    tools: str | None,
+) -> None:
+    """Interactive multi-turn node scenario supporting optional handoff tool calls."""
+    history = _load_session_history(session_file)
+    history.append(prompt)
+    _append_session_history(session_file, prompt)
+
+    _emit(
+        {
+            "type": "response",
+            "id": req_id,
+            "command": "prompt",
+            "success": True,
+            "data": {"disposition": "started"},
+        }
+    )
+
+    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    if is_planner and ("SUBMIT_PLAN" in prompt or "FAIL_SUBMIT" in prompt):
+        is_err = "FAIL_SUBMIT" in prompt
+        _emit(
+            {
+                "type": "tool_execution_start",
+                "toolCallId": f"tc-submit-{len(history)}",
+                "toolName": "submit_plan",
+                "args": {"turn": len(history)},
+            }
+        )
+        _emit(
+            {
+                "type": "tool_execution_end",
+                "toolCallId": f"tc-submit-{len(history)}",
+                "toolName": "submit_plan",
+                "result": {
+                    "content": [{"type": "text", "text": "validation error" if is_err else "ok"}]
+                },
+                "isError": is_err,
+                "durationMs": 5,
+            }
+        )
+
+    reply = json.dumps(
+        {
+            "role": "planner" if is_planner else "executor",
+            "session_file": session_file,
+            "turn_count": len(history),
+            "history": history,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    _emit(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": reply, "contentIndex": 0},
+        }
+    )
+    _emit(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": reply}],
+            },
+        }
+    )
+    _emit({"type": "agent_settled", "aborted": False})
+
+
 def main() -> int:
     args = _parse_args()
     append_prompt = _read_text_or_file(args.append_system_prompt)
@@ -794,6 +870,14 @@ def main() -> int:
                 _handle_inspect_endpoint(req_id, args)
             elif scenario == "stateful_chat":
                 _handle_stateful_chat(req_id, prompt, session_file)
+            elif scenario == "interactive_handoff":
+                _handle_interactive_handoff(
+                    req_id,
+                    prompt,
+                    session_file=session_file,
+                    append_prompt=append_prompt,
+                    tools=args.tools,
+                )
             elif scenario == "ui_question":
                 _handle_ui_question(
                     req_id,

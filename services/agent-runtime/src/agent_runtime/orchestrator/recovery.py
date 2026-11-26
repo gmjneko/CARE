@@ -10,8 +10,9 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime.orchestrator.node import (
-    AGENT_RESUME_NODE,
+    AGENT_RESUME_ACTION_KEY,
     AGENT_RESUME_PROMPT_KEY,
+    AGENT_WAIT_NODE,
     APPROVAL_INTERACTION_KEY,
     parse_approval_decision,
 )
@@ -24,7 +25,9 @@ from agent_runtime.protocol.events import (
     PendingInterruptKind,
 )
 
-ResumedFromReason = Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
+ResumedFromReason = Literal[
+    "workflow_interrupt", "agent_interaction", "awaiting_input", "failure", "crash"
+]
 
 
 class ResumeInput(BaseModel):
@@ -102,7 +105,7 @@ async def inspect_thread(
         seen_pending.add(task.name)
         child = task.state
         if isinstance(child, StateSnapshot):
-            if child.next == (AGENT_RESUME_NODE,):
+            if child.next == (AGENT_WAIT_NODE,):
                 paused = child.values.get("node_outputs", {}).get(task.name)
                 if paused is not None:
                     paused_outputs[paused.node_id] = paused
@@ -113,8 +116,13 @@ async def inspect_thread(
                         paused_sessions[paused.node_id] = effective_ref
                         sessions[paused.node_id] = effective_ref
                     intr_id = task.interrupts[0].id if task.interrupts else None
-                    if paused.status == "interrupted":
-                        kind: PendingInterruptKind = (
+                    payload: dict[str, Any] = {}
+                    if paused.status == "waiting":
+                        kind: PendingInterruptKind = "awaiting_input"
+                        if paused.summary:
+                            payload = {"summary": paused.summary}
+                    elif paused.status == "interrupted":
+                        kind = (
                             "agent_interaction" if paused.pending_interaction else "suspended"
                         )
                     else:
@@ -125,6 +133,7 @@ async def inspect_thread(
                             node_id=paused.node_id,
                             kind=kind,
                             interaction=paused.pending_interaction,
+                            payload=payload,
                             failure=paused.failure,
                         )
                     )
@@ -204,7 +213,7 @@ async def inspect_thread(
         kinds = {item.kind for item in interrupts}
         if "crashed" in kinds:
             status: Literal["completed", "interrupted", "aborted", "failed", "crashed"] = "crashed"
-        elif kinds & {"workflow_interrupt", "agent_interaction", "suspended"}:
+        elif kinds & {"workflow_interrupt", "agent_interaction", "awaiting_input", "suspended"}:
             status = "interrupted"
         elif "failed" in kinds:
             status = "failed"
@@ -363,6 +372,42 @@ def resolve_resume_plan(
                     "Cannot pass a continuation prompt when resuming a crash with no started "
                     "agent turn"
                 )
+        elif item.kind == "awaiting_input":
+            if inp.interaction_response is not None:
+                raise ValueError(
+                    f"Waiting node '{item.node_id}' does not accept interaction_response"
+                )
+            has_prompt = bool(inp.prompt and inp.prompt.strip())
+            if inp.resume_value is not None and has_prompt:
+                raise ValueError(
+                    f"Waiting node '{item.node_id}' cannot combine 'prompt' and 'resume_value'"
+                )
+            if inp.resume_value is not None:
+                if (
+                    not isinstance(inp.resume_value, Mapping)
+                    or inp.resume_value.get(AGENT_RESUME_ACTION_KEY) != "complete"
+                ):
+                    raise ValueError(
+                        f"Waiting node '{item.node_id}' only accepts "
+                        "resume_value={'action': 'complete'} or a non-empty 'prompt'"
+                    )
+                payload: dict[str, Any] = {AGENT_RESUME_ACTION_KEY: "complete"}
+            elif has_prompt:
+                assert inp.prompt is not None
+                payload = {
+                    AGENT_RESUME_ACTION_KEY: "continue",
+                    AGENT_RESUME_PROMPT_KEY: inp.prompt.strip(),
+                }
+            else:
+                raise ValueError(
+                    f"Waiting node '{item.node_id}' requires a non-empty 'prompt' "
+                    "or resume_value={'action': 'complete'}"
+                )
+            if needs_crash_replay:
+                staged_replies[item.node_id] = payload
+            else:
+                assert item.interrupt_id is not None
+                resume_map[item.interrupt_id] = payload
         else:
             text = format_resume_prompt(
                 pending_interaction=item.interaction,
@@ -383,6 +428,8 @@ def resolve_resume_plan(
         reason = "workflow_interrupt"
     elif target_kinds & {"agent_interaction", "suspended"}:
         reason = "agent_interaction"
+    elif "awaiting_input" in target_kinds:
+        reason = "awaiting_input"
     else:
         reason = "failure"
 

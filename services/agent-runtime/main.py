@@ -17,7 +17,7 @@ from agent_runtime.adapters import (
     ThinkingLevel,
 )
 from agent_runtime.config import checkpoints_db_path, load_local_settings
-from agent_runtime.orchestrator import SqlitePersistenceBackend, WorkflowRunner
+from agent_runtime.orchestrator import SqlitePersistenceBackend, WorkflowBuilder, WorkflowRunner
 from agent_runtime.protocol import (
     InteractionRequestEvent,
     InteractionResponse,
@@ -30,6 +30,7 @@ from agent_runtime.protocol import (
     ToolCompletedEvent,
     ToolOutputDeltaEvent,
     ToolStartedEvent,
+    TurnCompletedEvent,
     WorkflowCompletedEvent,
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
@@ -74,7 +75,7 @@ def main() -> int:
 def run(
     prompt: str | None = None,
     *,
-    workflow: WorkflowName | str = "single_agent",
+    workflow: WorkflowName | str | WorkflowBuilder = "single_agent",
     cwd: str | Path = ".",
     thread_id: str | None = None,
     profile: str | None = None,
@@ -187,6 +188,26 @@ def run(
                         if raw is None:
                             return False
                         resume_kwargs["resume_value"] = raw.strip()
+                    elif intr.kind == "awaiting_input":
+                        _end_stream(render_state)
+                        raw = await _read_line_async(
+                            f"\n[{intr.node_id}] "
+                            "继续对话，输入 /next 进入下一节点，或输入 /discard 放弃: "
+                        )
+                        if raw is None:
+                            return False
+                        text = raw.strip()
+                        if not text:
+                            continue
+                        if text.lower() in ("/next", "/done"):
+                            resume_kwargs["resume_value"] = {"action": "complete"}
+                        elif text.lower() == "/discard":
+                            await manager.discard(workflow, effective_thread_id)
+                            pending_interrupts = ()
+                            print("[care] 已放弃未完成轮次。", flush=True)
+                            break
+                        else:
+                            resume_kwargs["prompt"] = text
                     else:
                         _end_stream(render_state)
                         raw = await _read_line_async(
@@ -433,6 +454,11 @@ def _render_human(event: RuntimeEvent, state: dict[str, object]) -> None:
         status = "ERROR" if payload.is_error else "OK"
         duration = f" {payload.duration_ms}ms" if payload.duration_ms is not None else ""
         print(f"[tool.completed] {payload.tool_name} [{status}{duration}]", flush=True)
+    elif isinstance(payload, TurnCompletedEvent):
+        _end_stream(state)
+        if state["is_agent"] and not state["saw_text"] and payload.final_text:
+            print(payload.final_text, flush=True)
+            state["saw_text"] = True
     elif isinstance(payload, NodeCompletedEvent):
         _end_stream(state)
         if state["is_agent"] and not state["saw_text"] and payload.summary:

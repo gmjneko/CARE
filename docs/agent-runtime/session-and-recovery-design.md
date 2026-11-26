@@ -194,9 +194,10 @@ sequenceDiagram
 | Planner 提问后 | 用户回答“需要”时如何继续 |
 | :--- | :--- |
 | **Pi 在线，`interaction_mode="wait"`** | `run_turn` 等待回复。`respond_interaction()` 按 `request_id` 把回答发回原 Pi 调用，Planner 在同一个工具调用里拿到回答，继续当前轮。 |
-| **等待期间挂起或 Pi 退出** | `run_turn` 返回待答请求和 `session_ref`，LangGraph 提交 checkpoint，再进入只调用 `interrupt()` 等待回复的 `await_resume`。`runner.resume()` 校验 `request_id`，LangGraph 重放 `await_resume` 取得回答，再进入下一次 `run_turn`。开启会话持久化时，Planner 在原 Pi 会话上用“需要”开始新一轮，计划完成后才启动 Executor。 |
+| **等待期间挂起或 Pi 退出** | `run_turn` 返回待答请求和 `session_ref`，LangGraph 提交 checkpoint，再进入只调用 `interrupt()` 等待回复的 `await_input`。`runner.resume()` 校验 `request_id`，LangGraph 重放 `await_input` 取得回答，再进入下一次 `run_turn`。开启会话持久化时，Planner 在原 Pi 会话上用“需要”开始新一轮，计划完成后才启动 Executor。 |
+| **交互式节点完成一轮（`should_complete` 返回 `False`）** | `run_turn` 提交 `NodeOutput(status="waiting")` 与 `session_ref` 并进入 `await_input`（对外呈现 `PendingInterrupt(kind="awaiting_input")`）。用户调用 `runner.resume(..., prompt="...")` 在原会话继续聊，或调用 `runner.resume(..., resume_value={"action": "complete"})` 直接结束该节点进入下游。 |
 
-如果整个 worker 在 `run_turn` 提交前被强杀，LangGraph 的 checkpoint 仍决定重放哪个任务。若该任务已有预写记录，`run_turn` 按 `task_id` 取回已写入的 `session_ref` 和待答请求（如有），先补交为子图状态，再进入同一个 `await_resume`（见 §5.3）。
+如果整个 worker 在 `run_turn` 提交前被强杀，LangGraph 的 checkpoint 仍决定重放哪个任务。若该任务已有预写记录，`run_turn` 按 `task_id` 取回已写入的 `session_ref` 和待答请求（如有），先补交为子图状态，再进入同一个 `await_input`（见 §5.3）。
 
 ### 4.2 全场景中断与恢复矩阵
 
@@ -313,6 +314,7 @@ CREATE TABLE IF NOT EXISTS care_inflight_nodes (
 PendingInterruptKind = Literal[
     "workflow_interrupt",
     "agent_interaction",
+    "awaiting_input",
     "suspended",
     "failed",
     "aborted",
@@ -342,7 +344,9 @@ class WorkflowResumedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["workflow.resumed"] = "workflow.resumed"
-    resumed_from: Literal["workflow_interrupt", "agent_interaction", "failure", "crash"]
+    resumed_from: Literal[
+        "workflow_interrupt", "agent_interaction", "awaiting_input", "failure", "crash"
+    ]
 ```
 
 > `workflow_id` 与 `thread_id` 统一承载在最外层 `RuntimeEvent` 信封上，`InteractionResponse` 归位在 `protocol/` 与 `InteractionRequestEvent` 对称。
@@ -357,7 +361,7 @@ class NodeOutput(BaseModel):
 
     node_id: str
     role: str
-    status: Literal["completed", "interrupted", "failed", "aborted"]
+    status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
     summary: str
     session_ref: str | None = None
     usage: TokenUsage | None = None
@@ -396,7 +400,7 @@ class WorkflowState(AgentChanges):
 ### 6.4 `WorkflowRunner.resume()` 确定性判定顺序
 
 1. 图里有人工审批或 Agent 等待点时，按 `interrupt_id` 构造 `Command(resume={interrupt_id: ...})` 精准投递至对应分支（单分支时无需指定 `node_id`；多分支时可按 `request_id` 自动定位、按 `node_id` 逐个放行，或用 `resumes` 批量并发恢复）。Agent 的冷回复必须匹配持久化的 `request_id`。
-2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_resume` 后沿用同一套按 `interrupt_id` 精准回复的流程。已完成的上游审批、普通节点和其他并行 Agent 均保留在原来的图位置。
+2. worker 在执行中退出时，按原 `thread_id` 使用 `astream(None)`。如果当前 Pi 任务有预写记录，`run_turn` 先将其会话引用和问题提交为子图状态。进入 `await_input` 后沿用同一套按 `interrupt_id` 精准回复的流程。已完成的上游审批、普通节点和其他并行 Agent 均保留在原来的图位置。
 3. 并行分支混合状态按 `crashed > interrupted > failed > aborted > completed` 聚合：只要存在任意未决 `interrupted`/`crashed` 分支，调用 `run()` 会 fail-fast 拒绝；全部分支为 `completed`/`failed`/`aborted` 时可直接 `run()` 开启新一轮（保留所有分支 `session_ref`），或用 `discard()` 显式放弃。
 4. 同一个 Runner 对同一线程串行执行。线程正在线运行时，状态查询返回 `running`，外部通过 `respond_interaction()` 回应热交互。多个 worker 共享一个数据库时，宿主需要在进程间保证单线程所有权。
 

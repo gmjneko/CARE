@@ -26,7 +26,7 @@ class NodeOutput(BaseModel):
 
     node_id: str
     role: str
-    status: Literal["completed", "interrupted", "failed", "aborted"]
+    status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
     summary: str
     session_ref: str | None = None
     usage: TokenUsage | None = None

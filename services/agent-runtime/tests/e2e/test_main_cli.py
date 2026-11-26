@@ -215,6 +215,48 @@ def test_main_handles_live_agent_blocking_interaction_and_json_mode(tmp_path: Pa
     assert records[-1]["payload"]["type"] == "workflow.completed"
 
 
+def test_main_interactive_node_chat_then_next_over_non_tty_stdin(tmp_path: Path) -> None:
+    """main.py console supports chatting inside an awaiting_input node and advancing via /next."""
+    interactive_code = (
+        "from langgraph.graph import END, START, StateGraph\n"
+        "from agent_runtime.orchestrator import AgentNodeConfig, WorkflowState, build_agent_node\n"
+        "import main\n"
+        "def wf():\n"
+        "    g = StateGraph(WorkflowState)\n"
+        "    g.add_node('planner', build_agent_node(AgentNodeConfig("
+        "id='planner', role='planner', tool_policy='read_only', "
+        "append_system_prompt='You are the Planner agent.', "
+        "prompt_builder=lambda s: s['prompt'], "
+        "should_complete=lambda _o, _t: False)))\n"
+        "    g.add_node('executor', build_agent_node(AgentNodeConfig("
+        "id='executor', role='executor', "
+        "prompt_builder=lambda s: f'EXEC:{s[\"node_outputs\"][\"planner\"].summary}')))\n"
+        "    g.add_edge(START, 'planner')\n"
+        "    g.add_edge('planner', 'executor')\n"
+        "    g.add_edge('executor', END)\n"
+        "    return g\n"
+        "raise SystemExit(main.run(prompt='Draft v1', workflow=wf))"
+    )
+    proc = _run_main_subprocess(
+        tmp_path=tmp_path,
+        scenario="interactive_handoff",
+        stdin_text="Refine v2\n/next\nexit\n",
+        code=interactive_code,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+    stdout = proc.stdout
+    assert "[workflow.interrupted] [planner(awaiting_input)]" in stdout
+    assert "[workflow.resumed] workflow=wf" in stdout
+    assert "from=awaiting_input" in stdout
+    assert "[node.completed] node=planner status=completed" in stdout
+    assert "[node.started] node=executor role=executor adapter=pi" in stdout
+    assert "[workflow.completed] status=completed" in stdout
+    payloads = [json.loads(line) for line in stdout.splitlines() if line.startswith('{"history":')]
+    assert len(payloads) == 3  # planner turn 1, planner turn 2, executor
+    assert payloads[1]["history"] == ["Draft v1", "Refine v2"]
+    assert "Refine v2" in payloads[2]["history"][0]
+
+
 def test_main_run_validation_fails_fast() -> None:
     sys.path.insert(0, str(RUNTIME_ROOT))
     import main as main_module

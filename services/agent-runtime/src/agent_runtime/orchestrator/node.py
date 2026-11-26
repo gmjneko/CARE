@@ -39,15 +39,18 @@ from agent_runtime.protocol.events import (
     InteractionResponse,
     NodeCompletedEvent,
     NodeStartedEvent,
+    ToolCompletedEvent,
     TurnCompletedEvent,
     WorkflowEvent,
 )
 
 PromptBuilder = Callable[[WorkflowState], str]
+TurnCompletionCheck = Callable[[NodeOutput, tuple[ToolCompletedEvent, ...]], bool]
 
 # Explicit internal contract constants shared with recovery.py (single source of truth).
 AGENT_RUN_NODE = "run_turn"
-AGENT_RESUME_NODE = "await_resume"
+AGENT_WAIT_NODE = "await_input"
+AGENT_RESUME_ACTION_KEY = "action"
 AGENT_RESUME_PROMPT_KEY = "prompt"
 APPROVAL_INTERACTION_KEY = "interaction"
 APPROVAL_CONTENT_KEY = "content"
@@ -76,12 +79,13 @@ class AgentNodeConfig:
     endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
     persist_session: bool | None = None
+    should_complete: TurnCompletionCheck | None = None
 
 
 class AgentTurnState(WorkflowState):
     """Subgraph-private state isolating turn loop status from parent WorkflowState.status."""
 
-    turn_status: Literal["running", "completed", "interrupted", "failed", "aborted"]
+    turn_status: Literal["running", "completed", "waiting", "interrupted", "failed", "aborted"]
     continuation: str | None
 
 
@@ -206,6 +210,7 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
                 prompt = f"{prompt}\n\n{continuation}"
 
         terminal: TurnCompletedEvent | None = None
+        completed_tools: list[ToolCompletedEvent] = []
         session_ref: str | None = prev_session_ref
         interrupted_interaction: InteractionRequestEvent | None = None
 
@@ -248,7 +253,9 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
 
                     writer(StreamPacket(node_id=node_config.id, event=event))
 
-                    if isinstance(event, TurnCompletedEvent):
+                    if isinstance(event, ToolCompletedEvent):
+                        completed_tools.append(event)
+                    elif isinstance(event, TurnCompletedEvent):
                         terminal = event
 
                 session_ref = session.session_ref or session_ref
@@ -273,7 +280,14 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
             failure=terminal.failure if terminal and not suspended else None,
             pending_interaction=interrupted_interaction,
         )
-        _emit_node_completed(writer, output)
+        if (
+            output.status == "completed"
+            and node_config.should_complete is not None
+            and not node_config.should_complete(output, tuple(completed_tools))
+        ):
+            output = output.model_copy(update={"status": "waiting"})
+        else:
+            _emit_node_completed(writer, output)
 
         update: dict[str, Any] = {
             "node_outputs": {node_config.id: output},
@@ -281,30 +295,45 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
             if output.status == "completed"
             else state["latest_output"],
             "turn_status": output.status,
+            "continuation": None,
         }
         if session_ref:
             update["node_sessions"] = {node_config.id: session_ref}
         return update
 
-    def await_resume(state: AgentTurnState) -> dict[str, Any]:
+    def await_input(state: AgentTurnState) -> dict[str, Any]:
         output = state["node_outputs"][node_config.id]
         reply = interrupt({"node_id": output.node_id, "status": output.status})
+        if reply.get(AGENT_RESUME_ACTION_KEY) == "complete":
+            completed = output.model_copy(update={"status": "completed"})
+            _emit_node_completed(get_stream_writer(), completed)
+            return {
+                "node_outputs": {node_config.id: completed},
+                "latest_output": completed.summary,
+                "turn_status": "completed",
+                "continuation": None,
+            }
         continuation = reply[AGENT_RESUME_PROMPT_KEY]
         if not continuation and state["node_sessions"].get(node_config.id):
             continuation = "Continue from where you left off."
-        return {"turn_status": "running", "continuation": continuation}
+        return {
+            "turn_status": "running",
+            "continuation": continuation
+        }
 
     graph = StateGraph(AgentTurnState, input_schema=WorkflowState, output_schema=AgentChanges)
     graph.add_node(AGENT_RUN_NODE, run_turn)
-    graph.add_node(AGENT_RESUME_NODE, await_resume)
+    graph.add_node(AGENT_WAIT_NODE, await_input)
 
     graph.add_conditional_edges(
         START, lambda s: AGENT_RUN_NODE if s["status"] == "running" else END
     )
     graph.add_conditional_edges(
-        AGENT_RUN_NODE, lambda s: END if s["turn_status"] == "completed" else AGENT_RESUME_NODE
+        AGENT_RUN_NODE, lambda s: END if s["turn_status"] == "completed" else AGENT_WAIT_NODE
     )
-    graph.add_edge(AGENT_RESUME_NODE, AGENT_RUN_NODE)
+    graph.add_conditional_edges(
+        AGENT_WAIT_NODE, lambda s: END if s["turn_status"] == "completed" else AGENT_RUN_NODE
+    )
     return graph.compile(name=node_config.id)
 
 
@@ -312,8 +341,8 @@ def continue_if_running(next_node: str) -> Callable[[WorkflowState], str]:
     """Conditional edge router for non-agent custom nodes (e.g. approval gates).
 
     Halts downstream nodes when a custom node returns a non-``"running"`` status.
-    ``AgentNode`` subgraphs pause inside ``await_resume`` on failure/abort/interruption
-    rather than exiting to downstream edges.
+    ``AgentNode`` subgraphs pause inside ``await_input`` when waiting, interrupted,
+    failed, or aborted rather than exiting to downstream edges.
     """
 
     def _route(state: WorkflowState) -> str:

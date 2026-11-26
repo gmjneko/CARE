@@ -305,7 +305,7 @@ sequenceDiagram
 class NodeOutput(BaseModel, frozen=True):
     node_id: str
     role: str
-    status: Literal["completed", "interrupted", "failed", "aborted"]
+    status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
     summary: str                   # 供下游节点消费的结构化交接文本
     session_ref: str | None = None # 若开启持久化会话，记录会话文件引用
     usage: TokenUsage | None = None
@@ -328,15 +328,15 @@ class WorkflowState(AgentChanges):
 ```
 
 - **跨轮会话绑定与单轮交接产物彻底分离**：`node_sessions` 跨轮保留每个节点的 `session_ref`，而 `node_outputs` 在新一轮 `run()` 启动时清空，避免条件分支跳过历史节点时残留上一轮的脏摘要。
-- **子图私有循环状态与父图状态解耦**：`AgentTurnState` 使用私有 `turn_status` 驱动 `run_turn -> await_resume` 循环，仅在节点成功完成后通过 `AgentChanges` 回写父图，不会覆写并行分支的全局 `status` / `failure`。
+- **子图私有循环状态与父图状态解耦**：`AgentTurnState` 使用私有 `turn_status` 驱动 `run_turn <-> await_input` 循环，仅在节点成功完成后通过 `AgentChanges` 回写父图，不会覆写并行分支的全局 `status` / `failure`。
 - 所有状态字段均为基础类型与 Pydantic v2 模型，通过 `CHECKPOINT_SERDE`（白名单 `JsonPlusSerializer`）与任意 `BaseCheckpointSaver` 原生兼容。
 
 ### 6.2 通用 `AgentNode` 生命周期（`node.py`）
 
 `build_agent_node(node_config)` 是纯拓扑节点工厂（不接收 `RunContext` 或具体模型参数），返回编译好的 LangGraph 子图。运行期依赖（`run_id`、`RunOptions`、`node_overrides`、`AdapterRegistry`、`LiveRunRegistry`、`InflightNodeStore`）全部通过 LangGraph 原生 `context=ExecutionContext(...)` 动态注入：
 
-- **`run_turn` 执行 Agent。** 按 `NodeRuntimeOverride > AgentNodeConfig > RunOptions` 优先级解析当前节点的后端、模型端点、推理深度与工具策略，先校验 `AdapterCapabilities`（如 `session_resume`、`interactions`），打开会话并登记到 `LiveRunRegistry` 以支持 `steer()`、`follow_up()`、`abort()` 与 `suspend()`，通过 `StreamPacket` 转发事件，在退出时注销会话。成功时提交 `NodeOutput` 与 `node_sessions` 并结束子图，冷挂起、失败或中止时保留会话并进入 `await_resume`。
-- **`await_resume` 等待冷恢复。** 它调用 `interrupt()`。恢复时 LangGraph 从 `await_resume` 的开头重放，取得回复后再进入新一轮 `run_turn`。父图在 Agent 成功交付结果后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
+- **`run_turn` 执行 Agent。** 按 `NodeRuntimeOverride > AgentNodeConfig > RunOptions` 优先级解析当前节点的后端、模型端点、推理深度与工具策略，先校验 `AdapterCapabilities`（如 `session_resume`、`interactions`），打开会话并登记到 `LiveRunRegistry` 以支持 `steer()`、`follow_up()`、`abort()` 与 `suspend()`，通过 `StreamPacket` 转发事件，在退出时注销会话。正常完成一轮后，默认（`should_complete=None`）提交 `NodeOutput(status="completed")` 并结束子图；若配置了 `AgentNodeConfig.should_complete(output, completed_tools)` 且返回 `False`，则记为 `status="waiting"`（保留 `session_ref`）并进入 `await_input` 等待继续对话或显式放行；冷挂起、失败或中止时同样保留会话并进入 `await_input`。
+- **`await_input` 中性等待节点。** 它调用 `interrupt()` 持久化挂起。恢复时 LangGraph 从 `await_input` 的开头重放：收到继续对话或故障恢复输入后回到 `run_turn` 复用同一会话继续执行；在 `awaiting_input` 态下收到 `resume_value={"action": "complete"}` 时，直接提交最终 `NodeOutput(status="completed")` 并结束子图，无需额外再跑一轮 LLM。父图在 Agent 真正完成后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
 
 除 Agent 节点外，`orchestrator/node.py` 同时提供内置人工审批节点工厂 `build_approval_node(node_id, *, message, title=None, content_builder=None)`：进入门控时发射 `NodeStartedEvent(adapter=None)` 并调用 LangGraph `interrupt()` 挂起，将审批请求归一化为强类型 `PendingInterrupt.interaction`（`InteractionRequestEvent(kind="approval", title, message)`）并在 `payload["content"]` 携带待审内容；恢复时严格校验 `{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`（兼容 `InteractionResponse` 并校验 `request_id`），写入 `node_outputs[node_id]` 并发出 `NodeCompletedEvent`；批准时不修改父图 `status` 继续下游，拒绝或取消时写入 `status="aborted"` 配合 `continue_if_running()` 短路终止。
 

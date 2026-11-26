@@ -1899,6 +1899,406 @@ async def test_adapter_capabilities_are_enforced_fail_fast(tmp_path: Path) -> No
                 pass
 
 
+def _build_interactive_handoff_workflow() -> StateGraph[WorkflowState]:
+    """2-node workflow: interactive planner (exits on submit_plan tool) -> one-shot executor."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "planner",
+        build_agent_node(
+            AgentNodeConfig(
+                id="planner",
+                role="planner",
+                tool_policy="read_only",
+                append_system_prompt="You are the Planner agent.",
+                prompt_builder=lambda s: s["prompt"],
+                should_complete=lambda _output, tools: any(
+                    t.tool_name == "submit_plan" and not t.is_error for t in tools
+                ),
+            )
+        ),
+    )
+    graph.add_node(
+        "executor",
+        build_agent_node(
+            AgentNodeConfig(
+                id="executor",
+                role="executor",
+                prompt_builder=lambda s: (
+                    f"ORIGINAL={s['prompt']}\nPLAN={s['node_outputs']['planner'].summary}"
+                ),
+            )
+        ),
+    )
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "executor")
+    graph.add_edge("executor", END)
+    return graph
+
+
+def _build_explicit_handoff_workflow() -> StateGraph[WorkflowState]:
+    """2-node workflow: planner stays interactive until explicit completion -> executor."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "planner",
+        build_agent_node(
+            AgentNodeConfig(
+                id="planner",
+                role="planner",
+                tool_policy="read_only",
+                append_system_prompt="You are the Planner agent.",
+                prompt_builder=lambda s: s["prompt"],
+                should_complete=lambda _output, _tools: False,
+            )
+        ),
+    )
+    graph.add_node(
+        "executor",
+        build_agent_node(
+            AgentNodeConfig(
+                id="executor",
+                role="executor",
+                prompt_builder=lambda s: f"HANDOFF={s['node_outputs']['planner'].summary}",
+            )
+        ),
+    )
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "executor")
+    graph.add_edge("executor", END)
+    return graph
+
+
+def _build_parallel_interactive_workflow() -> StateGraph[WorkflowState]:
+    """Parallel interactive branches joining into a one-shot aggregator."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "worker_a",
+        build_agent_node(
+            AgentNodeConfig(
+                id="worker_a",
+                role="worker",
+                prompt_builder=lambda s: f"A:{s['prompt']}",
+                should_complete=lambda _output, _tools: False,
+            )
+        ),
+    )
+    graph.add_node(
+        "worker_b",
+        build_agent_node(
+            AgentNodeConfig(
+                id="worker_b",
+                role="worker",
+                prompt_builder=lambda s: f"B:{s['prompt']}",
+                should_complete=lambda _output, _tools: False,
+            )
+        ),
+    )
+    graph.add_node(
+        "aggregator",
+        build_agent_node(
+            AgentNodeConfig(
+                id="aggregator",
+                role="aggregator",
+                prompt_builder=lambda s: (
+                    f"JOIN|A={s['node_outputs']['worker_a'].summary}"
+                    f"|B={s['node_outputs']['worker_b'].summary}"
+                ),
+            )
+        ),
+    )
+    graph.add_edge(START, "worker_a")
+    graph.add_edge(START, "worker_b")
+    graph.add_edge("worker_a", "aggregator")
+    graph.add_edge("worker_b", "aggregator")
+    graph.add_edge("aggregator", END)
+    return graph
+
+
+async def test_interactive_node_chats_across_restarts_and_advances_on_handoff_tool(
+    tmp_path: Path,
+) -> None:
+    """Interactive planner stays in same session across turns until submit_plan succeeds."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "interactive-tool-handoff"
+
+    # Turn 1: planner responds without calling submit_plan -> pauses in awaiting_input
+    t1_events: list[RuntimeEvent] = []
+    async with _make_runner("interactive_handoff", checkpoint_db=db_path) as runner1:
+        async for ev in runner1.run(
+            _build_interactive_handoff_workflow,
+            "Draft caching plan",
+            tmp_path,
+            thread_id=thread_id,
+        ):
+            t1_events.append(ev)
+        st1 = await runner1.get_thread_state(_build_interactive_handoff_workflow, thread_id)
+
+    _write_manifest(tmp_path, "interactive_turn1", t1_events)
+    assert isinstance(t1_events[-1].payload, WorkflowInterruptedEvent)
+    assert len(t1_events[-1].payload.interrupts) == 1
+    intr1 = t1_events[-1].payload.interrupts[0]
+    assert intr1.node_id == "planner"
+    assert intr1.kind == "awaiting_input"
+    assert intr1.payload["summary"]
+    assert not any(ev.payload.type == "node.completed" for ev in t1_events)
+    assert st1.status == "interrupted" and st1.resumable is True
+    assert st1.node_outputs["planner"].status == "waiting"
+    planner_ref = st1.node_outputs["planner"].session_ref
+    assert planner_ref is not None
+
+    # Turn 2..4 in brand-new Runner simulating restart: validate fail-fast, chat, failed tool,
+    # then successful submit_plan advances automatically to executor.
+    async with _make_runner("interactive_handoff", checkpoint_db=db_path) as runner2:
+        with pytest.raises(ValueError, match="is interrupted"):
+            await anext(
+                runner2.run(
+                    _build_interactive_handoff_workflow,
+                    "Overlap",
+                    tmp_path,
+                    thread_id=thread_id,
+                )
+            )
+        with pytest.raises(ValueError, match="requires a non-empty 'prompt'"):
+            await anext(runner2.resume(_build_interactive_handoff_workflow, thread_id))
+        with pytest.raises(ValueError, match="only accepts"):
+            await anext(
+                runner2.resume(
+                    _build_interactive_handoff_workflow,
+                    thread_id,
+                    resume_value={"action": "unknown"},
+                )
+            )
+        with pytest.raises(ValueError, match="cannot combine"):
+            await anext(
+                runner2.resume(
+                    _build_interactive_handoff_workflow,
+                    thread_id,
+                    prompt="both",
+                    resume_value={"action": "complete"},
+                )
+            )
+        with pytest.raises(ValueError, match="does not accept interaction_response"):
+            await anext(
+                runner2.resume(
+                    _build_interactive_handoff_workflow,
+                    thread_id,
+                    interaction_response=InteractionResponse(request_id="x", decision="approve"),
+                )
+            )
+
+        t2_events = [
+            ev
+            async for ev in runner2.resume(
+                _build_interactive_handoff_workflow,
+                thread_id,
+                prompt="Switch to Redis",
+            )
+        ]
+        assert isinstance(t2_events[0].payload, WorkflowResumedEvent)
+        assert t2_events[0].payload.resumed_from == "awaiting_input"
+        assert isinstance(t2_events[-1].payload, WorkflowInterruptedEvent)
+        assert t2_events[-1].payload.interrupts[0].kind == "awaiting_input"
+        t2_summary = json.loads(t2_events[-1].payload.interrupts[0].payload["summary"])
+        assert t2_summary["session_file"] == planner_ref
+        assert t2_summary["turn_count"] == 2
+        assert t2_summary["history"] == ["Draft caching plan", "Switch to Redis"]
+        assert not any(
+            ev.payload.type == "node.started" and ev.payload.node_id == "executor"
+            for ev in t2_events
+        )
+
+        # Failed submit_plan tool call must NOT complete the planner node.
+        t3_events = [
+            ev
+            async for ev in runner2.resume(
+                _build_interactive_handoff_workflow,
+                thread_id,
+                prompt="FAIL_SUBMIT",
+            )
+        ]
+        assert isinstance(t3_events[-1].payload, WorkflowInterruptedEvent)
+        assert t3_events[-1].payload.interrupts[0].kind == "awaiting_input"
+
+        # Successful submit_plan tool call completes planner and hands off to executor.
+        t4_events = [
+            ev
+            async for ev in runner2.resume(
+                _build_interactive_handoff_workflow,
+                thread_id,
+                prompt="Approved, SUBMIT_PLAN",
+            )
+        ]
+        final_state = await runner2.get_thread_state(
+            _build_interactive_handoff_workflow, thread_id
+        )
+
+    _write_manifest(tmp_path, "interactive_turn4_handoff", t4_events)
+    started = [ev.payload.node_id for ev in t4_events if ev.payload.type == "node.started"]
+    completed = [
+        (ev.payload.node_id, ev.payload.status)
+        for ev in t4_events
+        if ev.payload.type == "node.completed"
+    ]
+    assert started == ["planner", "executor"]
+    assert completed == [("planner", "completed"), ("executor", "completed")]
+    assert isinstance(t4_events[-1].payload, WorkflowCompletedEvent)
+    assert t4_events[-1].payload.status == "completed"
+
+    exec_payload = json.loads(t4_events[-1].payload.final_output)
+    assert exec_payload["role"] == "executor"
+    assert exec_payload["session_file"] != planner_ref
+    assert "ORIGINAL=Draft caching plan" in exec_payload["history"][0]
+    assert "Approved, SUBMIT_PLAN" in exec_payload["history"][0]
+    assert final_state.status == "completed" and not final_state.resumable
+    assert final_state.node_outputs["planner"].status == "completed"
+    assert final_state.node_outputs["planner"].session_ref == planner_ref
+
+
+async def test_interactive_node_explicit_completion_skips_extra_turn_and_supports_discard(
+    tmp_path: Path,
+) -> None:
+    """Explicit action='complete' exits await_input directly without an extra LLM turn."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "explicit-handoff"
+
+    async with _make_runner("interactive_handoff", checkpoint_db=db_path) as runner:
+        e1 = [
+            ev
+            async for ev in runner.run(
+                _build_explicit_handoff_workflow,
+                "Initial brief",
+                tmp_path,
+                thread_id=thread_id,
+            )
+        ]
+        assert isinstance(e1[-1].payload, WorkflowInterruptedEvent)
+
+        e2 = [
+            ev
+            async for ev in runner.resume(
+                _build_explicit_handoff_workflow,
+                thread_id,
+                prompt="Add rollback section",
+            )
+        ]
+        assert isinstance(e2[-1].payload, WorkflowInterruptedEvent)
+
+        # User explicitly completes planner: no new planner turn should start!
+        e3 = [
+            ev
+            async for ev in runner.resume(
+                _build_explicit_handoff_workflow,
+                thread_id,
+                resume_value={"action": "complete"},
+            )
+        ]
+        st_done = await runner.get_thread_state(_build_explicit_handoff_workflow, thread_id)
+
+        _write_manifest(tmp_path, "explicit_complete", e3)
+        started = [ev.payload.node_id for ev in e3 if ev.payload.type == "node.started"]
+        completed = [
+            (ev.payload.node_id, ev.payload.status)
+            for ev in e3
+            if ev.payload.type == "node.completed"
+        ]
+        assert started == ["executor"]
+        assert completed == [("planner", "completed"), ("executor", "completed")]
+        assert isinstance(e3[-1].payload, WorkflowCompletedEvent)
+        exec_payload = json.loads(e3[-1].payload.final_output)
+        assert "Add rollback section" in exec_payload["history"][0]
+        assert st_done.status == "completed" and not st_done.resumable
+
+        # Discard while awaiting_input preserves planner session_ref for a fresh run.
+        thread_discard = "explicit-handoff-discard"
+        async for _ in runner.run(
+            _build_explicit_handoff_workflow,
+            "Draft before discard",
+            tmp_path,
+            thread_id=thread_discard,
+        ):
+            pass
+        st_wait = await runner.get_thread_state(_build_explicit_handoff_workflow, thread_discard)
+        saved_ref = st_wait.node_outputs["planner"].session_ref
+        assert saved_ref is not None
+
+        discarded = await runner.discard(_build_explicit_handoff_workflow, thread_discard)
+        assert discarded.status == "aborted" and not discarded.resumable
+        assert discarded.node_sessions["planner"] == saved_ref
+
+        fresh_events = [
+            ev
+            async for ev in runner.run(
+                _build_explicit_handoff_workflow,
+                "Fresh draft after discard",
+                tmp_path,
+                thread_id=thread_discard,
+            )
+        ]
+        fresh_summary = json.loads(fresh_events[-1].payload.interrupts[0].payload["summary"])
+        assert fresh_summary["session_file"] == saved_ref
+        assert fresh_summary["history"] == ["Draft before discard", "Fresh draft after discard"]
+
+
+async def test_parallel_interactive_branches_chat_and_complete_independently(
+    tmp_path: Path,
+) -> None:
+    """Parallel awaiting_input branches can chat or complete independently before joining."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "parallel-interactive"
+
+    async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
+        e1 = [
+            ev
+            async for ev in runner.run(
+                _build_parallel_interactive_workflow,
+                "Design system",
+                tmp_path,
+                thread_id=thread_id,
+            )
+        ]
+        assert isinstance(e1[-1].payload, WorkflowInterruptedEvent)
+        assert {item.node_id: item.kind for item in e1[-1].payload.interrupts} == {
+            "worker_a": "awaiting_input",
+            "worker_b": "awaiting_input",
+        }
+
+        # Chat more on worker_a while completing worker_b in a single batch resume.
+        e2 = [
+            ev
+            async for ev in runner.resume(
+                _build_parallel_interactive_workflow,
+                thread_id,
+                resumes={
+                    "worker_a": ResumeInput(prompt="Expand section A"),
+                    "worker_b": ResumeInput(resume_value={"action": "complete"}),
+                },
+            )
+        ]
+        assert isinstance(e2[-1].payload, WorkflowInterruptedEvent)
+        assert [(i.node_id, i.kind) for i in e2[-1].payload.interrupts] == [
+            ("worker_a", "awaiting_input")
+        ]
+        assert not any(
+            ev.payload.type == "node.started" and ev.payload.node_id == "aggregator" for ev in e2
+        )
+
+        # Complete worker_a -> aggregator runs with both final summaries.
+        e3 = [
+            ev
+            async for ev in runner.resume(
+                _build_parallel_interactive_workflow,
+                thread_id,
+                resume_value={"action": "complete"},
+            )
+        ]
+
+    _write_manifest(tmp_path, "parallel_interactive_join", e3)
+    assert isinstance(e3[-1].payload, WorkflowCompletedEvent)
+    assert e3[-1].payload.status == "completed"
+    agg_payload = json.loads(e3[-1].payload.final_output)
+    assert "Expand section A" in agg_payload["history"][0]
+    assert "B:Design system" in agg_payload["history"][0]
+
+
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:
     if thread_id == "parallel-hard-kill":
         seen: dict[str, str] = {}
