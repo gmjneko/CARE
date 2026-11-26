@@ -20,6 +20,7 @@ from agent_runtime.orchestrator import WorkflowRunner
 from agent_runtime.protocol import (
     NodeCompletedEvent,
     NodeStartedEvent,
+    PendingInterrupt,
     RuntimeEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
@@ -46,7 +47,7 @@ def main() -> int:
         # 用户提示词（直接在这里修改）
         prompt="列出当前目录的文件，并简短概括项目结构。",
         # 内置工作流: "single_agent" | "plan_and_execute"
-        workflow="single_agent",
+        workflow="plan_and_execute",
         # Agent 工作目录（默认当前目录，支持相对路径、绝对路径或 ~）
         cwd=".",
         # 会话线程 ID：设为固定值（如 "demo-1"）时，多次运行会自动续接同一轮对话上下文
@@ -121,23 +122,64 @@ def run(
             workflow_registry,
             checkpoint_db=effective_checkpoint_db,
         ) as runner:
-            async for event in runner.run(
-                workflow,
-                prompt,
-                workspace_dir,
-                thread_id=thread_id,
-                endpoint=effective_endpoint,
-                thinking_level=effective_thinking,
-            ):
+            effective_thread_id = thread_id
+            pending_interrupts: tuple[PendingInterrupt, ...] = ()
+
+            def _handle_event(event: RuntimeEvent) -> None:
+                nonlocal effective_thread_id, pending_interrupts, exit_code
+                if effective_thread_id is None:
+                    effective_thread_id = event.run_id
                 if json_output:
                     print(event.model_dump_json(), flush=True)
                 else:
                     _render_human(event, render_state)
 
-                if isinstance(event.payload, WorkflowCompletedEvent) and (
+                if isinstance(event.payload, WorkflowInterruptedEvent):
+                    pending_interrupts = event.payload.interrupts
+                elif isinstance(event.payload, WorkflowCompletedEvent) and (
                     event.payload.status != "completed"
                 ):
                     exit_code = 1
+
+            async for event in runner.run(
+                workflow,
+                prompt,
+                workspace_dir,
+                thread_id=effective_thread_id,
+                endpoint=effective_endpoint,
+                thinking_level=effective_thinking,
+            ):
+                _handle_event(event)
+
+            while (
+                not json_output
+                and effective_thread_id is not None
+                and len(pending_interrupts) == 1
+                and pending_interrupts[0].kind == "workflow_interrupt"
+                and pending_interrupts[0].interaction is not None
+                and pending_interrupts[0].interaction.kind == "approval"
+                and sys.stdin is not None
+                and not sys.stdin.closed
+                and sys.stdin.isatty()
+            ):
+                intr = pending_interrupts[0]
+                assert intr.interaction is not None
+                question = intr.interaction.message or "是否继续执行"
+                try:
+                    answer = (await asyncio.to_thread(input, f"{question} [y/N]: ")).strip().lower()
+                except EOFError:
+                    break
+                decision = "approve" if answer in ("y", "yes") else "deny"
+                pending_interrupts = ()
+                async for event in runner.resume(
+                    workflow,
+                    effective_thread_id,
+                    node_id=intr.node_id,
+                    resume_value={"decision": decision},
+                    endpoint=effective_endpoint,
+                    thinking_level=effective_thinking,
+                ):
+                    _handle_event(event)
 
         return exit_code
 
@@ -204,6 +246,10 @@ def _render_human(event: RuntimeEvent, state: dict[str, str | None]) -> None:
         _end_stream()
         summary = ", ".join(f"{item.node_id}({item.kind})" for item in payload.interrupts)
         print(f"\n[workflow.interrupted] [{summary}] seq={event.seq}", flush=True)
+        for item in payload.interrupts:
+            if item.interaction is not None and item.interaction.message:
+                prefix = f"{item.interaction.title}: " if item.interaction.title else ""
+                print(f"  [{item.node_id}] {prefix}{item.interaction.message}", flush=True)
     elif isinstance(payload, WorkflowCompletedEvent):
         _end_stream()
         print(f"\n[workflow.completed] status={payload.status} seq={event.seq}", flush=True)

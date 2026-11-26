@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -289,6 +289,101 @@ def continue_if_running(next_node: str) -> Callable[[WorkflowState], str]:
         return next_node if state["status"] == "running" else END
 
     return _route
+
+
+_APPROVAL_DECISION_LABELS: dict[Literal["approve", "deny", "cancel"], str] = {
+    "approve": "approved",
+    "deny": "denied",
+    "cancel": "cancelled",
+}
+
+
+def build_approval_node(
+    node_id: str,
+    *,
+    message: str,
+    title: str | None = None,
+    content_builder: PromptBuilder | None = None,
+) -> Callable[[WorkflowState], dict[str, Any]]:
+    """Build a workflow-level human approval gate node backed by LangGraph ``interrupt()``.
+
+    Pauses with a structured approval payload (``kind="approval"``, ``message``, optional
+    ``title`` and ``content``) and validates the resumed decision strictly against
+    ``{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`` (which also
+    matches ``InteractionResponse.model_dump()``).
+    """
+    clean_id = node_id.strip()
+    if not clean_id:
+        raise ValueError("node_id must be non-empty")
+    clean_message = message.strip()
+    if not clean_message:
+        raise ValueError("message must be non-empty")
+    clean_title: str | None = None
+    if title is not None:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("title must be non-empty when provided")
+
+    def approval_gate(state: WorkflowState) -> dict[str, Any]:
+        if state["status"] != "running":
+            return {}
+
+        request = InteractionRequestEvent(
+            request_id=f"{state['run_id']}:{clean_id}",
+            kind="approval",
+            blocking=True,
+            title=clean_title,
+            message=clean_message,
+        )
+        interrupt_payload: dict[str, Any] = {"interaction": request}
+        content = (
+            content_builder(state) if content_builder is not None else state["latest_output"]
+        ).strip()
+        if content:
+            interrupt_payload["content"] = content
+
+        decision, feedback = parse_approval_decision(interrupt(interrupt_payload), node_id=clean_id)
+        label = _APPROVAL_DECISION_LABELS[decision]
+        summary = f"{label}: {feedback}" if feedback else label
+        approved = decision == "approve"
+        output = NodeOutput(
+            node_id=clean_id,
+            role="approval",
+            status="completed" if approved else "aborted",
+            summary=summary,
+        )
+        _emit_node_completed(get_stream_writer(), output)
+        return {
+            "node_outputs": {clean_id: output},
+            "status": "running" if approved else "aborted",
+        }
+
+    approval_gate.__name__ = clean_id
+    return approval_gate
+
+
+def parse_approval_decision(
+    raw: Any,
+    *,
+    node_id: str,
+) -> tuple[Literal["approve", "deny", "cancel"], str | None]:
+    """Validate and normalize an approval decision payload."""
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"Approval node '{node_id}' requires a mapping with "
+            "'decision' ('approve' | 'deny' | 'cancel')"
+        )
+    decision = raw.get("decision")
+    if decision not in ("approve", "deny", "cancel"):
+        raise ValueError(
+            f"Approval node '{node_id}' received invalid decision {decision!r}; "
+            "expected 'approve', 'deny', or 'cancel'"
+        )
+    feedback = raw.get("feedback")
+    if feedback is not None and not isinstance(feedback, str):
+        raise ValueError(f"Approval node '{node_id}' field 'feedback' must be a string or None")
+    clean_feedback = feedback.strip() if feedback and feedback.strip() else None
+    return decision, clean_feedback
 
 
 def _emit_node_completed(writer: Callable[[Any], None], output: NodeOutput) -> None:

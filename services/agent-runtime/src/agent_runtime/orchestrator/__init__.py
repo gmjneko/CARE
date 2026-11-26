@@ -10,6 +10,7 @@ from agent_runtime.orchestrator.node import (
     RunContext,
     StreamPacket,
     build_agent_node,
+    build_approval_node,
     continue_if_running,
 )
 from agent_runtime.orchestrator.registry import (
@@ -39,5 +40,6 @@ __all__ = [
     "WorkflowRunner",
     "WorkflowState",
     "build_agent_node",
+    "build_approval_node",
     "continue_if_running",
 ]

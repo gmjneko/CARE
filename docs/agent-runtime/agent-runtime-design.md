@@ -63,13 +63,13 @@ services/agent-runtime/
 │   │       └── adapter.py                 # PiRpcAdapter & PiRpcSession 实现
 │   ├── orchestrator/                      # 【纯执行引擎，不感知具体业务工作流】
 │   │   ├── state.py                       # 防膨胀 WorkflowState & NodeOutput
-│   │   ├── node.py                        # 通用 AgentNode 工厂 (build_agent_node), continue_if_running, RunContext
+│   │   ├── node.py                        # 通用节点工厂 (build_agent_node, build_approval_node), continue_if_running, RunContext
 │   │   ├── registry.py                    # WorkflowDefinition & WorkflowRegistry（与 AdapterRegistry 对称）
 │   │   └── runner.py                      # 生产总入口 WorkflowRunner (AsyncSqliteSaver + 流式定序)
 │   └── workflows/                         # 【具体业务工作流集合，一文件一工作流，彼此互不依赖】
 │       ├── __init__.py                    # BUILTIN_WORKFLOWS 与 create_default_workflow_registry() 显式注册
 │       ├── single_agent.py                # SINGLE_AGENT_WORKFLOW (START -> agent -> END)
-│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner -> executor -> END)
+│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner -> plan_approval -> executor -> END)
 └── tests/
     ├── fakes/fake_pi_rpc.py               # 独立子进程 Fake Pi RPC 协议替身（外部边界注入）
     ├── e2e/test_workflow_scenarios.py     # 生产路径全链路端到端场景测试
@@ -314,6 +314,8 @@ class WorkflowState(TypedDict):
 - **`run_turn` 执行 Agent。** 它打开适配器会话，将会话登记到 `RunContext.active_sessions` 以支持 `steer()`、`follow_up()` 和 `abort()`，通过 `StreamPacket` 转发事件，在退出时注销会话。在线交互在本轮内完成。成功时提交 `NodeOutput` 并结束子图，冷挂起、失败或中止时提交相应状态并进入 `await_resume`。
 - **`await_resume` 等待冷恢复。** 它调用 `interrupt()`。恢复时 LangGraph 从 `await_resume` 的开头重放，取得回复后再进入新一轮 `run_turn`。父图在 Agent 成功交付结果后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
 
+除 Agent 节点外，`orchestrator/node.py` 同时提供内置人工审批节点工厂 `build_approval_node(node_id, *, message, title=None, content_builder=None)`：调用 LangGraph `interrupt()` 挂起，将审批请求归一化为强类型 `PendingInterrupt.interaction`（`InteractionRequestEvent(kind="approval", title, message)`）并在 `payload["content"]` 携带待审内容；恢复时在 `WorkflowRunner.resume()` 写入检查点之前严格校验 `{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`（兼容 `InteractionResponse` 并校验 `request_id`），将审批结果写入 `node_outputs[node_id]` 并发出 `NodeCompletedEvent`；批准时返回 `status="running"` 继续下游，拒绝或取消时返回 `status="aborted"` 配合 `continue_if_running()` 短路终止。
+
 ### 6.3 内置工作流与扩展规范（`workflows/` + `orchestrator/registry.py`）
 
 工作流层与执行引擎层通过 `WorkflowRegistry` 解耦：
@@ -329,17 +331,19 @@ flowchart LR
 
     subgraph plan_and_execute ["工作流 2: plan_and_execute"]
         S2((START)) --> P["planner (tools: read,grep,find,ls)"]
-        P -- "status == running" --> C["executor (full tools + planner summary)"]
+        P -- "status == running" --> G["plan_approval (是否按照plan执行)"]
         P -- "failed / aborted" --> E2((END))
+        G -- "approve" --> C["executor (full tools + planner summary)"]
+        G -- "deny / cancel" --> E2
         C --> E2
     end
 ```
 
 1. **`single_agent`**（`workflows/single_agent.py`）：1 节点通用图，对应总体架构中的 `SingleVibeGraph`。
-2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：2 节点串行图：
+2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：3 节点审批串行图：
    - `planner` 通过 `--tools read,grep,find,ls` 从工具边界强制限制为只读，分析工作区并产出分步执行计划；
-   - `continue_if_running("executor")` 条件边确保 `planner` 失败或中止时直接结束，不触发 `executor`；
-   - `executor` 读取 `state["node_outputs"]["planner"].summary` 与原始 `prompt`，以全量工具执行计划并验证。
+   - `plan_approval` 由 `build_approval_node()` 构造，挂起并携带计划摘要询问“是否按照plan执行”；拒绝或取消时短路结束并保留计划摘要，批准（可选附带审批备注）后放行下游；
+   - `executor` 读取 `state["node_outputs"]["planner"].summary`（及可选审批备注）与原始 `prompt`，以全量工具执行计划并验证。
 
 #### 如何新增工作流
 

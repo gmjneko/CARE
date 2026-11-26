@@ -30,6 +30,7 @@ from agent_runtime.orchestrator.node import (
     InteractionMode,
     RunContext,
     StreamPacket,
+    parse_approval_decision,
 )
 from agent_runtime.orchestrator.registry import WorkflowBuilder, WorkflowRegistry
 from agent_runtime.orchestrator.state import NodeOutput, WorkflowState
@@ -524,12 +525,21 @@ class WorkflowRunner:
 
             if task.interrupts:
                 for intr in task.interrupts:
+                    raw_payload = _extract_interrupt_payload((intr,))
+                    raw_interaction = raw_payload.get("interaction")
+                    if isinstance(raw_interaction, InteractionRequestEvent):
+                        interaction: InteractionRequestEvent | None = raw_interaction
+                        payload = {k: v for k, v in raw_payload.items() if k != "interaction"}
+                    else:
+                        interaction = None
+                        payload = raw_payload
                     interrupts.append(
                         PendingInterrupt(
                             interrupt_id=intr.id,
                             node_id=task.name,
                             kind="workflow_interrupt",
-                            payload=_extract_interrupt_payload((intr,)),
+                            interaction=interaction,
+                            payload=payload,
                         )
                     )
             else:
@@ -848,17 +858,36 @@ def _resolve_resume_plan(
 
     for item, inp in targets:
         if item.kind == "workflow_interrupt":
-            decision = (
-                inp.resume_value
-                if inp.resume_value is not None
-                else (
-                    inp.interaction_response.model_dump()
-                    if inp.interaction_response is not None
-                    else inp.prompt
+            if item.interaction is not None:
+                # Validate structured approval input before LangGraph persists __resume__ writes.
+                if inp.interaction_response is not None:
+                    if inp.interaction_response.request_id != item.interaction.request_id:
+                        raise ValueError(
+                            "Interaction request_id does not match the pending request"
+                        )
+                    raw_decision: Any = inp.interaction_response.model_dump()
+                elif inp.resume_value is not None:
+                    raw_decision = inp.resume_value
+                else:
+                    raw_decision = inp.prompt
+                parsed_decision, parsed_feedback = parse_approval_decision(
+                    raw_decision, node_id=item.node_id
                 )
-            )
-            if decision is None:
-                raise ValueError(f"Workflow interrupt on '{item.node_id}' requires a resume value")
+                decision: Any = {"decision": parsed_decision, "feedback": parsed_feedback}
+            else:
+                decision = (
+                    inp.resume_value
+                    if inp.resume_value is not None
+                    else (
+                        inp.interaction_response.model_dump()
+                        if inp.interaction_response is not None
+                        else inp.prompt
+                    )
+                )
+                if decision is None:
+                    raise ValueError(
+                        f"Workflow interrupt on '{item.node_id}' requires a resume value"
+                    )
             if needs_crash_replay:
                 staged_replies[item.node_id] = decision
             else:
