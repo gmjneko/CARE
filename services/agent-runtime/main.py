@@ -35,6 +35,7 @@ from agent_runtime.protocol import (
     WorkflowResumedEvent,
     WorkflowStartedEvent,
 )
+from agent_runtime.runtime import RunManager
 from agent_runtime.workflows import create_default_workflow_registry
 
 WorkflowName = Literal["single_agent", "plan_and_execute"]
@@ -63,7 +64,7 @@ def main() -> int:
         endpoint=None,
         thinking_level=None,  # "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
         # 运行时配置
-        pi_bin=None,  # None 时依次读取 settings.json -> $PI_BIN -> "pi"
+        pi_bin=None,  # None 时依次读取 settings.json adapter_bins["pi"] -> $PI_BIN -> "pi"
         # None 时默认持久化到 ~/.care/checkpoints.sqlite（也可填 ":memory:" 仅内存运行）
         checkpoint_db=None,
         json_output=False,  # True 时单次执行并输出原始 RuntimeEvent JSONL
@@ -91,26 +92,21 @@ def run(
     if profile is not None and endpoint is not None:
         raise ValueError("Cannot specify both 'profile' and 'endpoint'")
 
-    # Ensure UTF-8 console output on Windows terminals.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    # 解析本地 ~/.care/settings.json（文件不存在时返回空默认配置，沿用 Pi 本机配置）
     settings = load_local_settings()
-    # 显式传入 endpoint 时优先使用它；否则按 profile 名称或 settings.active_profile 解析
     resolved_profile = None if endpoint is not None else settings.resolve_profile(profile)
     effective_endpoint = (
         endpoint
         if endpoint is not None
         else (resolved_profile.to_endpoint() if resolved_profile is not None else None)
     )
-    # 推理深度优先级：显式入参 > Profile 默认值 > None（由 Pi 默认决定）
     effective_thinking = (
         thinking_level
         if thinking_level is not None
         else (resolved_profile.thinking_level if resolved_profile is not None else None)
     )
-    # Pi 可执行文件优先级：显式入参 > settings.json adapter_bins["pi"] > 环境变量 PI_BIN > "pi"
     effective_pi_bin = (
         pi_bin or settings.resolve_adapter_bin("pi") or os.environ.get("PI_BIN", "pi")
     )
@@ -143,26 +139,28 @@ def run(
         async def _console_interaction_handler(
             req: InteractionRequestEvent,
         ) -> InteractionResponse:
-            response = _prompt_interaction(req, render_state)
+            response = await _prompt_interaction(req, render_state)
             if response is None:
                 return InteractionResponse(request_id=req.request_id, decision="cancel")
             return response
 
-        async with WorkflowRunner(
+        runner = WorkflowRunner(
             adapter_registry,
             workflow_registry,
             persistence=SqlitePersistenceBackend(effective_checkpoint_db),
-        ) as runner:
+        )
+        async with RunManager(runner) as manager:
             if json_output:
                 assert prompt is not None
-                async for event in runner.run(
+                snap = await manager.start_run(
                     workflow,
                     prompt.strip(),
                     workspace_dir,
                     thread_id=effective_thread_id,
                     endpoint=effective_endpoint,
                     thinking_level=effective_thinking,
-                ):
+                )
+                async for event in manager.subscribe(snap.run_id):
                     _handle_event(event)
                 return exit_code
 
@@ -179,19 +177,19 @@ def run(
                     intr = pending_interrupts[0]
                     resume_kwargs: dict[str, object] = {}
                     if intr.interaction is not None:
-                        response = _prompt_interaction(intr.interaction, render_state)
+                        response = await _prompt_interaction(intr.interaction, render_state)
                         if response is None:
                             return False
                         resume_kwargs["interaction_response"] = response
                     elif intr.kind == "workflow_interrupt":
                         _end_stream(render_state)
-                        raw = _read_line(f"\n[{intr.node_id}] 请输入恢复值: ")
+                        raw = await _read_line_async(f"\n[{intr.node_id}] 请输入恢复值: ")
                         if raw is None:
                             return False
                         resume_kwargs["resume_value"] = raw.strip()
                     else:
                         _end_stream(render_state)
-                        raw = _read_line(
+                        raw = await _read_line_async(
                             f"\n[{intr.node_id}({intr.kind})] "
                             "回车恢复执行，输入 d 放弃本轮，或输入补充指令: "
                         )
@@ -199,14 +197,14 @@ def run(
                             return False
                         text = raw.strip()
                         if text.lower() in ("d", "discard"):
-                            await runner.discard(workflow, effective_thread_id)
+                            await manager.discard(workflow, effective_thread_id)
                             pending_interrupts = ()
                             print("[care] 已放弃未完成轮次。", flush=True)
                             break
                         resume_kwargs["prompt"] = text or None
 
                     pending_interrupts = ()
-                    async for event in runner.resume(
+                    snap = await manager.start_resume(
                         workflow,
                         effective_thread_id,
                         node_id=intr.node_id,
@@ -214,14 +212,15 @@ def run(
                         thinking_level=effective_thinking,
                         interaction_handler=_console_interaction_handler,
                         **resume_kwargs,
-                    ):
+                    )
+                    async for event in manager.subscribe(snap.run_id):
                         _handle_event(event)
                 return True
 
             try:
                 if thread_id is not None:
                     try:
-                        existing = await runner.get_thread_state(workflow, effective_thread_id)
+                        existing = await manager.get_thread_state(workflow, effective_thread_id)
                     except KeyError:
                         existing = None
                     if (
@@ -242,7 +241,7 @@ def run(
                 while True:
                     if next_prompt is None:
                         _end_stream(render_state)
-                        raw = _read_line("\nYou > ")
+                        raw = await _read_line_async("\nYou > ")
                         if raw is None:
                             break
                         text = raw.strip()
@@ -255,7 +254,7 @@ def run(
                     current_prompt = next_prompt
                     next_prompt = None
                     pending_interrupts = ()
-                    async for event in runner.run(
+                    snap = await manager.start_run(
                         workflow,
                         current_prompt,
                         workspace_dir,
@@ -263,7 +262,8 @@ def run(
                         endpoint=effective_endpoint,
                         thinking_level=effective_thinking,
                         interaction_handler=_console_interaction_handler,
-                    ):
+                    )
+                    async for event in manager.subscribe(snap.run_id):
                         _handle_event(event)
 
                     if pending_interrupts and not await _resolve_interrupts():
@@ -297,6 +297,11 @@ def _read_line(prompt_text: str) -> str | None:
         return None
 
 
+async def _read_line_async(prompt_text: str) -> str | None:
+    """Offload blocking stdin reads so the asyncio event loop keeps pumping Pi RPC I/O."""
+    return await asyncio.to_thread(_read_line, prompt_text)
+
+
 def _parse_approval_input(
     raw: str,
 ) -> tuple[Literal["approve", "deny", "cancel"], str | None] | None:
@@ -315,7 +320,7 @@ def _parse_approval_input(
     return None
 
 
-def _prompt_interaction(
+async def _prompt_interaction(
     req: InteractionRequestEvent,
     render_state: dict[str, object],
 ) -> InteractionResponse | None:
@@ -332,7 +337,7 @@ def _prompt_interaction(
         else:
             print(f"\n{title}{question}", flush=True)
         while True:
-            raw = _read_line("审批 [y(批准) / n(拒绝) / c(取消)，可空格附带说明]: ")
+            raw = await _read_line_async("审批 [y(批准) / n(拒绝) / c(取消)，可空格附带说明]: ")
             if raw is None:
                 return None
             parsed = _parse_approval_input(raw)
@@ -357,7 +362,7 @@ def _prompt_interaction(
                 if req.options
                 else "请输入回复（输入 c 取消）: "
             )
-            raw = _read_line(hint)
+            raw = await _read_line_async(hint)
             if raw is None:
                 return None
             text = raw.strip()
