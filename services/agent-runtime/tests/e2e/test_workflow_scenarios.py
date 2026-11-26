@@ -410,6 +410,34 @@ async def test_mid_turn_abort_clears_queue_before_aborting(tmp_path: Path) -> No
     )
 
 
+async def test_abort_during_hot_interaction_dispatches_cancel_before_clear_queue_and_abort(
+    tmp_path: Path,
+) -> None:
+    """Gap: abort() previously sent clear_queue/abort before extension_ui_response(cancel)."""
+    events: list[RuntimeEvent] = []
+
+    async with _make_runner("ui_abort_order") as runner:
+        async for event in runner.run(
+            "single_agent",
+            "Wait on confirm",
+            tmp_path,
+            run_id="run-ui-abort-1",
+            interaction_mode="wait",
+        ):
+            events.append(event)
+            if isinstance(event.payload, InteractionRequestEvent) and event.payload.blocking:
+                await runner.abort("run-ui-abort-1")
+
+    final = events[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    assert final.status == "aborted"
+    assert any(
+        e.payload.type == "node.completed"
+        and "ORDER=extension_ui_response,clear_queue,abort" in e.payload.summary
+        for e in events
+    )
+
+
 async def test_mid_turn_steer_injects_guidance_into_active_session(tmp_path: Path) -> None:
     events: list[RuntimeEvent] = []
 

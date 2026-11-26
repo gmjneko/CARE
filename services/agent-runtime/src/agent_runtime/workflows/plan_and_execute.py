@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
-    RunContext,
     WorkflowDefinition,
     WorkflowState,
     build_agent_node,
@@ -34,14 +32,7 @@ def _build_executor_prompt(state: WorkflowState) -> str:
     )
 
 
-def build_plan_and_execute_workflow(
-    run_context: RunContext,
-    *,
-    adapter: str = "pi",
-    endpoint: ModelEndpoint | None = None,
-    thinking_level: ThinkingLevel | None = None,
-    persist_session: bool = True,
-) -> StateGraph[WorkflowState]:
+def build_plan_and_execute_workflow() -> StateGraph[WorkflowState]:
     """3-node workflow: planner (read-only) -> plan_approval -> executor (full tools) -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
 
@@ -51,10 +42,6 @@ def build_plan_and_execute_workflow(
             AgentNodeConfig(
                 id="planner",
                 role="planner",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 tool_policy="read_only",
                 append_system_prompt=(
                     "You are the Planner agent in a multi-agent workflow. "
@@ -65,8 +52,7 @@ def build_plan_and_execute_workflow(
                     "Analyze the workspace and create a clear execution plan for:\n\n"
                     f"{state['prompt']}"
                 ),
-            ),
-            run_context,
+            )
         ),
     )
 
@@ -90,26 +76,17 @@ def build_plan_and_execute_workflow(
             AgentNodeConfig(
                 id="executor",
                 role="executor",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 append_system_prompt=(
                     "You are the Executor agent in a multi-agent workflow. "
                     "Execute the Planner's plan accurately in the workspace and verify the result."
                 ),
                 prompt_builder=_build_executor_prompt,
-            ),
-            run_context,
+            )
         ),
     )
 
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges(
-        "planner",
-        continue_if_running("plan_approval"),
-        {"plan_approval": "plan_approval", END: END},
-    )
+    graph.add_edge("planner", "plan_approval")
     graph.add_conditional_edges(
         "plan_approval",
         continue_if_running("executor"),

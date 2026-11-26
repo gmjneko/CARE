@@ -239,6 +239,54 @@ def _handle_ui_confirm(req_id: str | None) -> None:
     _emit({"type": "agent_settled", "aborted": False})
 
 
+def _handle_ui_abort_order(req_id: str | None) -> None:
+    """Emit blocking confirm dialog, then record exact arrival order of cancel/clear_queue/abort."""
+    _emit(
+        {
+            "type": "extension_ui_request",
+            "id": "ui-abort-1",
+            "method": "confirm",
+            "title": "Confirm deploy",
+            "message": "Proceed?",
+        }
+    )
+    order: list[str] = []
+    while True:
+        cmd = _read_record()
+        if cmd is None:
+            return
+        cmd_type = str(cmd.get("type") or "")
+        order.append(cmd_type)
+        if cmd_type == "extension_ui_response":
+            _emit(
+                {
+                    "type": "response",
+                    "id": req_id,
+                    "command": "prompt",
+                    "success": True,
+                    "data": {"disposition": "started"},
+                }
+            )
+        elif cmd_type == "clear_queue":
+            _emit(
+                {"type": "response", "id": cmd.get("id"), "command": "clear_queue", "success": True}
+            )
+        elif cmd_type == "abort":
+            _emit({"type": "response", "id": cmd.get("id"), "command": "abort", "success": True})
+            _emit(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "stopReason": "aborted",
+                        "content": [{"type": "text", "text": f"ORDER={','.join(order)}"}],
+                    },
+                }
+            )
+            _emit({"type": "agent_settled", "aborted": True})
+            return
+
+
 def _handle_abortable(req_id: str | None, prompt: str, session_file: str | None) -> None:
     _append_session_history(session_file, prompt)
     _emit(
@@ -730,6 +778,8 @@ def main() -> int:
                 _handle_standard(req_id, prompt, tools=args.tools, append_prompt=append_prompt)
             elif scenario == "ui_confirm":
                 _handle_ui_confirm(req_id)
+            elif scenario == "ui_abort_order":
+                _handle_ui_abort_order(req_id)
             elif scenario == "abortable":
                 _handle_abortable(req_id, prompt, session_file)
             elif scenario == "steerable":

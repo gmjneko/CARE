@@ -8,9 +8,19 @@ from pydantic import BaseModel, ConfigDict
 
 from agent_runtime.protocol.events import AgentFailure, InteractionRequestEvent, TokenUsage
 
+WorkflowStatus = Literal["running", "interrupted", "completed", "failed", "aborted"]
+
+_STATUS_PRIORITY: dict[WorkflowStatus, int] = {
+    "running": 0,
+    "completed": 1,
+    "interrupted": 2,
+    "aborted": 3,
+    "failed": 4,
+}
+
 
 class NodeOutput(BaseModel):
-    """Structured handoff summary persisted in GraphState for one completed AgentNode."""
+    """Structured handoff summary persisted in GraphState for one node in the current turn."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -25,10 +35,41 @@ class NodeOutput(BaseModel):
     pending_interaction: InteractionRequestEvent | None = None
 
 
-def merge_node_outputs(
-    left: dict[str, NodeOutput], right: dict[str, NodeOutput]
+def reduce_node_outputs(
+    left: dict[str, NodeOutput],
+    right: dict[str, NodeOutput] | None,
 ) -> dict[str, NodeOutput]:
+    """Merge parallel node handoff outputs within a turn; reset to {} when right is None."""
+    if right is None:
+        return {}
     return {**left, **right}
+
+
+def merge_node_sessions(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
+    """Persist per-node session references across turns on the same thread."""
+    return {**left, **right}
+
+
+def reduce_workflow_status(
+    left: WorkflowStatus,
+    right: WorkflowStatus | None,
+) -> WorkflowStatus:
+    """Reset to 'running' when right is None; otherwise retain the higher-severity status."""
+    if right is None:
+        return "running"
+    if not left:
+        return right
+    return right if _STATUS_PRIORITY[right] >= _STATUS_PRIORITY[left] else left
+
+
+def reduce_failure(
+    left: AgentFailure | None,
+    right: AgentFailure | None,
+) -> AgentFailure | None:
+    """Clear on explicit None (turn reset/discard); preserve first failure across parallel steps."""
+    if right is None:
+        return None
+    return left if left is not None else right
 
 
 def _last_value[T](_left: T, right: T) -> T:
@@ -36,19 +77,20 @@ def _last_value[T](_left: T, right: T) -> T:
 
 
 class AgentChanges(TypedDict):
-    node_outputs: Annotated[dict[str, NodeOutput], merge_node_outputs]
+    """Subgraph output channels emitted by completed AgentNodes without clobbering global status."""
+
+    node_outputs: Annotated[dict[str, NodeOutput], reduce_node_outputs]
+    node_sessions: Annotated[dict[str, str], merge_node_sessions]
     latest_output: Annotated[str, _last_value]
-    status: Annotated[
-        Literal["running", "interrupted", "completed", "failed", "aborted"], _last_value
-    ]
-    failure: Annotated[AgentFailure | None, _last_value]
 
 
 class WorkflowState(AgentChanges):
-    """Persistent workflow state shared with each agent subgraph."""
+    """Persistent workflow state shared across parent nodes and agent subgraphs."""
 
     run_id: str
     thread_id: str
     workflow_id: str
     prompt: str
     workspace_dir: str
+    status: Annotated[WorkflowStatus, reduce_workflow_status]
+    failure: Annotated[AgentFailure | None, reduce_failure]

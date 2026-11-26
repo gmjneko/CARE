@@ -4,24 +4,15 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
-    RunContext,
     WorkflowDefinition,
     WorkflowState,
     build_agent_node,
 )
 
 
-def build_single_agent_workflow(
-    run_context: RunContext,
-    *,
-    adapter: str = "pi",
-    endpoint: ModelEndpoint | None = None,
-    thinking_level: ThinkingLevel | None = None,
-    persist_session: bool = True,
-) -> StateGraph[WorkflowState]:
+def build_single_agent_workflow() -> StateGraph[WorkflowState]:
     """1-node Vibe Coding graph: START -> agent -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
     graph.add_node(
@@ -30,13 +21,8 @@ def build_single_agent_workflow(
             AgentNodeConfig(
                 id="agent",
                 role="general",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 prompt_builder=lambda state: state["prompt"],
-            ),
-            run_context,
+            )
         ),
     )
     graph.add_edge(START, "agent")

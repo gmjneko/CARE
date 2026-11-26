@@ -7,23 +7,13 @@ from typing import Protocol
 
 from langgraph.graph import StateGraph
 
-from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
-from agent_runtime.orchestrator.node import RunContext
 from agent_runtime.orchestrator.state import WorkflowState
 
 
 class WorkflowBuilder(Protocol):
-    """Callable building an uncompiled LangGraph StateGraph bound to `run_context`."""
+    """Callable building an uncompiled LangGraph StateGraph describing pure workflow topology."""
 
-    def __call__(
-        self,
-        run_context: RunContext,
-        *,
-        adapter: str = "pi",
-        endpoint: ModelEndpoint | None = None,
-        thinking_level: ThinkingLevel | None = None,
-        persist_session: bool = True,
-    ) -> StateGraph[WorkflowState]: ...
+    def __call__(self) -> StateGraph[WorkflowState]: ...
 
 
 @dataclass(frozen=True)

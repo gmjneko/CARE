@@ -17,20 +17,24 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent_runtime.adapters import (
+    AdapterCapabilityError,
     AdapterProtocolError,
     AdapterRegistry,
+    AgentCapabilities,
+    ModelEndpoint,
     PiRpcAdapter,
     PiRpcConfig,
 )
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
     InflightNodeRecord,
+    NodeRuntimeOverride,
     ResumeInput,
-    RunContext,
     SqlitePersistenceBackend,
     WorkflowRunner,
     WorkflowState,
     build_agent_node,
+    build_approval_node,
     continue_if_running,
 )
 from agent_runtime.paths import sessions_dir
@@ -111,14 +115,7 @@ def _write_manifest(run_dir: Path, name: str, events: list[RuntimeEvent]) -> dic
     return manifest
 
 
-def _build_three_node_workflow(
-    run_context: RunContext,
-    *,
-    adapter: str = "pi",
-    endpoint: Any = None,
-    thinking_level: Any = None,
-    persist_session: bool = True,
-) -> StateGraph[WorkflowState]:
+def _build_three_node_workflow() -> StateGraph[WorkflowState]:
     """3-node workflow: planner -> executor -> reviewer (verifies downstream resume)."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
     graph.add_node(
@@ -127,15 +124,10 @@ def _build_three_node_workflow(
             AgentNodeConfig(
                 id="planner",
                 role="planner",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
-                tools=("read", "grep", "find", "ls"),
+                tool_policy="read_only",
                 append_system_prompt="You are the Planner agent.",
                 prompt_builder=lambda s: f"Plan: {s['prompt']}",
-            ),
-            run_context,
+            )
         ),
     )
     graph.add_node(
@@ -144,13 +136,8 @@ def _build_three_node_workflow(
             AgentNodeConfig(
                 id="executor",
                 role="executor",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 prompt_builder=lambda s: f"Execute: {s['prompt']}",
-            ),
-            run_context,
+            )
         ),
     )
     graph.add_node(
@@ -159,24 +146,15 @@ def _build_three_node_workflow(
             AgentNodeConfig(
                 id="reviewer",
                 role="reviewer",
-                adapter=adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
-                tools=("read", "grep", "find", "ls"),
+                tool_policy="read_only",
                 append_system_prompt="You are the Planner agent acting as read-only reviewer.",
                 prompt_builder=lambda s: f"Review: {s['latest_output']}",
-            ),
-            run_context,
+            )
         ),
     )
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges(
-        "planner", continue_if_running("executor"), {"executor": "executor", END: END}
-    )
-    graph.add_conditional_edges(
-        "executor", continue_if_running("reviewer"), {"reviewer": "reviewer", END: END}
-    )
+    graph.add_edge("planner", "executor")
+    graph.add_edge("executor", "reviewer")
     graph.add_edge("reviewer", END)
     return graph
 
@@ -925,14 +903,7 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
     assert st_recovered.node_outputs["executor"].session_ref == crash_exec_ref
 
     # Case 3: Workflow-level LangGraph interrupt() gate (paused is None, no WAL)
-    def _build_gate_workflow(
-        run_context: RunContext,
-        *,
-        adapter: str = "pi",
-        endpoint: Any = None,
-        thinking_level: Any = None,
-        persist_session: bool = True,
-    ) -> StateGraph[WorkflowState]:
+    def _build_gate_workflow() -> StateGraph[WorkflowState]:
         graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
         graph.add_node(
             "planner",
@@ -940,15 +911,10 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
                 AgentNodeConfig(
                     id="planner",
                     role="planner",
-                    adapter=adapter,
-                    endpoint=endpoint,
-                    thinking_level=thinking_level,
-                    persist_session=persist_session,
-                    tools=("read", "grep", "find", "ls"),
+                    tool_policy="read_only",
                     append_system_prompt="You are the Planner agent.",
                     prompt_builder=lambda s: f"Plan: {s['prompt']}",
-                ),
-                run_context,
+                )
             ),
         )
         graph.add_node(
@@ -1020,14 +986,7 @@ async def test_first_turn_crash_preserves_configured_role_and_wal_less_crash_rej
     # 2. WAL-less crash (fails before any agent turn starts) rejects prompt and replays cleanly
     attempts = 0
 
-    def _build_wal_less_crash_workflow(
-        run_context: RunContext,
-        *,
-        adapter: str = "pi",
-        endpoint: Any = None,
-        thinking_level: Any = None,
-        persist_session: bool = True,
-    ) -> StateGraph[WorkflowState]:
+    def _build_wal_less_crash_workflow() -> StateGraph[WorkflowState]:
         graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
         graph.add_node(
             "planner",
@@ -1035,15 +994,10 @@ async def test_first_turn_crash_preserves_configured_role_and_wal_less_crash_rej
                 AgentNodeConfig(
                     id="planner",
                     role="planner",
-                    adapter=adapter,
-                    endpoint=endpoint,
-                    thinking_level=thinking_level,
-                    persist_session=persist_session,
-                    tools=("read", "grep", "find", "ls"),
+                    tool_policy="read_only",
                     append_system_prompt="You are the Planner agent.",
                     prompt_builder=lambda s: f"Plan: {s['prompt']}",
-                ),
-                run_context,
+                )
             ),
         )
 
@@ -1100,16 +1054,7 @@ async def test_first_turn_crash_preserves_configured_role_and_wal_less_crash_rej
     assert final.final_output.startswith("REPLAYED:[PLAN ")
 
 
-def _build_parallel_join_workflow(
-    run_context: RunContext,
-    *,
-    adapter: str = "pi",
-    endpoint: Any = None,
-    thinking_level: Any = None,
-    persist_session: bool = True,
-    adapter_a: str | None = None,
-    adapter_b: str | None = None,
-) -> StateGraph[WorkflowState]:
+def _build_parallel_join_workflow() -> StateGraph[WorkflowState]:
     """Fan-out / fan-in workflow: START -> (worker_a, worker_b) -> aggregator -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
     graph.add_node(
@@ -1118,13 +1063,8 @@ def _build_parallel_join_workflow(
             AgentNodeConfig(
                 id="worker_a",
                 role="researcher_a",
-                adapter=adapter_a or adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 prompt_builder=lambda s: f"Branch A: {s['prompt']}",
-            ),
-            run_context,
+            )
         ),
     )
     graph.add_node(
@@ -1133,13 +1073,8 @@ def _build_parallel_join_workflow(
             AgentNodeConfig(
                 id="worker_b",
                 role="researcher_b",
-                adapter=adapter_b or adapter,
-                endpoint=endpoint,
-                thinking_level=thinking_level,
-                persist_session=persist_session,
                 prompt_builder=lambda s: f"Branch B: {s['prompt']}",
-            ),
-            run_context,
+            )
         ),
     )
 
@@ -1386,23 +1321,10 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
         )
     )
 
-    def _build_mixed_workflow(
-        run_context: RunContext,
-        *,
-        adapter: str = "pi",
-        endpoint: Any = None,
-        thinking_level: Any = None,
-        persist_session: bool = True,
-    ) -> StateGraph[WorkflowState]:
-        return _build_parallel_join_workflow(
-            run_context,
-            adapter=adapter,
-            endpoint=endpoint,
-            thinking_level=thinking_level,
-            persist_session=persist_session,
-            adapter_a="pi_q",
-            adapter_b="pi_fail",
-        )
+    mixed_overrides = {
+        "worker_a": NodeRuntimeOverride(adapter="pi_q"),
+        "worker_b": NodeRuntimeOverride(adapter="pi_fail"),
+    }
 
     # 1. Mixed: worker_a interrupted (question) + worker_b failed -> thread status = interrupted
     tid_mixed = "par-mixed-state"
@@ -1414,14 +1336,15 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
         events1 = [
             ev
             async for ev in runner.run(
-                _build_mixed_workflow,
+                _build_parallel_join_workflow,
                 "Mixed parallel",
                 tmp_path,
                 thread_id=tid_mixed,
+                node_overrides=mixed_overrides,
                 interaction_mode="suspend",
             )
         ]
-        st_mixed = await runner.get_thread_state(_build_mixed_workflow, tid_mixed)
+        st_mixed = await runner.get_thread_state(_build_parallel_join_workflow, tid_mixed)
         assert isinstance(events1[-1].payload, WorkflowInterruptedEvent)
         assert st_mixed.status == "interrupted"
         kinds = {i.node_id: i.kind for i in st_mixed.interrupts}
@@ -1430,7 +1353,13 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
         # Must block run() while worker_a has an unanswered interaction!
         with pytest.raises(ValueError, match="interrupted"):
             await anext(
-                runner.run(_build_mixed_workflow, "Should block", tmp_path, thread_id=tid_mixed)
+                runner.run(
+                    _build_parallel_join_workflow,
+                    "Should block",
+                    tmp_path,
+                    thread_id=tid_mixed,
+                    node_overrides=mixed_overrides,
+                )
             )
 
         req_a = next(i.interaction for i in st_mixed.interrupts if i.node_id == "worker_a")
@@ -1438,8 +1367,9 @@ async def test_parallel_mixed_interrupted_and_failed_priority_and_dual_failure_s
         resumed = [
             ev
             async for ev in runner.resume(
-                _build_mixed_workflow,
+                _build_parallel_join_workflow,
                 tid_mixed,
+                node_overrides=mixed_overrides,
                 resumes={
                     "worker_a": ResumeInput(
                         interaction_response=InteractionResponse(
@@ -1674,6 +1604,299 @@ async def test_workflow_runner_operates_with_custom_non_sqlite_persistence_backe
     assert run2[-1].payload.status == "completed"
     assert st.status == "completed"
     assert st.inflight_nodes == ()
+
+
+async def test_multi_turn_resets_stale_node_outputs_while_preserving_node_sessions(
+    tmp_path: Path,
+) -> None:
+    """Gap: reusing node_outputs for session_ref leaked stale outputs on skipped branches."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "branch-reset-thread"
+
+    def _build_branching_workflow() -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node(
+            "branch_a",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="branch_a",
+                    role="branch_a",
+                    prompt_builder=lambda s: s["prompt"],
+                )
+            ),
+        )
+        graph.add_node(
+            "branch_b",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="branch_b",
+                    role="branch_b",
+                    prompt_builder=lambda s: s["prompt"],
+                )
+            ),
+        )
+        graph.add_conditional_edges(
+            START,
+            lambda s: "branch_a" if s["prompt"].startswith("A:") else "branch_b",
+            {"branch_a": "branch_a", "branch_b": "branch_b"},
+        )
+        graph.add_edge("branch_a", END)
+        graph.add_edge("branch_b", END)
+        return graph
+
+    async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
+        async for _ in runner.run(
+            _build_branching_workflow, "A: first", tmp_path, thread_id=thread_id
+        ):
+            pass
+        st1 = await runner.get_thread_state(_build_branching_workflow, thread_id)
+        ref_a = st1.node_sessions["branch_a"]
+        assert set(st1.node_outputs) == {"branch_a"}
+
+        # Turn 2 takes branch_b: branch_a's stale NodeOutput is cleared, its session_ref stays!
+        async for _ in runner.run(
+            _build_branching_workflow, "B: second", tmp_path, thread_id=thread_id
+        ):
+            pass
+        st2 = await runner.get_thread_state(_build_branching_workflow, thread_id)
+        assert set(st2.node_outputs) == {"branch_b"}
+        assert "branch_a" not in st2.node_outputs
+        assert st2.node_sessions["branch_a"] == ref_a
+        assert "branch_b" in st2.node_sessions
+
+        # Turn 3 returns to branch_a and resumes the original Turn-1 session_ref.
+        ev3 = [
+            ev
+            async for ev in runner.run(
+                _build_branching_workflow, "A: third", tmp_path, thread_id=thread_id
+            )
+        ]
+
+    final3 = ev3[-1].payload
+    assert isinstance(final3, WorkflowCompletedEvent)
+    payload3 = json.loads(final3.final_output)
+    assert payload3["session_file"] == ref_a
+    assert payload3["history"] == ["A: first", "A: third"]
+
+
+async def test_heterogeneous_per_node_overrides_route_distinct_endpoints_and_adapters(
+    tmp_path: Path,
+) -> None:
+    """Gap: WorkflowBuilder previously baked one global adapter/endpoint/thinking across nodes."""
+    adapter_a = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "inspect_endpoint"),
+            request_timeout_s=10.0,
+        )
+    )
+    adapter_b = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "inspect_endpoint"),
+            request_timeout_s=10.0,
+        )
+    )
+    overrides = {
+        "planner": NodeRuntimeOverride(
+            adapter="planner_backend",
+            endpoint=ModelEndpoint(
+                model="claude-sonnet-4-5",
+                base_url="https://planner.example.internal",
+                api_protocol="anthropic-messages",
+            ),
+            thinking_level="high",
+        ),
+        "executor": NodeRuntimeOverride(
+            adapter="executor_backend",
+            endpoint=ModelEndpoint(
+                model="gpt-5-codex",
+                base_url="https://executor.example.internal",
+                api_protocol="openai-responses",
+            ),
+            thinking_level="low",
+        ),
+    }
+
+    async with WorkflowRunner(
+        AdapterRegistry({"planner_backend": adapter_a, "executor_backend": adapter_b}),
+        create_default_workflow_registry(),
+    ) as runner:
+        ev1 = [
+            ev
+            async for ev in runner.run(
+                "plan_and_execute",
+                "Heterogeneous task",
+                tmp_path,
+                thread_id="het-1",
+                node_overrides=overrides,
+            )
+        ]
+        assert isinstance(ev1[-1].payload, WorkflowInterruptedEvent)
+        ev2 = [
+            ev
+            async for ev in runner.resume(
+                "plan_and_execute",
+                "het-1",
+                resume_value={"decision": "approve"},
+                node_overrides=overrides,
+            )
+        ]
+        st = await runner.get_thread_state("plan_and_execute", "het-1")
+
+    planner_started = next(
+        ev.payload
+        for ev in ev1
+        if ev.payload.type == "node.started" and ev.payload.node_id == "planner"
+    )
+    executor_started = next(
+        ev.payload
+        for ev in ev2
+        if ev.payload.type == "node.started" and ev.payload.node_id == "executor"
+    )
+    assert planner_started.adapter == "planner_backend"
+    assert executor_started.adapter == "executor_backend"
+
+    planner_report = json.loads(st.node_outputs["planner"].summary)
+    executor_report = json.loads(st.node_outputs["executor"].summary)
+    assert planner_report["model"] == "claude-sonnet-4-5"
+    assert planner_report["thinking"] == "high"
+    assert executor_report["model"] == "gpt-5-codex"
+    assert executor_report["thinking"] == "low"
+
+
+async def test_parallel_approval_gates_preserve_aborted_status_deterministically(
+    tmp_path: Path,
+) -> None:
+    """Gap: _last_value reducer on WorkflowState.status could drop 'aborted' in parallel gates."""
+
+    def _build_parallel_gates() -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node("gate_a", build_approval_node("gate_a", message="Approve A?"))
+        graph.add_node("gate_b", build_approval_node("gate_b", message="Approve B?"))
+        graph.add_node(
+            "after",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="after",
+                    role="executor",
+                    prompt_builder=lambda s: s["prompt"],
+                )
+            ),
+        )
+        graph.add_edge(START, "gate_a")
+        graph.add_edge(START, "gate_b")
+        graph.add_conditional_edges(
+            "gate_a", continue_if_running("after"), {"after": "after", END: END}
+        )
+        graph.add_conditional_edges(
+            "gate_b", continue_if_running("after"), {"after": "after", END: END}
+        )
+        graph.add_edge("after", END)
+        return graph
+
+    async with _make_runner("standard", checkpoint_db=":memory:") as runner:
+        ev1 = [
+            ev
+            async for ev in runner.run(
+                _build_parallel_gates, "Check gates", tmp_path, thread_id="par-gates"
+            )
+        ]
+        assert isinstance(ev1[-1].payload, WorkflowInterruptedEvent)
+        assert {i.node_id for i in ev1[-1].payload.interrupts} == {"gate_a", "gate_b"}
+
+        ev2 = [
+            ev
+            async for ev in runner.resume(
+                _build_parallel_gates,
+                "par-gates",
+                resumes={
+                    "gate_a": ResumeInput(resume_value={"decision": "deny", "feedback": "no"}),
+                    "gate_b": ResumeInput(resume_value={"decision": "approve"}),
+                },
+            )
+        ]
+
+    final = ev2[-1].payload
+    assert isinstance(final, WorkflowCompletedEvent)
+    assert final.status == "aborted"
+    assert not any(
+        ev.payload.type == "node.started" and ev.payload.node_id == "after" for ev in ev2
+    )
+
+
+async def test_adapter_capabilities_are_enforced_fail_fast(tmp_path: Path) -> None:
+    """Gap: AgentCapabilities was declared but never checked by the orchestrator."""
+
+    class _LimitedPiAdapter(PiRpcAdapter):
+        kind = "limited"
+        capabilities = AgentCapabilities(
+            streaming=True,
+            steering=False,
+            follow_up=False,
+            abort=False,
+            session_resume=False,
+            interactions=False,
+        )
+
+    adapter = _LimitedPiAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "steerable"),
+            request_timeout_s=10.0,
+        )
+    )
+    async with WorkflowRunner(
+        AdapterRegistry({"limited": adapter}),
+        create_default_workflow_registry(),
+    ) as runner:
+        async def _drive() -> None:
+            async for ev in runner.run(
+                "single_agent",
+                "Cap check",
+                tmp_path,
+                run_id="cap-run-1",
+                thread_id="cap-thread-1",
+                adapter="limited",
+            ):
+                if isinstance(ev.payload, TextDeltaEvent):
+                    with pytest.raises(AdapterCapabilityError, match="steering"):
+                        await runner.steer("cap-run-1", "cannot steer")
+                    with pytest.raises(AdapterCapabilityError, match="follow-up"):
+                        await runner.follow_up("cap-run-1", "cannot follow up")
+                    with pytest.raises(AdapterCapabilityError, match="abort"):
+                        await runner.abort("cap-run-1")
+                    # Complete turn directly via the session's underlying subprocess by steering
+                    # after restoring capability? No — cancel consumer cleanly to end test.
+                    break
+
+        await _drive()
+
+    # Verify session_resume=False fails fast on Turn 2 when persisted session_ref exists
+    resume_adapter = _LimitedPiAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "stateful_chat"),
+            request_timeout_s=10.0,
+        )
+    )
+    async with WorkflowRunner(
+        AdapterRegistry({"limited": resume_adapter}),
+        create_default_workflow_registry(),
+    ) as runner2:
+        async for _ in runner2.run(
+            "single_agent",
+            "Turn 1",
+            tmp_path,
+            thread_id="cap-resume-thread",
+            adapter="limited",
+        ):
+            pass
+        with pytest.raises(AdapterCapabilityError, match="resuming persisted sessions"):
+            async for _ in runner2.run(
+                "single_agent",
+                "Turn 2",
+                tmp_path,
+                thread_id="cap-resume-thread",
+                adapter="limited",
+            ):
+                pass
 
 
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:
