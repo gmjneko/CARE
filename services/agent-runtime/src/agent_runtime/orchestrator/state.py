@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from agent_runtime.adapters.base import ApiProtocol, ModelEndpoint, ThinkingLevel, ToolPolicy
 from agent_runtime.protocol.events import AgentFailure, InteractionRequestEvent, TokenUsage
 
 WorkflowStatus = Literal["running", "interrupted", "completed", "failed", "aborted"]
@@ -17,6 +18,66 @@ _STATUS_PRIORITY: dict[WorkflowStatus, int] = {
     "aborted": 3,
     "failed": 4,
 }
+
+
+class PersistedEndpoint(BaseModel):
+    """Non-sensitive ModelEndpoint metadata safe to persist in LangGraph checkpoints.
+
+    Structurally omits `api_key` so secrets can never enter SQLite/Postgres checkpoints.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    provider: str | None = None
+    base_url: str | None = None
+    api_protocol: ApiProtocol = "openai-completions"
+    requires_api_key: bool = False
+
+    @classmethod
+    def from_endpoint(cls, endpoint: ModelEndpoint) -> PersistedEndpoint:
+        return cls(
+            model=endpoint.model,
+            provider=endpoint.provider,
+            base_url=endpoint.base_url,
+            api_protocol=endpoint.api_protocol,
+            requires_api_key=endpoint.api_key is not None,
+        )
+
+    def to_endpoint(self, *, api_key: SecretStr | None = None) -> ModelEndpoint:
+        return ModelEndpoint(
+            model=self.model,
+            provider=self.provider,
+            base_url=self.base_url,
+            api_protocol=self.api_protocol,
+            api_key=api_key,
+        )
+
+
+class PersistedNodeOverride(BaseModel):
+    """Non-sensitive per-node runtime override persisted on parent WorkflowState."""
+
+    model_config = ConfigDict(frozen=True)
+
+    adapter: str | None = None
+    endpoint: PersistedEndpoint | None = None
+    thinking_level: ThinkingLevel | None = None
+    persist_session: bool | None = None
+    tool_policy: ToolPolicy | None = None
+    tools: tuple[str, ...] | None = None
+
+
+class PersistedRunOptions(BaseModel):
+    """Non-sensitive execution configuration persisted for seamless pause/resume inheritance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    adapter: str = "pi"
+    profile: str | None = None
+    endpoint: PersistedEndpoint | None = None
+    thinking_level: ThinkingLevel | None = None
+    persist_session: bool = True
+    node_overrides: dict[str, PersistedNodeOverride] = Field(default_factory=dict)
 
 
 class NodeOutput(BaseModel):
@@ -96,5 +157,6 @@ class WorkflowState(AgentChanges):
     workflow_id: str
     prompt: str
     workspace_dir: str
+    run_options: Annotated[PersistedRunOptions | None, _last_value]
     status: Annotated[WorkflowStatus, reduce_workflow_status]
     failure: Annotated[AgentFailure | None, reduce_failure]

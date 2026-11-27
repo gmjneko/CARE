@@ -916,3 +916,331 @@ async def test_unexpected_internal_key_and_value_errors_surface_as_sanitized_500
 
     assert "secret_internal_dict_key" in caplog.text
     assert "internal_parse_detail_xyz" in caplog.text
+
+
+async def test_thread_workflow_ownership_and_live_thread_state(tmp_path: Path) -> None:
+    """Gap 1: threads shared one checkpointer namespace without verifying workflow_id ownership.
+    Gap 3: online get_thread_state() reused crash reconciliation and labeled live nodes crashed."""
+    db_path = tmp_path / "ownership.sqlite"
+
+    # 1. Offline cross-workflow ownership checks across get/resume/discard/start_run.
+    app_pae = _make_app("standard", config=ServerConfig(checkpoint_db=db_path))
+    async with _running_client(app_pae) as client:
+        start = await client.post(
+            "/runs",
+            json={
+                "workflow_id": "plan_and_execute",
+                "prompt": "Plan ownership check",
+                "workspace_dir": str(tmp_path),
+                "run_id": "own-run-1",
+                "thread_id": "own-thread-1",
+            },
+        )
+        assert start.status_code == 201
+        done = await _wait_for_run_done(client, "own-run-1")
+        assert done["status"] == "interrupted"
+
+        for method, url, payload in (
+            ("GET", "/workflows/single_agent/threads/own-thread-1", None),
+            (
+                "POST",
+                "/workflows/single_agent/threads/own-thread-1/resume",
+                {"prompt": "wrong wf"},
+            ),
+            ("POST", "/workflows/single_agent/threads/own-thread-1/discard", None),
+            (
+                "POST",
+                "/runs",
+                {
+                    "workflow_id": "single_agent",
+                    "prompt": "steal thread",
+                    "workspace_dir": str(tmp_path),
+                    "thread_id": "own-thread-1",
+                },
+            ),
+        ):
+            resp = await client.request(method, url, json=payload)
+            assert resp.status_code == 409, f"{method} {url} -> {resp.status_code}: {resp.text}"
+            assert resp.json()["error"]["code"] == "conflict"
+
+        # True owner can discard cleanly, and ownership remains enforced afterward.
+        discard_ok = await client.post("/workflows/plan_and_execute/threads/own-thread-1/discard")
+        assert discard_ok.status_code == 200
+        assert (
+            await client.get("/workflows/single_agent/threads/own-thread-1")
+        ).status_code == 409
+
+    # 2. Online thread state reports live agent_interaction (never crashed) + active_run_id.
+    app_live = _make_app("ui_question", config=ServerConfig(checkpoint_db=tmp_path / "live.sqlite"))
+    async with _running_client(app_live) as client:
+        start_live = await client.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "Ask cache backend",
+                "workspace_dir": str(tmp_path),
+                "run_id": "live-run-1",
+                "thread_id": "live-thread-1",
+            },
+        )
+        assert start_live.status_code == 201
+
+        live_state: dict[str, Any] | None = None
+        async with client.stream("GET", "/runs/live-run-1/events") as stream_resp:
+            assert stream_resp.status_code == 200
+            async for frame in _iter_sse_frames(stream_resp):
+                if "comment" in frame:
+                    continue
+                ev = RuntimeEvent.model_validate(frame["data"])
+                if ev.payload.type == "interaction.request" and ev.payload.blocking:
+                    # Cross-workflow query on live thread is also rejected with 409.
+                    wrong_live = await client.get(
+                        "/workflows/plan_and_execute/threads/live-thread-1"
+                    )
+                    assert wrong_live.status_code == 409
+
+                    state_resp = await client.get("/workflows/single_agent/threads/live-thread-1")
+                    assert state_resp.status_code == 200
+                    live_state = state_resp.json()
+                    assert live_state["status"] == "running"
+                    assert live_state["resumable"] is False
+                    assert live_state["active_run_id"] == "live-run-1"
+                    assert live_state["inflight_nodes"] == []
+                    assert len(live_state["interrupts"]) == 1
+                    assert live_state["interrupts"][0]["kind"] == "agent_interaction"
+                    assert live_state["interrupts"][0]["node_id"] == "agent"
+                    assert (
+                        live_state["interrupts"][0]["interaction"]["request_id"]
+                        == ev.payload.request_id
+                    )
+                    assert "agent" not in live_state["node_outputs"]
+
+                    # Reply using active_run_id from live ThreadState.
+                    reply = await client.post(
+                        f"/runs/{live_state['active_run_id']}/interactions",
+                        json={
+                            "response": {
+                                "request_id": ev.payload.request_id,
+                                "decision": "approve",
+                                "value": "redis",
+                            }
+                        },
+                    )
+                    assert reply.status_code == 204
+
+        assert live_state is not None
+        final_state = (await client.get("/workflows/single_agent/threads/live-thread-1")).json()
+        assert final_state["status"] == "completed"
+        assert final_state["active_run_id"] is None
+        assert final_state["interrupts"] == []
+
+
+async def test_resume_inherits_and_persists_execution_config_across_restart(
+    tmp_path: Path,
+) -> None:
+    """Gap 2: resuming a paused turn previously reset model/thinking/node_overrides to defaults.
+
+    Verifies A -> pause -> inherit A -> override B -> pause -> restart -> prompt-only uses B
+    by inspecting the actual config received by the fake Pi RPC subprocess, plus cloud inline
+    endpoint in-process retention and cross-restart fail-fast without persisting api_key.
+    """
+    secret_a = "sk-profile-a-secret-111111111111"
+    secret_b = "sk-profile-b-secret-222222222222"
+    save_local_settings(
+        LocalSettings(
+            active_profile="profile_a",
+            profiles={
+                "profile_a": ModelProfile(
+                    model="model-a",
+                    base_url="https://a.example.com/v1",
+                    api_key=SecretStr(secret_a),
+                    thinking_level="low",
+                ),
+                "profile_b": ModelProfile(
+                    model="model-b",
+                    base_url="https://b.example.com/v1",
+                    api_key=SecretStr(secret_b),
+                    thinking_level="high",
+                ),
+            },
+        )
+    )
+
+    async def _collect_interrupted_summary(
+        client: httpx.AsyncClient, run_id: str
+    ) -> dict[str, Any]:
+        events: list[RuntimeEvent] = []
+        async with client.stream("GET", f"/runs/{run_id}/events") as resp:
+            assert resp.status_code == 200
+            async for frame in _iter_sse_frames(resp):
+                if "comment" not in frame:
+                    events.append(RuntimeEvent.model_validate(frame["data"]))
+        last = events[-1].payload
+        assert last.type == "workflow.interrupted"
+        return json.loads(last.interrupts[0].payload["summary"])
+
+    db_local = tmp_path / "resume_local.sqlite"
+    app1 = _make_app("inspect_endpoint", config=ServerConfig(mode="local", checkpoint_db=db_local))
+    async with _running_client(app1) as client1:
+        # 1. Start with profile_a + planner read_only override -> pauses in awaiting_input.
+        r1 = await client1.post(
+            "/runs",
+            json={
+                "workflow_id": "plan_and_execute",
+                "prompt": "Initial plan",
+                "workspace_dir": str(tmp_path),
+                "run_id": "cfg-run-1",
+                "thread_id": "cfg-thread-1",
+                "profile": "profile_a",
+                "node_overrides": {"planner": {"tool_policy": "read_only"}},
+            },
+        )
+        assert r1.status_code == 201
+        rep1 = await _collect_interrupted_summary(client1, "cfg-run-1")
+        assert rep1["model"] == "model-a"
+        assert rep1["thinking"] == "low"
+        assert rep1["tools"] == "read,grep,find,ls"
+        assert rep1["env_api_key_set"] is True
+
+        # 2. Resume with prompt only -> inherits profile_a + planner read_only override.
+        r2 = await client1.post(
+            "/workflows/plan_and_execute/threads/cfg-thread-1/resume",
+            json={"run_id": "cfg-run-2", "prompt": "Refine with A"},
+        )
+        assert r2.status_code == 201
+        rep2 = await _collect_interrupted_summary(client1, "cfg-run-2")
+        assert rep2["model"] == "model-a"
+        assert rep2["thinking"] == "low"
+        assert rep2["tools"] == "read,grep,find,ls"
+        assert rep2["env_api_key_sha256"] == rep1["env_api_key_sha256"]
+
+        # 3. Override to profile_b + explicit planner tools -> pauses again.
+        r3 = await client1.post(
+            "/workflows/plan_and_execute/threads/cfg-thread-1/resume",
+            json={
+                "run_id": "cfg-run-3",
+                "prompt": "Switch to B",
+                "profile": "profile_b",
+                "node_overrides": {"planner": {"tools": ["read", "grep"]}},
+            },
+        )
+        assert r3.status_code == 201
+        rep3 = await _collect_interrupted_summary(client1, "cfg-run-3")
+        assert rep3["model"] == "model-b"
+        assert rep3["thinking"] == "high"
+        assert rep3["tools"] == "read,grep"
+        assert rep3["env_api_key_set"] is True
+        assert rep3["env_api_key_sha256"] != rep1["env_api_key_sha256"]
+
+    # Ensure no API key ever touched SQLite on disk.
+    raw_local_db = db_local.read_bytes()
+    assert secret_a.encode() not in raw_local_db
+    assert secret_b.encode() not in raw_local_db
+
+    # 4. Simulate server restart (fresh app over same SQLite DB), send ONLY prompt -> must use B!
+    app2 = _make_app("inspect_endpoint", config=ServerConfig(mode="local", checkpoint_db=db_local))
+    async with _running_client(app2) as client2:
+        r4 = await client2.post(
+            "/workflows/plan_and_execute/threads/cfg-thread-1/resume",
+            json={"run_id": "cfg-run-4", "prompt": "Continue after restart"},
+        )
+        assert r4.status_code == 201
+        rep4 = await _collect_interrupted_summary(client2, "cfg-run-4")
+        assert rep4["model"] == "model-b"
+        assert rep4["thinking"] == "high"
+        assert rep4["tools"] == "read,grep"
+        assert rep4["env_api_key_sha256"] == rep3["env_api_key_sha256"]
+
+        # Complete planner -> executor inherits profile_b as well.
+        r5 = await client2.post(
+            "/workflows/plan_and_execute/threads/cfg-thread-1/resume",
+            json={"run_id": "cfg-run-5", "complete": True},
+        )
+        assert r5.status_code == 201
+        rep5 = await _collect_interrupted_summary(client2, "cfg-run-5")
+        assert rep5["model"] == "model-b"
+        assert rep5["thinking"] == "high"
+        assert rep5["env_api_key_sha256"] == rep3["env_api_key_sha256"]
+
+    # 5. Cloud inline endpoint with api_key: retained in-process, fails fast after restart.
+    db_cloud = tmp_path / "resume_cloud.sqlite"
+    cloud_secret = "sk-cloud-inline-secret-99999999"
+    cloud_headers = {"Authorization": "Bearer cloud-tok"}
+    cloud_app1 = _make_app(
+        "inspect_endpoint",
+        config=ServerConfig(
+            mode="cloud",
+            auth_token=SecretStr("cloud-tok"),
+            checkpoint_db=db_cloud,
+        ),
+    )
+    async with _running_client(cloud_app1, headers=cloud_headers) as c1:
+        cr1 = await c1.post(
+            "/runs",
+            json={
+                "workflow_id": "plan_and_execute",
+                "prompt": "Cloud start",
+                "workspace_dir": str(tmp_path),
+                "run_id": "cloud-cfg-1",
+                "thread_id": "cloud-cfg-thread",
+                "endpoint": {
+                    "model": "cloud-m1",
+                    "base_url": "https://gateway.internal/v1",
+                    "api_key": cloud_secret,
+                },
+                "thinking_level": "medium",
+            },
+        )
+        assert cr1.status_code == 201
+        crep1 = await _collect_interrupted_summary(c1, "cloud-cfg-1")
+        assert crep1["model"] == "cloud-m1"
+        assert crep1["thinking"] == "medium"
+        assert crep1["env_api_key_set"] is True
+
+        # Same-process resume with prompt only reuses cached in-memory secret cleanly.
+        cr2 = await c1.post(
+            "/workflows/plan_and_execute/threads/cloud-cfg-thread/resume",
+            json={"run_id": "cloud-cfg-2", "prompt": "Cloud follow-up"},
+        )
+        assert cr2.status_code == 201
+        crep2 = await _collect_interrupted_summary(c1, "cloud-cfg-2")
+        assert crep2["model"] == "cloud-m1"
+        assert crep2["thinking"] == "medium"
+        assert crep2["env_api_key_sha256"] == crep1["env_api_key_sha256"]
+
+    assert cloud_secret.encode() not in db_cloud.read_bytes()
+
+    # Cross-restart cloud resume without endpoint fails fast (400) rather than dropping to None.
+    cloud_app2 = _make_app(
+        "inspect_endpoint",
+        config=ServerConfig(
+            mode="cloud",
+            auth_token=SecretStr("cloud-tok"),
+            checkpoint_db=db_cloud,
+        ),
+    )
+    async with _running_client(cloud_app2, headers=cloud_headers) as c2:
+        missing_key = await c2.post(
+            "/workflows/plan_and_execute/threads/cloud-cfg-thread/resume",
+            json={"run_id": "cloud-cfg-3", "prompt": "After restart without key"},
+        )
+        assert missing_key.status_code == 400
+        assert missing_key.json()["error"]["code"] == "bad_request"
+        assert "api_key" in missing_key.json()["error"]["message"]
+
+        resumed_with_ep = await c2.post(
+            "/workflows/plan_and_execute/threads/cloud-cfg-thread/resume",
+            json={
+                "run_id": "cloud-cfg-4",
+                "prompt": "After restart with key",
+                "endpoint": {
+                    "model": "cloud-m2",
+                    "base_url": "https://gateway.internal/v1",
+                    "api_key": "sk-cloud-refreshed-88888888",
+                },
+            },
+        )
+        assert resumed_with_ep.status_code == 201
+        crep4 = await _collect_interrupted_summary(c2, "cloud-cfg-4")
+        assert crep4["model"] == "cloud-m2"
+        assert crep4["env_api_key_set"] is True

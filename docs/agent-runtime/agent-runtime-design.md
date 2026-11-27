@@ -340,6 +340,7 @@ class WorkflowState(AgentChanges):
     workflow_id: str
     prompt: str
     workspace_dir: str
+    run_options: Annotated[PersistedRunOptions | None, _last_value]      # 无密钥执行配置，暂停恢复自动沿用
     status: Annotated[WorkflowStatus, reduce_workflow_status]            # 确定性优先级归约 (failed > aborted > ...)
     failure: Annotated[AgentFailure | None, reduce_failure]
 ```

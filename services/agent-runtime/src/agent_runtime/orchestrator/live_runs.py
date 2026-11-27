@@ -82,11 +82,21 @@ class _ActiveSessionEntry:
     capabilities: AgentCapabilities
 
 
+@dataclass(frozen=True)
+class ActiveRunInfo:
+    """Live in-memory snapshot for an actively executing thread."""
+
+    run_id: str
+    workflow_id: str
+    active_nodes: tuple[str, ...]
+    pending_interactions: tuple[tuple[str, InteractionRequestEvent], ...]
+
+
 class LiveRunRegistry:
     """Encapsulates active run locks, live sessions, and hot interaction coordination."""
 
     def __init__(self) -> None:
-        self._active_run_ids: dict[str, str] = {}
+        self._active_runs: dict[str, tuple[str, str]] = {}  # thread_id -> (run_id, workflow_id)
         self._active_sessions: dict[str, dict[str, _ActiveSessionEntry]] = {}
         self._interaction_handlers: dict[str, InteractionHandler] = {}
         self._interaction_modes: dict[str, InteractionMode] = {}
@@ -94,17 +104,36 @@ class LiveRunRegistry:
         self._suspended_runs: set[str] = set()
 
     def is_thread_running(self, thread_id: str) -> bool:
-        return thread_id in self._active_run_ids
+        return thread_id in self._active_runs
+
+    def get_active_run(self, thread_id: str) -> ActiveRunInfo | None:
+        active = self._active_runs.get(thread_id)
+        if active is None:
+            return None
+        run_id, workflow_id = active
+        active_nodes = tuple(sorted(self._active_sessions.get(run_id, ())))
+        pending_map = self._pending_interactions.get(run_id, {})
+        pending_interactions = tuple(
+            (node_id, item.request) for node_id, item in pending_map.items()
+        )
+        return ActiveRunInfo(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            active_nodes=active_nodes,
+            pending_interactions=pending_interactions,
+        )
 
     @contextlib.contextmanager
-    def claim(self, thread_id: str, run_id: str) -> Iterator[None]:
-        if thread_id in self._active_run_ids or run_id in self._active_run_ids.values():
+    def claim(self, thread_id: str, run_id: str, *, workflow_id: str) -> Iterator[None]:
+        if thread_id in self._active_runs or any(
+            active_run_id == run_id for active_run_id, _ in self._active_runs.values()
+        ):
             raise StateConflictError(f"Thread '{thread_id}' or run '{run_id}' is already running")
-        self._active_run_ids[thread_id] = run_id
+        self._active_runs[thread_id] = (run_id, workflow_id)
         try:
             yield
         finally:
-            del self._active_run_ids[thread_id]
+            del self._active_runs[thread_id]
 
     def configure_run(
         self,

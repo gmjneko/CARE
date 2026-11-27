@@ -8,12 +8,20 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel, ConfigDict
 
-from agent_runtime.orchestrator.state import NodeOutput
+from agent_runtime.orchestrator.state import (
+    NodeOutput,
+    PersistedEndpoint,
+    PersistedNodeOverride,
+    PersistedRunOptions,
+)
 from agent_runtime.protocol.events import AgentFailure, InteractionRequestEvent, TokenUsage
 
 CHECKPOINT_SERDE = JsonPlusSerializer(
     allowed_msgpack_modules=[
         (NodeOutput.__module__, NodeOutput.__qualname__),
+        (PersistedEndpoint.__module__, PersistedEndpoint.__qualname__),
+        (PersistedNodeOverride.__module__, PersistedNodeOverride.__qualname__),
+        (PersistedRunOptions.__module__, PersistedRunOptions.__qualname__),
         (AgentFailure.__module__, AgentFailure.__qualname__),
         (InteractionRequestEvent.__module__, InteractionRequestEvent.__qualname__),
         (TokenUsage.__module__, TokenUsage.__qualname__),

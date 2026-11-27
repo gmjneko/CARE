@@ -86,12 +86,12 @@ class ResumeThreadRequest(BaseModel):
     prompt: str | None = None
     complete: bool = False
     resumes: dict[str, ResumeInput] | None = None
-    adapter: str = "pi"
+    adapter: str | None = None
     profile: str | None = None
     endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
-    persist_session: bool = True
-    node_overrides: dict[str, NodeRuntimeOverride] = Field(default_factory=dict)
+    persist_session: bool | None = None
+    node_overrides: dict[str, NodeRuntimeOverride] | None = None
     interaction_mode: InteractionMode = "wait"
 
     @model_validator(mode="after")

@@ -9,7 +9,7 @@ from typing import Any, Literal
 from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_runtime.errors import InvalidInputError, NotFoundError
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.node import (
     AGENT_RESUME_ACTION_KEY,
     AGENT_RESUME_PROMPT_KEY,
@@ -18,7 +18,7 @@ from agent_runtime.orchestrator.node import (
     parse_approval_decision,
 )
 from agent_runtime.orchestrator.persistence import InflightNodeRecord, InflightNodeStore
-from agent_runtime.orchestrator.state import NodeOutput
+from agent_runtime.orchestrator.state import NodeOutput, PersistedRunOptions
 from agent_runtime.protocol.events import (
     InteractionRequestEvent,
     InteractionResponse,
@@ -50,6 +50,7 @@ class ThreadState(BaseModel):
     thread_id: str
     status: Literal["completed", "interrupted", "aborted", "failed", "crashed", "running"]
     resumable: bool
+    active_run_id: str | None = None
     node_outputs: dict[str, NodeOutput] = Field(default_factory=dict)
     node_sessions: dict[str, str] = Field(default_factory=dict)
     next_nodes: tuple[str, ...] = ()
@@ -65,6 +66,7 @@ class InspectionResult:
     snapshot: StateSnapshot
     paused_outputs: dict[str, NodeOutput]
     paused_sessions: dict[str, str]
+    run_options: PersistedRunOptions | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ async def inspect_thread(
     inflight_store: InflightNodeStore,
     thread_id: str,
     *,
+    expected_workflow_id: str | None = None,
     cleanup: bool = False,
 ) -> InspectionResult:
     """Inspect a thread's checkpoint snapshot and reconcile with inflight WAL records."""
@@ -90,6 +93,17 @@ async def inspect_thread(
     )
     if not snapshot.values and not snapshot.next:
         raise NotFoundError(f"No checkpoint found for thread_id '{thread_id}'")
+
+    stored_workflow_id = snapshot.values.get("workflow_id")
+    if (
+        expected_workflow_id is not None
+        and stored_workflow_id is not None
+        and stored_workflow_id != expected_workflow_id
+    ):
+        raise StateConflictError(
+            f"Thread '{thread_id}' belongs to workflow '{stored_workflow_id}', "
+            f"not '{expected_workflow_id}'"
+        )
 
     outputs = dict(snapshot.values.get("node_outputs", {}))
     sessions = dict(snapshot.values.get("node_sessions", {}))
@@ -236,11 +250,13 @@ async def inspect_thread(
         interrupts=tuple(interrupts),
         inflight_nodes=tuple(live),
     )
+    saved_options = snapshot.values.get("run_options")
     return InspectionResult(
         state=view,
         snapshot=snapshot,
         paused_outputs=paused_outputs,
         paused_sessions=paused_sessions,
+        run_options=saved_options if isinstance(saved_options, PersistedRunOptions) else None,
     )
 
 

@@ -153,6 +153,17 @@ def resolve_run_model(
     return resolved.to_endpoint(), effective_thinking
 
 
+def resolve_named_profile(
+    profile_name: str,
+    *,
+    care_home: str | Path | None = None,
+) -> tuple[ModelEndpoint, ThinkingLevel | None]:
+    """Resolve a named local settings profile to its endpoint and default thinking level."""
+    resolved = load_local_settings(care_home).resolve_profile(profile_name)
+    assert resolved is not None
+    return resolved.to_endpoint(), resolved.thinking_level
+
+
 def resolve_pi_bin(
     *,
     mode: RuntimeMode = "local",
@@ -201,6 +212,7 @@ def _parse_float_env(name: str, raw: str | None, *, default: float) -> float:
 __all__ = [
     "RuntimeMode",
     "ServerConfig",
+    "resolve_named_profile",
     "resolve_pi_bin",
     "resolve_run_model",
 ]

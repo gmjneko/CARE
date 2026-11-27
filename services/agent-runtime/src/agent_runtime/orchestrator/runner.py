@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -10,10 +11,11 @@ from uuid import uuid4
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END
 from langgraph.types import Command
+from pydantic import SecretStr
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.adapters.registry import AdapterRegistry
-from agent_runtime.errors import NotFoundError, StateConflictError
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.live_runs import (
     ExecutionContext,
     InteractionHandler,
@@ -35,9 +37,15 @@ from agent_runtime.orchestrator.recovery import (
     resolve_resume_plan,
 )
 from agent_runtime.orchestrator.registry import WorkflowBuilder, WorkflowRegistry
-from agent_runtime.orchestrator.state import NodeOutput
+from agent_runtime.orchestrator.state import (
+    NodeOutput,
+    PersistedEndpoint,
+    PersistedNodeOverride,
+    PersistedRunOptions,
+)
 from agent_runtime.protocol.events import (
     InteractionResponse,
+    PendingInterrupt,
     RuntimeEvent,
     RuntimeEventPayload,
     WorkflowCompletedEvent,
@@ -49,6 +57,61 @@ from agent_runtime.protocol.events import (
 # Unreachable terminal sink attached on compile so discard() closes checkpoints via aupdate_state().
 _CLOSE_NODE = "_care_close"
 
+ProfileResolver = Callable[[str], tuple[ModelEndpoint, ThinkingLevel | None]]
+
+
+@dataclass(frozen=True)
+class _ThreadEndpointSecrets:
+    """In-memory-only API key cache for inline endpoints within the current process lifetime."""
+
+    root_api_key: SecretStr | None = None
+    node_api_keys: dict[str, SecretStr] = field(default_factory=dict)
+
+
+def _persist_run_options(
+    options: RunOptions,
+    *,
+    profile: str | None,
+) -> PersistedRunOptions:
+    """Strip all secrets from RunOptions into a checkpoint-safe PersistedRunOptions snapshot."""
+    persisted_overrides: dict[str, PersistedNodeOverride] = {}
+    for node_id, override in options.node_overrides.items():
+        persisted_overrides[node_id] = PersistedNodeOverride(
+            adapter=override.adapter,
+            endpoint=(
+                PersistedEndpoint.from_endpoint(override.endpoint)
+                if override.endpoint is not None
+                else None
+            ),
+            thinking_level=override.thinking_level,
+            persist_session=override.persist_session,
+            tool_policy=override.tool_policy,
+            tools=override.tools,
+        )
+    return PersistedRunOptions(
+        adapter=options.adapter,
+        profile=profile,
+        endpoint=(
+            PersistedEndpoint.from_endpoint(options.endpoint)
+            if options.endpoint is not None
+            else None
+        ),
+        thinking_level=options.thinking_level,
+        persist_session=options.persist_session,
+        node_overrides=persisted_overrides,
+    )
+
+
+def _extract_secrets(options: RunOptions) -> _ThreadEndpointSecrets:
+    """Extract inline API keys to keep strictly in memory (never written to checkpoints)."""
+    root_key = options.endpoint.api_key if options.endpoint is not None else None
+    node_keys = {
+        node_id: override.endpoint.api_key
+        for node_id, override in options.node_overrides.items()
+        if override.endpoint is not None and override.endpoint.api_key is not None
+    }
+    return _ThreadEndpointSecrets(root_api_key=root_key, node_api_keys=node_keys)
+
 
 class WorkflowRunner:
     """Production execution engine for code-defined LangGraph Agent workflows."""
@@ -59,11 +122,14 @@ class WorkflowRunner:
         workflow_registry: WorkflowRegistry | None = None,
         *,
         persistence: PersistenceBackend | None = None,
+        profile_resolver: ProfileResolver | None = None,
     ) -> None:
         self._adapters = adapter_registry
         self._workflow_registry = workflow_registry or WorkflowRegistry()
         self._persistence: PersistenceBackend = persistence or SqlitePersistenceBackend(":memory:")
+        self._profile_resolver = profile_resolver
         self._live_runs = LiveRunRegistry()
+        self._thread_secrets: dict[str, _ThreadEndpointSecrets] = {}
         self._compiled_cache: dict[str, Any] = {}
         self._entered = False
 
@@ -75,6 +141,7 @@ class WorkflowRunner:
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self._entered = False
         self._compiled_cache.clear()
+        self._thread_secrets.clear()
         await self._persistence.__aexit__(exc_type, exc, tb)
 
     async def run(
@@ -86,6 +153,7 @@ class WorkflowRunner:
         run_id: str | None = None,
         thread_id: str | None = None,
         adapter: str = "pi",
+        profile: str | None = None,
         endpoint: ModelEndpoint | None = None,
         thinking_level: ThinkingLevel | None = None,
         persist_session: bool = True,
@@ -100,18 +168,38 @@ class WorkflowRunner:
         effective_run_id = run_id or f"run-{uuid4().hex[:12]}"
         effective_thread_id = thread_id or effective_run_id
 
+        effective_endpoint = endpoint
+        effective_thinking = thinking_level
+        effective_profile = profile.strip() if profile is not None and profile.strip() else None
+        if effective_profile is not None and effective_endpoint is None:
+            if self._profile_resolver is None:
+                raise InvalidInputError(
+                    "'profile' is only supported in local mode; pass 'endpoint' directly"
+                )
+            resolved_ep, profile_thinking = self._profile_resolver(effective_profile)
+            effective_endpoint = resolved_ep
+            if effective_thinking is None:
+                effective_thinking = profile_thinking
+
         options = RunOptions(
             adapter=adapter,
-            endpoint=endpoint,
-            thinking_level=thinking_level,
+            endpoint=effective_endpoint,
+            thinking_level=effective_thinking,
             persist_session=persist_session,
             node_overrides=dict(node_overrides) if node_overrides else {},
         )
+        persisted_options = _persist_run_options(options, profile=effective_profile)
 
-        with self._live_runs.claim(effective_thread_id, effective_run_id):
+        with self._live_runs.claim(
+            effective_thread_id, effective_run_id, workflow_id=workflow_name
+        ):
             try:
                 inspected = await inspect_thread(
-                    compiled, inflight_store, effective_thread_id, cleanup=True
+                    compiled,
+                    inflight_store,
+                    effective_thread_id,
+                    expected_workflow_id=workflow_name,
+                    cleanup=True,
                 )
             except NotFoundError:
                 inspected = None
@@ -126,6 +214,8 @@ class WorkflowRunner:
                 if inspected.paused_sessions:
                     preserved_sessions = dict(inspected.paused_sessions)
 
+            self._thread_secrets[effective_thread_id] = _extract_secrets(options)
+
             # BinaryOperatorAggregate skips the reducer on the very first write to an empty
             # channel, so pass {} / "running" for fresh threads and None to trigger reset on
             # existing threads.
@@ -137,6 +227,7 @@ class WorkflowRunner:
                 "workflow_id": workflow_name,
                 "prompt": prompt,
                 "workspace_dir": str(Path(workspace_dir).resolve()),
+                "run_options": persisted_options,
                 "node_outputs": None if has_outputs else {},
                 "node_sessions": preserved_sessions,
                 "latest_output": "",
@@ -176,29 +267,28 @@ class WorkflowRunner:
         prompt: str | None = None,
         complete: bool = False,
         resumes: Mapping[str, ResumeInput] | None = None,
-        adapter: str = "pi",
+        adapter: str | None = None,
+        profile: str | None = None,
         endpoint: ModelEndpoint | None = None,
         thinking_level: ThinkingLevel | None = None,
-        persist_session: bool = True,
+        persist_session: bool | None = None,
         node_overrides: Mapping[str, NodeRuntimeOverride] | None = None,
         interaction_handler: InteractionHandler | None = None,
         interaction_mode: InteractionMode = "cancel",
     ) -> AsyncIterator[RuntimeEvent]:
-        """统一断点恢复入口：支持单分支精确恢复与多分支批量并发恢复。"""
+        """统一断点恢复入口：默认沿用暂停前执行配置，显式传参时覆盖并写回父图状态。"""
         compiled, workflow_name = self._get_compiled(workflow)
         inflight_store = self._require_inflight_store()
         effective_run_id = run_id or f"run-{uuid4().hex[:12]}"
 
-        options = RunOptions(
-            adapter=adapter,
-            endpoint=endpoint,
-            thinking_level=thinking_level,
-            persist_session=persist_session,
-            node_overrides=dict(node_overrides) if node_overrides else {},
-        )
-
-        with self._live_runs.claim(thread_id, effective_run_id):
-            inspected = await inspect_thread(compiled, inflight_store, thread_id, cleanup=True)
+        with self._live_runs.claim(thread_id, effective_run_id, workflow_id=workflow_name):
+            inspected = await inspect_thread(
+                compiled,
+                inflight_store,
+                thread_id,
+                expected_workflow_id=workflow_name,
+                cleanup=True,
+            )
             if not inspected.state.resumable:
                 raise StateConflictError(
                     f"Thread '{thread_id}' is already {inspected.state.status}; "
@@ -215,6 +305,27 @@ class WorkflowRunner:
                 resumes=resumes,
             )
 
+            options, persisted_options = self._resolve_resume_options(
+                thread_id=thread_id,
+                saved=inspected.run_options,
+                adapter=adapter,
+                profile=profile,
+                endpoint=endpoint,
+                thinking_level=thinking_level,
+                persist_session=persist_session,
+                node_overrides=node_overrides,
+            )
+            self._thread_secrets[thread_id] = _extract_secrets(options)
+
+            options_changed = persisted_options != inspected.run_options
+            updated_options = persisted_options if options_changed else None
+            graph_input = plan.graph_input
+            if updated_options is not None and isinstance(graph_input, Command):
+                graph_input = Command(
+                    update={"run_options": updated_options},
+                    resume=graph_input.resume,
+                )
+
             exec_ctx = ExecutionContext(
                 run_id=effective_run_id,
                 thread_id=thread_id,
@@ -228,11 +339,12 @@ class WorkflowRunner:
                 compiled=compiled,
                 workflow_name=workflow_name,
                 exec_ctx=exec_ctx,
-                graph_input=plan.graph_input,
+                graph_input=graph_input,
                 opening_event=WorkflowResumedEvent(resumed_from=plan.reason),
                 interaction_handler=interaction_handler,
                 interaction_mode=interaction_mode,
                 staged_replies=plan.staged_replies,
+                updated_run_options=updated_options,
             ):
                 yield event
 
@@ -242,13 +354,22 @@ class WorkflowRunner:
         thread_id: str,
     ) -> ThreadState:
         """放弃未完成的挂起/崩溃/失败轮次，保留全部分支的 session_ref 并收口为不可恢复终态。"""
-        compiled, _ = self._get_compiled(workflow)
+        compiled, workflow_name = self._get_compiled(workflow)
         store = self._require_inflight_store()
 
-        with self._live_runs.claim(thread_id, f"discard-{uuid4().hex[:12]}"):
-            inspected = await inspect_thread(compiled, store, thread_id, cleanup=True)
+        with self._live_runs.claim(
+            thread_id, f"discard-{uuid4().hex[:12]}", workflow_id=workflow_name
+        ):
+            inspected = await inspect_thread(
+                compiled,
+                store,
+                thread_id,
+                expected_workflow_id=workflow_name,
+                cleanup=True,
+            )
             state = inspected.state
             if not state.resumable:
+                self._thread_secrets.pop(thread_id, None)
                 return state
 
             final_status: Literal["failed", "aborted"] = (
@@ -290,7 +411,14 @@ class WorkflowRunner:
             for row in state.inflight_nodes:
                 await store.delete(row)
 
-            closed = await inspect_thread(compiled, store, thread_id, cleanup=True)
+            self._thread_secrets.pop(thread_id, None)
+            closed = await inspect_thread(
+                compiled,
+                store,
+                thread_id,
+                expected_workflow_id=workflow_name,
+                cleanup=True,
+            )
             return closed.state
 
     async def respond_interaction(
@@ -322,8 +450,14 @@ class WorkflowRunner:
         workflow: str | WorkflowBuilder,
         thread_id: str,
     ) -> dict[str, Any]:
-        compiled, _ = self._get_compiled(workflow)
+        compiled, workflow_name = self._get_compiled(workflow)
         snapshot = await compiled.aget_state({"configurable": {"thread_id": thread_id}})
+        stored_workflow_id = snapshot.values.get("workflow_id")
+        if stored_workflow_id is not None and stored_workflow_id != workflow_name:
+            raise StateConflictError(
+                f"Thread '{thread_id}' belongs to workflow '{stored_workflow_id}', "
+                f"not '{workflow_name}'"
+            )
         return dict(snapshot.values)
 
     async def get_thread_state(
@@ -331,12 +465,156 @@ class WorkflowRunner:
         workflow: str | WorkflowBuilder,
         thread_id: str,
     ) -> ThreadState:
-        """纯只读查询线程综合状态（合并 LangGraph Checkpoint 与 WAL 预写表）。"""
-        compiled, _ = self._get_compiled(workflow)
-        inspected = await inspect_thread(compiled, self._require_inflight_store(), thread_id)
-        if self._live_runs.is_thread_running(thread_id):
-            return inspected.state.model_copy(update={"status": "running", "resumable": False})
+        """纯只读查询线程状态：在线线程由 LiveRunRegistry 提供实时视图，离线线程走 WAL 对账。"""
+        compiled, workflow_name = self._get_compiled(workflow)
+        active = self._live_runs.get_active_run(thread_id)
+        if active is not None:
+            if active.workflow_id != workflow_name:
+                raise StateConflictError(
+                    f"Thread '{thread_id}' belongs to workflow '{active.workflow_id}', "
+                    f"not '{workflow_name}'"
+                )
+            snapshot = await compiled.aget_state(
+                {"configurable": {"thread_id": thread_id}}, subgraphs=True
+            )
+            outputs = dict(snapshot.values.get("node_outputs", {}))
+            sessions = dict(snapshot.values.get("node_sessions", {}))
+            live_interrupts = tuple(
+                PendingInterrupt(
+                    interrupt_id=None,
+                    node_id=node_id,
+                    kind="agent_interaction",
+                    interaction=req,
+                )
+                for node_id, req in active.pending_interactions
+            )
+            return ThreadState(
+                thread_id=thread_id,
+                status="running",
+                resumable=False,
+                active_run_id=active.run_id,
+                node_outputs=outputs,
+                node_sessions=sessions,
+                next_nodes=active.active_nodes or snapshot.next,
+                interrupts=live_interrupts,
+                inflight_nodes=(),
+            )
+
+        inspected = await inspect_thread(
+            compiled,
+            self._require_inflight_store(),
+            thread_id,
+            expected_workflow_id=workflow_name,
+        )
         return inspected.state
+
+    def _resolve_resume_options(
+        self,
+        *,
+        thread_id: str,
+        saved: PersistedRunOptions | None,
+        adapter: str | None,
+        profile: str | None,
+        endpoint: ModelEndpoint | None,
+        thinking_level: ThinkingLevel | None,
+        persist_session: bool | None,
+        node_overrides: Mapping[str, NodeRuntimeOverride] | None,
+    ) -> tuple[RunOptions, PersistedRunOptions]:
+        """Merge explicit resume overrides onto the thread's saved non-sensitive RunOptions."""
+        base = saved if saved is not None else PersistedRunOptions()
+        cached = self._thread_secrets.get(thread_id)
+        clean_profile = profile.strip() if profile is not None and profile.strip() else None
+
+        if clean_profile is not None:
+            if endpoint is not None:
+                effective_endpoint: ModelEndpoint | None = endpoint
+                effective_thinking: ThinkingLevel | None = thinking_level
+            else:
+                if self._profile_resolver is None:
+                    raise InvalidInputError(
+                        "'profile' is only supported in local mode; pass 'endpoint' directly"
+                    )
+                resolved_ep, profile_thinking = self._profile_resolver(clean_profile)
+                effective_endpoint = resolved_ep
+                effective_thinking = (
+                    thinking_level if thinking_level is not None else profile_thinking
+                )
+            effective_profile: str | None = clean_profile
+        elif endpoint is not None:
+            effective_endpoint = endpoint
+            effective_profile = None
+            effective_thinking = thinking_level
+        else:
+            effective_profile = base.profile
+            if base.profile is not None:
+                if self._profile_resolver is None:
+                    raise InvalidInputError(
+                        f"Thread '{thread_id}' uses local profile '{base.profile}' which cannot "
+                        "be resolved in this mode; pass 'endpoint' directly"
+                    )
+                resolved_ep, profile_thinking = self._profile_resolver(base.profile)
+                effective_endpoint = resolved_ep
+                effective_thinking = (
+                    thinking_level
+                    if thinking_level is not None
+                    else (
+                        base.thinking_level
+                        if base.thinking_level is not None
+                        else profile_thinking
+                    )
+                )
+            elif base.endpoint is not None:
+                key = cached.root_api_key if cached is not None else None
+                if base.endpoint.requires_api_key and key is None:
+                    raise InvalidInputError(
+                        f"Thread '{thread_id}' was started with an inline endpoint requiring "
+                        "'api_key'; pass 'endpoint' to resume"
+                    )
+                effective_endpoint = base.endpoint.to_endpoint(api_key=key)
+                effective_thinking = (
+                    thinking_level if thinking_level is not None else base.thinking_level
+                )
+            else:
+                effective_endpoint = None
+                effective_thinking = (
+                    thinking_level if thinking_level is not None else base.thinking_level
+                )
+
+        effective_adapter = adapter if adapter is not None else base.adapter
+        effective_persist = persist_session if persist_session is not None else base.persist_session
+
+        if node_overrides is not None:
+            effective_overrides = dict(node_overrides)
+        else:
+            effective_overrides = {}
+            for node_id, persisted_ov in base.node_overrides.items():
+                restored_ep: ModelEndpoint | None = None
+                if persisted_ov.endpoint is not None:
+                    node_key = cached.node_api_keys.get(node_id) if cached is not None else None
+                    if persisted_ov.endpoint.requires_api_key and node_key is None:
+                        raise InvalidInputError(
+                            f"Thread '{thread_id}' node '{node_id}' was started with an inline "
+                            "endpoint requiring 'api_key'; pass 'node_overrides' to resume"
+                        )
+                    restored_ep = persisted_ov.endpoint.to_endpoint(api_key=node_key)
+                effective_overrides[node_id] = NodeRuntimeOverride(
+                    adapter=persisted_ov.adapter,
+                    endpoint=restored_ep,
+                    thinking_level=persisted_ov.thinking_level,
+                    persist_session=persisted_ov.persist_session,
+                    tool_policy=persisted_ov.tool_policy,
+                    tools=persisted_ov.tools,
+                )
+
+        options = RunOptions(
+            adapter=effective_adapter,
+            endpoint=effective_endpoint,
+            thinking_level=effective_thinking,
+            persist_session=effective_persist,
+            node_overrides=effective_overrides,
+        )
+        persisted = _persist_run_options(options, profile=effective_profile)
+        return options, persisted
 
     async def _stream_execution(
         self,
@@ -349,6 +627,7 @@ class WorkflowRunner:
         interaction_handler: InteractionHandler | None,
         interaction_mode: InteractionMode,
         staged_replies: dict[str, Any] | None = None,
+        updated_run_options: PersistedRunOptions | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         seq = 0
         pending_replies = dict(staged_replies) if staged_replies else {}
@@ -388,7 +667,11 @@ class WorkflowRunner:
                         yield _wrap(packet.event, node_id=packet.node_id)
 
                 inspected = await inspect_thread(
-                    compiled, exec_ctx.inflight_store, exec_ctx.thread_id, cleanup=True
+                    compiled,
+                    exec_ctx.inflight_store,
+                    exec_ctx.thread_id,
+                    expected_workflow_id=workflow_name,
+                    cleanup=True,
                 )
                 state = inspected.state
                 snapshot = inspected.snapshot
@@ -407,7 +690,14 @@ class WorkflowRunner:
                             f"Expected recovered node '{target_node}' to reach its resume gate"
                         )
                     resume_map[intr_id] = reply_value
-                graph_input = Command(resume=resume_map)
+                if updated_run_options is not None:
+                    graph_input = Command(
+                        update={"run_options": updated_run_options},
+                        resume=resume_map,
+                    )
+                    updated_run_options = None
+                else:
+                    graph_input = Command(resume=resume_map)
                 pending_replies = {}
 
             if state.status == "interrupted":
@@ -417,6 +707,8 @@ class WorkflowRunner:
                     node_id=event_node_id,
                 )
             elif state.status in ("failed", "aborted", "completed"):
+                if not state.resumable:
+                    self._thread_secrets.pop(exec_ctx.thread_id, None)
                 first_failure = next(
                     (item.failure for item in state.interrupts if item.failure is not None),
                     snapshot.values.get("failure"),

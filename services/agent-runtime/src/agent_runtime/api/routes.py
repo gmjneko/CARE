@@ -26,6 +26,7 @@ from agent_runtime.errors import InvalidInputError
 from agent_runtime.orchestrator import ThreadState, WorkflowRegistry
 from agent_runtime.protocol import RuntimeEvent
 from agent_runtime.runtime import RunManager, RunSnapshot
+from agent_runtime.settings import load_local_settings
 
 
 def build_health_router(config: ServerConfig, *, runtime_version: str) -> APIRouter:
@@ -97,6 +98,13 @@ def build_api_router(
             endpoint=body.endpoint,
             thinking_level=body.thinking_level,
         )
+        effective_profile: str | None = None
+        if config.mode == "local" and body.endpoint is None:
+            effective_profile = (
+                body.profile.strip()
+                if body.profile is not None and body.profile.strip()
+                else load_local_settings().active_profile
+            )
         return await manager.start_run(
             body.workflow_id.strip(),
             body.prompt.strip(),
@@ -104,6 +112,7 @@ def build_api_router(
             run_id=body.run_id,
             thread_id=body.thread_id,
             adapter=body.adapter,
+            profile=effective_profile,
             endpoint=effective_endpoint,
             thinking_level=effective_thinking,
             persist_session=body.persist_session,
@@ -216,12 +225,18 @@ def build_api_router(
         thread_id: str,
         body: ResumeThreadRequest,
     ) -> RunSnapshot:
-        effective_endpoint, effective_thinking = resolve_run_model(
-            mode=config.mode,
-            profile=body.profile,
-            endpoint=body.endpoint,
-            thinking_level=body.thinking_level,
-        )
+        effective_profile: str | None = None
+        effective_endpoint = None
+        effective_thinking = body.thinking_level
+        if body.profile is not None or body.endpoint is not None:
+            effective_endpoint, effective_thinking = resolve_run_model(
+                mode=config.mode,
+                profile=body.profile,
+                endpoint=body.endpoint,
+                thinking_level=body.thinking_level,
+            )
+            if body.profile is not None and body.profile.strip():
+                effective_profile = body.profile.strip()
         return await manager.start_resume(
             workflow_id,
             thread_id,
@@ -233,10 +248,11 @@ def build_api_router(
             complete=body.complete,
             resumes=body.resumes,
             adapter=body.adapter,
+            profile=effective_profile,
             endpoint=effective_endpoint,
             thinking_level=effective_thinking,
             persist_session=body.persist_session,
-            node_overrides=body.node_overrides or None,
+            node_overrides=body.node_overrides,
             interaction_mode=body.interaction_mode,
         )
 

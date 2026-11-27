@@ -291,6 +291,12 @@ async def test_live_hot_interaction_respond_in_place_without_restart(tmp_path: P
                 if isinstance(ev.payload, InteractionRequestEvent) and ev.payload.blocking:
                     live = await runner.get_thread_state("single_agent", ev.run_id)
                     assert live.status == "running" and not live.resumable
+                    assert live.active_run_id == "run-hot-1"
+                    assert live.inflight_nodes == ()
+                    assert len(live.interrupts) == 1
+                    assert live.interrupts[0].kind == "agent_interaction"
+                    assert live.interrupts[0].interaction is not None
+                    assert live.interrupts[0].interaction.request_id == ev.payload.request_id
                     with pytest.raises(ValueError, match="already running"):
                         await anext(runner.resume("single_agent", ev.run_id))
                     with pytest.raises(ValueError, match="already running"):

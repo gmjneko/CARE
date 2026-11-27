@@ -19,7 +19,7 @@ from agent_runtime.api import (
     build_health_router,
     register_exception_handlers,
 )
-from agent_runtime.config import ServerConfig, resolve_pi_bin
+from agent_runtime.config import ServerConfig, resolve_named_profile, resolve_pi_bin
 from agent_runtime.orchestrator import (
     PersistenceBackend,
     SqlitePersistenceBackend,
@@ -65,6 +65,7 @@ def create_app(
         effective_adapters,
         effective_workflows,
         persistence=effective_persistence,
+        profile_resolver=resolve_named_profile if cfg.mode == "local" else None,
     )
     manager = RunManager(runner, max_retained_runs=cfg.max_retained_runs)
 

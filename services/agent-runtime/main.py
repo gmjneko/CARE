@@ -15,7 +15,7 @@ from agent_runtime.adapters import (
     PiRpcConfig,
     ThinkingLevel,
 )
-from agent_runtime.config import resolve_pi_bin, resolve_run_model
+from agent_runtime.config import resolve_named_profile, resolve_pi_bin, resolve_run_model
 from agent_runtime.orchestrator import SqlitePersistenceBackend, WorkflowBuilder, WorkflowRunner
 from agent_runtime.paths import checkpoints_db_path
 from agent_runtime.protocol import (
@@ -139,6 +139,7 @@ def run(
             adapter_registry,
             workflow_registry,
             persistence=SqlitePersistenceBackend(effective_checkpoint_db),
+            profile_resolver=resolve_named_profile,
         )
         async with RunManager(runner) as manager:
             if json_output:

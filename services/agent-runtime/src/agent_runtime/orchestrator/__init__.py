@@ -2,6 +2,7 @@
 
 from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.live_runs import (
+    ActiveRunInfo,
     ExecutionContext,
     InteractionHandler,
     InteractionMode,
@@ -33,11 +34,19 @@ from agent_runtime.orchestrator.registry import (
     WorkflowDefinition,
     WorkflowRegistry,
 )
-from agent_runtime.orchestrator.runner import WorkflowRunner
-from agent_runtime.orchestrator.state import NodeOutput, WorkflowState, WorkflowStatus
+from agent_runtime.orchestrator.runner import ProfileResolver, WorkflowRunner
+from agent_runtime.orchestrator.state import (
+    NodeOutput,
+    PersistedEndpoint,
+    PersistedNodeOverride,
+    PersistedRunOptions,
+    WorkflowState,
+    WorkflowStatus,
+)
 
 __all__ = [
     "CHECKPOINT_SERDE",
+    "ActiveRunInfo",
     "AgentNodeConfig",
     "ExecutionContext",
     "InflightNodeRecord",
@@ -50,7 +59,11 @@ __all__ = [
     "NodeRuntimeOverride",
     "NotFoundError",
     "PendingInteraction",
+    "PersistedEndpoint",
+    "PersistedNodeOverride",
+    "PersistedRunOptions",
     "PersistenceBackend",
+    "ProfileResolver",
     "PromptBuilder",
     "ResumeInput",
     "RunOptions",
