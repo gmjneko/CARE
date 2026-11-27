@@ -18,8 +18,9 @@
    * 打破个人单机孤岛：支持 **同任务会话跨人流转与请假接管**、**任务拆解与 DAG 依赖流转**、**团队工作台看板** 以及 **组内共享工作区（代码、版本化产物、规范模板与结构化协同资产）**。
    * 场景举例：PM 借助 AI 将需求拆解为带依赖关系的子任务 DAG，审阅确认后一键派发至对应研发的待办任务中（前置完成自动解锁下游并挂载前置产物）；研发在工作中可随时将当前会话与现场流转给同事接力，员工突发请假时也可在团队看板一键将任务连同会话与阶段产物交接给替补人员继续和 AI 协同开发。
 
-2. **云端双向异步托管 + 移动端实时管控（云端模式）**
+2. **云端双向异步托管 + 多入口事件驱动管控（云端模式）**
    * 员工下班前在桌面端发起任务（或将本地做到一半的会话一键托管至云端），Agent 在带预算与风控护栏的云端隔离沙箱中持续运行；次日上班可一键将云端代码改动、新增会话与产物拉回本机继续微调（Local ↔ Cloud 双向闭环）。
+   * 支持 **IM 群聊 `@CARE` 直接派活**（自动读取群聊话题上下文拉起云端会话并回帖进度/PR 卡片）与 **事件触发器（Event-Driven Triggers）**（由监控告警、Git PR 事件、工单或定时任务自动拉起无头云端 Agent 完成排查/审查）。
    * 员工下班后可通过移动端（App / H5 / 飞书 / 企微 / 钉钉交互卡片）实时查看执行进度、发送纠偏/追加指令、审批高危或关键节点操作。
 
 ### 1.2 核心非功能与演进目标
@@ -45,25 +46,25 @@
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│                                 客户端层 (Clients)                              │
-│     Electron 桌面端 (Renderer)          Web 工作台         移动端 (H5 / IM 卡片) │
-│        │                 │                 │                       │           │
-│        │ (本地模式直连)    └─────────────────┴───────────────────────┘           │
-│        │                                   │ (云端模式 / 协作 / 审批 / 状态同步)  │
+│                          客户端与触发入口层 (Clients & Triggers)               │
+│  Electron 桌面端     Web 工作台      IM(@CARE)/H5     外部事件(Git/监控/工单)  │
+│        │       │       │                   │                    │              │
+│        │ (本地)└───────┴───────────────────┼────────────────────┘              │
+│        │                                   │ (云端 / 协作 / 审批 / Webhook)    │
 └────────┼───────────────────────────────────┼───────────────────────────────────┘
-         │ 127.0.0.1 (Token 鉴权)            │ HTTPS / WSS / SSE
+         │ 127.0.0.1 (Token 鉴权)            │ HTTPS / WSS / SSE / Webhook
          ▼                                   ▼
 ┌────────────────────────────────────┐   ┌───────────────────────────────────────────────────┐
 │  本地执行面 (Electron Sidecar)      │   │        Java 企业控制面 & 工作区后端 (Spring Boot)   │
 │                                    │   │                                                   │
 │  Python AgentRuntime (MODE=local)  │◄─►│  • 组织认证与 RBAC       • 团队工作区 & Git 映射    │
-│  ├─ LangGraph (SQLite Checkpointer)│同步│  • 版本化产物库 (OSS)    • 轻量任务 DAG & 团队看板  │
-│  ├─ 统一事件流 / 审批拦截 / MCP 代理 │   │  • 会话流转 & 租约快照   • 审批流与 IM 交互卡片     │
+│  ├─ LangGraph (SQLite Checkpointer)│同步│  • 版本化产物库 (OSS)    • 任务 DAG / 看板 / 触发器 │
+│  ├─ 统一事件流 / 审批拦截 / MCP 代理   │   │  • 会话流转 & 租约快照   • 审批流与 IM(@CARE) 网关  │
 │  └─ AgentAdapter                   │   │  • 云端沙箱调度器        • 企业 MCP Server 网关     │
 │      └─ PiRpcAdapter               │   │  • 统一 AI Gateway (LLM 代理/配额/预算/脱敏/审计)   │
 │          └─ pi --mode rpc (子进程) │   └─────────────────────────┬─────────────────────────┘
 │                                    │                             │ 沙箱调度 / 任务下发 / 事件回传
-│  宿主机：用户本机目录 & 终端         │                             ▼
+│  宿主机：用户本机目录 & 终端          │                             ▼
 └────────────────────────────────────┘   ┌───────────────────────────────────────────────────┐
                                          │      云端执行面 (Docker / K8s + gVisor 隔离沙箱)   │
                                          │                                                   │
@@ -83,7 +84,7 @@
 | :--- | :--- | :--- |
 | **TypeScript** (`Electron` / `Web` / `pi-extensions`) | 终端交互 & `pi` 扩展层 | Electron 桌面壳（拉起/守护本地 Sidecar、安全存储 SSO Token）、桌面/Web/H5 共享 UI（含工作台看板与 DAG 视图）、注入给 `pi` 的工具拦截与上下文扩展。 |
 | **Python** (`agent-runtime`) | 同构 AI 编排与执行运行时 | LangGraph 多 Agent 状态图编排、Checkpointer 持久化、`AgentAdapter` 适配层（首期 `PiRpcAdapter`）、统一事件归一化、本地/云端一致的运行协议。 |
-| **Java** (`platform-java`) | 企业控制面 & 工作区后端 | 唯一真相源（Single Source of Truth）：认证鉴权、工作区与多类共享资产、轻量任务 DAG、会话流转与租约、团队看板聚合、审批单与 IM 通知、企业 MCP Server、云端沙箱调度与 AI Gateway。 |
+| **Java** (`platform-java`) | 企业控制面 & 工作区后端 | 唯一真相源（Single Source of Truth）：认证鉴权、工作区与多类共享资产、轻量任务 DAG 与事件触发器、会话流转与租约、团队看板聚合、审批流与 IM 双向消息网关、企业 MCP Server、云端沙箱调度与 AI Gateway。 |
 
 ---
 
@@ -122,9 +123,9 @@
 
 核心领域职责：
 * **工作区与产物管理（`platform-workspace`）**：团队空间、成员角色、Git 仓库与云端沙箱环境模板关联、不可变版本化产物存储（S3/MinIO + 元数据索引）、团队共享 `AGENTS.md` / Skills 下发，以及结构化协同资产的注册与治理（默认通过企业 MCP 挂载已有系统，必要时可按需扩展内置子模块）。
-* **轻量任务 DAG 与工作台看板（`platform-task`）**：聚焦 AI 可执行交付流（避免重造重型 Jira），管理需求拆解后的 `Plan / Task` 依赖 DAG、草稿审阅与发布、基于依赖边确定性推导的 `Blocked/Ready` 状态机、前置产物版本漂移检测（Stale Dependency）、团队工作台看板聚合、请假任务转交及与外部 Jira/飞书项目的轻量关联。
+* **轻量任务 DAG、看板与事件触发器（`platform-task`）**：聚焦 AI 可执行交付流（避免重造重型 Jira），管理需求拆解后的 `Plan / Task` 依赖 DAG、草稿审阅与发布、基于依赖边确定性推导的 `Blocked/Ready` 状态机、前置产物版本漂移检测（Stale Dependency）、团队工作台看板聚合、请假任务转交、外部 Jira/飞书项目关联，以及 **Webhook / Cron 事件触发器**（事件路由、幂等去重与防风暴限流）。
 * **会话与运行记录（`platform-session`）**：Phase 1 先持久化会话与云端运行的关联、运行状态、Event Log 和事件实时分发；后续扩展为会话可见性（`Private`/`Team`）、Transfer/Fork 派生树、单写者租约锁（Single-Writer Lease）与强制抢占（Force Takeover）、跨端/跨人快照流转及交接简报（Handover Brief）。与 `platform-task` 的“任务依赖 DAG”职责严格分离。
-* **审批流与消息网关（`platform-hitl`）**：统一审批单状态机、移动端 WebSocket/SSE 推流、飞书/企微/钉钉交互式卡片推送与回调处理。
+* **审批流与 IM 双向消息网关（`platform-hitl`）**：统一审批单状态机、移动端 WebSocket/SSE 推流、飞书/企微/钉钉交互式卡片推送与回调处理，以及 **IM 群聊 `@CARE` 机器人事件接入**（权限校验、话题上下文拉取、进度/结果卡片回帖）。
 * **企业 MCP Server（`platform-mcp-server`）**：以标准 Streamable HTTP MCP 协议将工作区产物、任务上下文、结构化业务数据（如在线表格/台账，支持细粒度权限与变更草稿提案态）及内部研发/业务工具安全暴露给本地和云端所有 Agent，所有调用均校验并透传当前执行人身份。
 * **云端沙箱调度器（`platform-scheduler`）**：对接 Docker Engine / Kubernetes 管理沙箱 Pod 生命周期、环境模板、资源/预算配额、Warm Pool 预热与长等休眠回收。
 * **统一 AI Gateway（`platform-ai-gateway`）**：代理全部 LLM 请求，集中管控上游 API Key、模型路由、团队配额与无人值守预算计量、敏感词/密钥脱敏与调用审计。
@@ -200,7 +201,22 @@ Workspace（团队工作区：成员/RBAC、Git Repo、云端环境模板、共�
    * 云端任务完成、挂起或由用户手动停机时，自动生成 **Handover Brief（夜间进展简报）** 汇总改动、测试结果与未决问题；
    * 员工次日打开桌面端点击 **“拉回本地继续”**，本地 Sidecar 从云端收回单写者租约，自动拉取云端产出的 Commit / WIP Patch、增量会话快照与产物回填本机 Worktree（如期间主干分支有他人合入，引导在本地处理 rebase/合并冲突），无缝继续开发。
 
-#### 3. 云端安全、弱网续传与算力回收
+#### 3. 异步任务扩展入口：IM 群聊 `@CARE` 与事件触发器（Event-Driven Triggers）
+除在桌面端或工作台主动发起外，系统复用同一套云端沙箱、预算护栏与 IM 卡片闭环，提供两类低门槛自动化触发入口：
+1. **IM 群聊 `@CARE` 入口（Chat-to-Agent）**：
+   * 员工在飞书 / 企微 / 钉钉群聊或话题串（Thread）中直接 `@CARE` 派发任务（如排查报错、修改小功能、生成分析报告）；
+   * `platform-hitl` 接收机器人事件，校验触发人在目标工作区的 RBAC 权限，自动拉取当前话题串历史上下文（做长度截断与凭据脱敏）并路由到绑定工作区拉起云端会话；
+   * 执行期间在原群聊话题内通过交互卡片实时同步进度、承接高危审批，完成后回帖 **Handover Brief + PR / 产物链接**；成员可在话题内继续回复追问，或一键转入桌面/Web 工作台深度接续。
+2. **事件触发器（Event-Driven Triggers / Automations）**：
+   * 由 `platform-task` 统一托管触发规则（Webhook / Cron），按企业事件自动拉起无头云端工作流，典型场景包括：
+     * **监控与告警触发（Sentry / 监控 Webhook）**：线上异常自动拉起排查 Agent，结合日志、最近 Commit 与源码定位根因，将分析报告与候选修复 Draft PR 推送至值班群；
+     * **代码仓事件触发（Git PR 创建 / 更新 / 合入）**：自动执行只读 PR 审查（逻辑缺陷、权限漏洞、安全风险）与一键修复补丁建议，或在合入主干后自动发起文档 / Changelog 同步 PR；
+     * **工单与定时巡检（Jira / 飞书项目 / Cron）**：自动分诊新工单、定期巡检依赖安全漏洞或技术债。
+   * **防失控安全护栏**：
+     * **幂等去重与防风暴限流**：基于事件源 ID / 告警指纹做去重与冷却窗口（Cooldown），防止故障告警风暴瞬间打爆云端沙箱与 LLM 额度；
+     * **最小权限服务身份 + 只产草稿/PR**：事件触发任务以受限的**工作区服务账号**运行，强制绑定严格预算上限（Max Steps / Max Token）与分支隔离，**默认仅产出分析报告或 Draft PR，禁止自动合入主干或直接变更生产环境**。
+
+#### 4. 云端安全、弱网续传与算力回收
 * **强隔离沙箱**：AI 生成的代码和 `bash` 命令绝不在业务后端宿主机运行。每个云端任务运行于独立容器/沙箱（初期 Docker 非 root + CPU/内存/磁盘配额 + 出网白名单；生产演进至 K8s + gVisor / Kata / Firecracker）。
 * **断网续传**：Java 后端为每个会话维护只追加 Event Log（Redis Streams 实时推送 + PostgreSQL 持久化），移动端重连时携带 `last_seq` 补齐缺失事件，不丢进度与审批请求。
 * **长等休眠唤醒（Suspend/Resume）**：移动端审批可能延迟数小时。若审批挂起超过阈值（如 30 分钟），调度器自动固化工作区快照与 LangGraph Checkpoint 并销毁计算容器释放算力；用户点击审批后再秒级拉起沙箱恢复执行。
@@ -215,10 +231,10 @@ Workspace（团队工作区：成员/RBAC、Git Repo、云端环境模板、共�
 | 能力域 | 归属方 | 协议与交互方式 |
 | :--- | :--- | :--- |
 | 组织鉴权、工作区、版本化产物库与结构化协同资产 | **Java** | 对客户端提供 REST/WS；对本地/云端 Agent 提供 **Streamable HTTP MCP Server** |
-| 轻量任务 DAG、待办派发、版本漂移检测与团队看板 | **Java** | 客户端走 REST + WSS；按需通过 MCP/Webhook 关联同步外部 Jira / 飞书项目 |
+| 轻量任务 DAG、待办派发、版本漂移检测、事件触发器与团队看板 | **Java** | 客户端走 REST + WSS；接收外部 Git / 监控 / 工单 Webhook 与 Cron 触发；按需通过 MCP/Webhook 关联外部 Jira / 飞书项目 |
 | 会话元数据、可见性、Transfer/Fork、租约锁与强制抢占、Event Log 分发 | **Java** | 客户端走 REST + WSS；Python Runtime 上报带 `seq` 的 `CanonicalEvent` 写入 Redis Streams + DB |
 | 单 Agent 执行 & LangGraph 多 Agent 编排 | **Python** | 暴露统一 Runtime API：`/sessions/{id}/run`、`/steer`、`/follow-up`、`/abort`、`/checkpoint` |
-| 工具级 & 节点级审批闭环 | **Python + Java** | Python 挂起并上报 `approval.requested` -> Java 创建审批单并推 IM/移动端卡片 -> 用户操作后 Java 回调 Python `/approvals/{id}/resolve` 或触发沙箱唤醒恢复 |
+| 工具级/节点级审批闭环 & IM 群聊 `@CARE` 触发 | **Python + Java** | Python 上报 `approval.requested` -> Java 推 IM/移动端卡片回调；IM 机器人 `@CARE` 事件经 `platform-hitl` 拉取话题上下文并路由拉起云端会话 |
 
 ### 4.2 轻量契约与 Codegen 同步策略
 
@@ -302,9 +318,9 @@ CARE/
 │       ├── platform-common/                # 契约 DTO、统一异常、安全上下文、审计注解
 │       ├── platform-auth/                  # 企业 SSO（OIDC/飞书/企微）、组织架构、RBAC
 │       ├── platform-workspace/             # 团队工作区、Git 映射、环境模板、版本化产物库、团队 Skills（按需扩展结构化资产）
-│       ├── platform-task/                  # 轻量任务 DAG、草稿审阅发布、依赖状态推导、版本漂移与工作台看板
+│       ├── platform-task/                  # 轻量任务 DAG、草稿审阅发布、依赖状态推导、版本漂移、看板与事件触发器
 │       ├── platform-session/               # 会话可见性、Transfer/Fork 派生树、单写者租约与强制抢占、Event Log
-│       ├── platform-hitl/                  # 审批状态机、IM 交互卡片推送与回调、移动端推流
+│       ├── platform-hitl/                  # 审批状态机、IM 交互卡片推送与回调、IM 群聊 @CARE 接入、移动端推流
 │       ├── platform-scheduler/             # 云端沙箱调度（Docker/K8s、Warm Pool、休眠唤醒）
 │       ├── platform-mcp-server/            # 企业 MCP Server（暴露工作区/任务/产物/结构化业务数据，含草稿提案与审计）
 │       ├── platform-ai-gateway/            # 统一 LLM 代理网关（模型路由、配额、脱敏、审计）
@@ -350,9 +366,11 @@ Phase 1 的会话能力以单个会话和单次云端运行的关联为中心，
 * 上线 `platform-workspace`（团队工作区、Git Worktree/分支隔离、云端环境模板、不可变版本化 Artifact Store、团队 Skills 下发）。
 * 扩展 `platform-session`：补齐 `Private/Team` 可见性、**Transfer / Fork 流转**、单写者租约与离线请假强制抢占（Force Takeover）、移交时历史脱敏及执行人 RBAC 身份强制切换。
 * 上线 `platform-mcp-server`，打通工作区产物、结构化协同资产（如对接企业已有在线表格/台账，含细粒度权限与 AI 草稿建议态）及内部工具的受控接入。
+* 在 `platform-hitl` 补齐 **IM 群聊 `@CARE` 触发入口**，支持在飞书 / 企微 / 钉钉话题串内直接拉取讨论上下文启动云端会话并回帖进度与 PR / 产物卡片。
 
-### Phase 3：轻量任务 DAG、团队工作台看板与多 Agent 深度编排
+### Phase 3：轻量任务 DAG、团队工作台看板、事件触发器与多 Agent 深度编排
 * 上线 `platform-task` 与团队工作台看板：支持 AI 拆解子任务 DAG（Draft 审阅 → Publish 派发）、`Blocked/Ready` 自动推导、前置产物挂载与版本漂移告警（Stale Dependency）、请假一键转交任务与会话，以及与外部 Jira/飞书项目的轻量关联。
+* 上线 **事件触发器（Event-Driven Triggers）**：支持监控告警自排查、Git PR 自动审查/修复建议、定时巡检等无头云端工作流，配套告警去重限流、受限服务账号与仅产 Draft PR 护栏。
 * 沉淀企业多 Agent 图模板（如：需求拆分 → 研发实现 → 自动测试/评审 → 人工确认合入）。
 * 接入第二个 `AgentAdapter`（如 Codex / Claude Code），验证多 Agent 混编及跨 Adapter 基于 `canonical_history + Handover Brief` 的降级流转。
 
