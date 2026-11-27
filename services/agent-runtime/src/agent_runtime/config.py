@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
+from agent_runtime.errors import InvalidInputError
 from agent_runtime.settings import load_local_settings
 
 RuntimeMode = Literal["local", "cloud"]
@@ -135,10 +136,12 @@ def resolve_run_model(
 ) -> tuple[ModelEndpoint | None, ThinkingLevel | None]:
     """Resolve effective ModelEndpoint and thinking level according to local/cloud mode rules."""
     if profile is not None and endpoint is not None:
-        raise ValueError("Cannot specify both 'profile' and 'endpoint'")
+        raise InvalidInputError("Cannot specify both 'profile' and 'endpoint'")
     if mode == "cloud":
         if profile is not None:
-            raise ValueError("'profile' is only supported in local mode; pass 'endpoint' directly")
+            raise InvalidInputError(
+                "'profile' is only supported in local mode; pass 'endpoint' directly"
+            )
         return endpoint, thinking_level
     if endpoint is not None:
         return endpoint, thinking_level

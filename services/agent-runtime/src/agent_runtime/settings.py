@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
+from agent_runtime.errors import NotFoundError
 from agent_runtime.paths import (
     DEFAULT_SETTINGS_FILENAME,
     resolve_care_home,
@@ -91,7 +92,7 @@ class LocalSettings(BaseModel):
             return self.profiles[target]
         except KeyError as exc:
             available = ", ".join(sorted(self.profiles)) or "<none>"
-            raise KeyError(
+            raise NotFoundError(
                 f"Unknown model profile '{target}'. Configured profiles: {available}"
             ) from exc
 

@@ -11,12 +11,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator import (
     InteractionHandler,
     InteractionMode,
     NodeRuntimeOverride,
     ResumeInput,
-    StateConflictError,
     ThreadState,
     WorkflowBuilder,
     WorkflowRunner,
@@ -111,6 +111,88 @@ class _ManagedRun:
             self.condition.notify_all()
         if self._on_complete is not None:
             self._on_complete()
+
+
+class RunSubscription(AsyncIterator[RuntimeEvent]):
+    """Race-free event stream handle holding an active subscriber lease until closed.
+
+    Acquiring the lease synchronously inside `RunManager.subscribe()` guarantees that a completed
+    run cannot be evicted between route validation and the first `anext()` pull.
+    """
+
+    def __init__(
+        self,
+        manager: RunManager,
+        managed: _ManagedRun,
+        *,
+        after_seq: int,
+    ) -> None:
+        self._manager = manager
+        self._managed = managed
+        self._after_seq = after_seq
+        self._released = False
+        self._managed.active_subscribers += 1
+        self._gen = self._iterate()
+
+    @property
+    def run_id(self) -> str:
+        return self._managed.run_id
+
+    @property
+    def thread_id(self) -> str:
+        return self._managed.thread_id
+
+    @property
+    def workflow_id(self) -> str:
+        return self._managed.workflow_id
+
+    @property
+    def last_seq(self) -> int:
+        return self._managed.events[-1].seq if self._managed.events else 0
+
+    def __aiter__(self) -> RunSubscription:
+        return self
+
+    async def __anext__(self) -> RuntimeEvent:
+        return await self._gen.__anext__()
+
+    async def aclose(self) -> None:
+        try:
+            await self._gen.aclose()
+        finally:
+            self._release()
+
+    def __del__(self) -> None:
+        self._release()
+
+    def _release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._managed.active_subscribers -= 1
+            if self._managed.done and self._managed.active_subscribers == 0:
+                self._manager._prune_completed_runs()
+
+    async def _iterate(self) -> AsyncIterator[RuntimeEvent]:
+        cursor = self._after_seq
+        try:
+            while True:
+                async with self._managed.condition:
+                    while cursor >= len(self._managed.events) and not self._managed.done:
+                        await self._managed.condition.wait()
+                    batch = self._managed.events[cursor:]
+                    cursor += len(batch)
+                    done = self._managed.done
+                    exc = self._managed.exception
+
+                for event in batch:
+                    yield event
+
+                if done:
+                    if exc is not None:
+                        raise exc
+                    return
+        finally:
+            self._release()
 
 
 class RunManager:
@@ -230,39 +312,17 @@ class RunManager:
         )
         return await self._launch(stream)
 
-    async def subscribe(
+    def subscribe(
         self,
         run_id: str,
         *,
         after_seq: int = 0,
-    ) -> AsyncIterator[RuntimeEvent]:
-        """Replay events with `seq > after_seq` and stream live updates until the run finishes."""
+    ) -> RunSubscription:
+        """Synchronously reserve a replayable stream handle (`seq > after_seq`) with zero TOCTOU."""
         if after_seq < 0:
-            raise ValueError("after_seq must be non-negative")
+            raise InvalidInputError("after_seq must be non-negative")
         managed = self._require_run(run_id)
-        cursor = after_seq
-        managed.active_subscribers += 1
-        try:
-            while True:
-                async with managed.condition:
-                    while cursor >= len(managed.events) and not managed.done:
-                        await managed.condition.wait()
-                    batch = managed.events[cursor:]
-                    cursor += len(batch)
-                    done = managed.done
-                    exc = managed.exception
-
-                for event in batch:
-                    yield event
-
-                if done:
-                    if exc is not None:
-                        raise exc
-                    return
-        finally:
-            managed.active_subscribers -= 1
-            if managed.done and managed.active_subscribers == 0:
-                self._prune_completed_runs()
+        return RunSubscription(self, managed, after_seq=after_seq)
 
     async def wait(self, run_id: str) -> RunSnapshot:
         """Await background completion of `run_id`, re-raising any unhandled run exception."""
@@ -289,29 +349,29 @@ class RunManager:
         self._require_run(run_id)
         try:
             await self._runner.respond_interaction(run_id, response, node_id=node_id)
-        except KeyError as exc:
-            raise StateConflictError(_key_error_message(exc)) from exc
+        except NotFoundError as exc:
+            raise StateConflictError(str(exc)) from exc
 
     async def steer(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
         self._require_run(run_id)
         try:
             await self._runner.steer(run_id, message, node_id=node_id)
-        except KeyError as exc:
-            raise StateConflictError(_key_error_message(exc)) from exc
+        except NotFoundError as exc:
+            raise StateConflictError(str(exc)) from exc
 
     async def follow_up(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
         self._require_run(run_id)
         try:
             await self._runner.follow_up(run_id, message, node_id=node_id)
-        except KeyError as exc:
-            raise StateConflictError(_key_error_message(exc)) from exc
+        except NotFoundError as exc:
+            raise StateConflictError(str(exc)) from exc
 
     async def abort(self, run_id: str) -> None:
         self._require_run(run_id)
         try:
             await self._runner.abort(run_id)
-        except KeyError as exc:
-            raise StateConflictError(_key_error_message(exc)) from exc
+        except NotFoundError as exc:
+            raise StateConflictError(str(exc)) from exc
 
     async def suspend(self, run_id: str) -> None:
         managed = self._require_run(run_id)
@@ -379,12 +439,8 @@ class RunManager:
     def _require_run(self, run_id: str) -> _ManagedRun:
         managed = self._runs.get(run_id)
         if managed is None:
-            raise KeyError(f"Unknown run_id '{run_id}'")
+            raise NotFoundError(f"Unknown run_id '{run_id}'")
         return managed
 
 
-def _key_error_message(exc: KeyError) -> str:
-    return str(exc.args[0]) if exc.args else str(exc)
-
-
-__all__ = ["RunManager", "RunSnapshot", "RunStatus"]
+__all__ = ["RunManager", "RunSnapshot", "RunStatus", "RunSubscription"]

@@ -196,3 +196,40 @@ async def test_run_manager_preflight_validation_and_background_exception_propaga
         failed_snap = manager_err.get_run(err_snap.run_id)
         assert failed_snap.status == "failed"
         assert failed_snap.error is not None and "Malformed JSON" in failed_snap.error
+
+
+async def test_subscribe_pins_completed_run_synchronously_against_pruning(tmp_path: Path) -> None:
+    """Gap: async-generator subscribe() deferred active_subscribers += 1 until first anext(),
+    allowing _prune_completed_runs() to evict a completed run in the TOCTOU window."""
+    adapter = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "standard"),
+            request_timeout_s=10.0,
+        )
+    )
+    runner = WorkflowRunner(
+        AdapterRegistry({"pi": adapter}),
+        create_default_workflow_registry(),
+        persistence=SqlitePersistenceBackend(":memory:"),
+    )
+    async with RunManager(runner, max_retained_runs=1) as manager:
+        s1 = await manager.start_run("single_agent", "First", tmp_path, run_id="pin-run-1")
+        await manager.wait(s1.run_id)
+
+        # Acquire subscription handle BEFORE pulling any item from it.
+        sub1 = manager.subscribe(s1.run_id)
+
+        # Completing a second run triggers _prune_completed_runs() with max_retained_runs=1,
+        # which must NOT evict pin-run-1 while sub1 holds an active lease.
+        s2 = await manager.start_run("single_agent", "Second", tmp_path, run_id="pin-run-2")
+        await manager.wait(s2.run_id)
+
+        assert manager.get_run("pin-run-1").status == "completed"
+        replayed = [ev async for ev in sub1]
+        assert replayed[0].payload.type == "workflow.started"
+        assert replayed[-1].payload.type == "workflow.completed"
+
+        # Once sub1 finishes and releases its lease, pin-run-1 is pruned down to max_retained_runs.
+        with pytest.raises(KeyError, match="Unknown run_id 'pin-run-1'"):
+            manager.get_run("pin-run-1")
+        assert manager.get_run("pin-run-2").status == "completed"

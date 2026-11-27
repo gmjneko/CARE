@@ -1,5 +1,6 @@
 """LangGraph multi-agent workflow orchestration engine."""
 
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.live_runs import (
     ExecutionContext,
     InteractionHandler,
@@ -8,7 +9,6 @@ from agent_runtime.orchestrator.live_runs import (
     NodeRuntimeOverride,
     PendingInteraction,
     RunOptions,
-    StateConflictError,
 )
 from agent_runtime.orchestrator.node import (
     AgentNodeConfig,
@@ -44,9 +44,11 @@ __all__ = [
     "InflightNodeStore",
     "InteractionHandler",
     "InteractionMode",
+    "InvalidInputError",
     "LiveRunRegistry",
     "NodeOutput",
     "NodeRuntimeOverride",
+    "NotFoundError",
     "PendingInteraction",
     "PersistenceBackend",
     "PromptBuilder",

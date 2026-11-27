@@ -15,7 +15,6 @@ from agent_runtime.api.schemas import (
 )
 from agent_runtime.api.sse import (
     build_sse_response,
-    format_sse_error,
     format_sse_event,
     resolve_after_seq,
 )
@@ -34,7 +33,6 @@ __all__ = [
     "build_api_router",
     "build_health_router",
     "build_sse_response",
-    "format_sse_error",
     "format_sse_event",
     "register_exception_handlers",
     "resolve_after_seq",

@@ -9,6 +9,7 @@ from typing import Any, Literal
 from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime.errors import InvalidInputError, NotFoundError
 from agent_runtime.orchestrator.node import (
     AGENT_RESUME_ACTION_KEY,
     AGENT_RESUME_PROMPT_KEY,
@@ -88,7 +89,7 @@ async def inspect_thread(
         {"configurable": {"thread_id": thread_id}}, subgraphs=True
     )
     if not snapshot.values and not snapshot.next:
-        raise KeyError(f"No checkpoint found for thread_id '{thread_id}'")
+        raise NotFoundError(f"No checkpoint found for thread_id '{thread_id}'")
 
     outputs = dict(snapshot.values.get("node_outputs", {}))
     sessions = dict(snapshot.values.get("node_sessions", {}))
@@ -263,16 +264,18 @@ def resolve_resume_plan(
             or prompt is not None
             or complete
         ):
-            raise ValueError("Cannot combine 'resumes' with single-branch resume parameters")
+            raise InvalidInputError("Cannot combine 'resumes' with single-branch resume parameters")
         if not resumes:
-            raise ValueError("'resumes' must specify at least one target node_id")
+            raise InvalidInputError("'resumes' must specify at least one target node_id")
         for target_node, inp in resumes.items():
             matches = [item for item in state.interrupts if item.node_id == target_node]
             if not matches:
                 pending = ", ".join(item.node_id for item in state.interrupts)
-                raise ValueError(f"Node '{target_node}' is not paused; pending nodes: [{pending}]")
+                raise InvalidInputError(
+                    f"Node '{target_node}' is not paused; pending nodes: [{pending}]"
+                )
             if len(matches) > 1:
-                raise ValueError(f"Node '{target_node}' has multiple active interrupts")
+                raise InvalidInputError(f"Node '{target_node}' has multiple active interrupts")
             targets.append((matches[0], inp))
     else:
         single = ResumeInput(
@@ -285,9 +288,11 @@ def resolve_resume_plan(
             matches = [item for item in state.interrupts if item.node_id == node_id]
             if not matches:
                 pending = ", ".join(item.node_id for item in state.interrupts)
-                raise ValueError(f"Node '{node_id}' is not paused; pending nodes: [{pending}]")
+                raise InvalidInputError(
+                    f"Node '{node_id}' is not paused; pending nodes: [{pending}]"
+                )
             if len(matches) > 1:
-                raise ValueError(f"Node '{node_id}' has multiple active interrupts")
+                raise InvalidInputError(f"Node '{node_id}' has multiple active interrupts")
             targets.append((matches[0], single))
         elif len(state.interrupts) == 1:
             targets.append((state.interrupts[0], single))
@@ -302,12 +307,12 @@ def resolve_resume_plan(
                 targets.append((matches[0], single))
             elif len(matches) > 1:
                 nodes = ", ".join(item.node_id for item in matches)
-                raise ValueError(
+                raise InvalidInputError(
                     f"Multiple pending nodes share request_id "
                     f"'{interaction_response.request_id}' ({nodes}); specify node_id"
                 )
             else:
-                raise ValueError("Interaction request_id does not match any pending request")
+                raise InvalidInputError("Interaction request_id does not match any pending request")
         elif (
             all(item.kind == "crashed" for item in state.interrupts)
             and not state.inflight_nodes
@@ -318,7 +323,7 @@ def resolve_resume_plan(
             targets = [(item, single) for item in state.interrupts]
         else:
             pending = ", ".join(item.node_id for item in state.interrupts)
-            raise ValueError(
+            raise InvalidInputError(
                 f"Multiple nodes are paused ({pending}); specify node_id, "
                 "a matching interaction_response, or resumes"
             )
@@ -330,7 +335,7 @@ def resolve_resume_plan(
 
     for item, inp in targets:
         if inp.complete and item.kind != "awaiting_input":
-            raise ValueError(
+            raise InvalidInputError(
                 f"complete=True is only valid for awaiting_input nodes, "
                 f"not '{item.node_id}' ({item.kind})"
             )
@@ -338,7 +343,7 @@ def resolve_resume_plan(
             if item.interaction is not None:
                 if inp.interaction_response is not None:
                     if inp.interaction_response.request_id != item.interaction.request_id:
-                        raise ValueError(
+                        raise InvalidInputError(
                             "Interaction request_id does not match the pending request"
                         )
                     raw_decision: Any = inp.interaction_response.model_dump()
@@ -361,7 +366,7 @@ def resolve_resume_plan(
                     )
                 )
                 if decision is None:
-                    raise ValueError(
+                    raise InvalidInputError(
                         f"Workflow interrupt on '{item.node_id}' requires a resume value"
                     )
             if needs_crash_replay:
@@ -378,23 +383,23 @@ def resolve_resume_plan(
             if item.node_id in wal_nodes:
                 staged_replies[item.node_id] = {AGENT_RESUME_PROMPT_KEY: text}
             elif text is not None:
-                raise ValueError(
+                raise InvalidInputError(
                     "Cannot pass a continuation prompt when resuming a crash with no started "
                     "agent turn"
                 )
         elif item.kind == "awaiting_input":
             if inp.interaction_response is not None:
-                raise ValueError(
+                raise InvalidInputError(
                     f"Waiting node '{item.node_id}' does not accept interaction_response"
                 )
             if inp.resume_value is not None:
-                raise ValueError(
+                raise InvalidInputError(
                     f"Waiting node '{item.node_id}' does not accept resume_value; "
                     "pass a non-empty 'prompt' or complete=True"
                 )
             has_prompt = bool(inp.prompt and inp.prompt.strip())
             if inp.complete and has_prompt:
-                raise ValueError(
+                raise InvalidInputError(
                     f"Waiting node '{item.node_id}' cannot combine 'prompt' and complete=True"
                 )
             if inp.complete:
@@ -406,7 +411,7 @@ def resolve_resume_plan(
                     AGENT_RESUME_PROMPT_KEY: inp.prompt.strip(),
                 }
             else:
-                raise ValueError(
+                raise InvalidInputError(
                     f"Waiting node '{item.node_id}' requires a non-empty 'prompt' or complete=True"
                 )
             if needs_crash_replay:
@@ -451,14 +456,14 @@ def format_resume_prompt(
 ) -> str | None:
     """将冷恢复时的用户审批裁决或问题回答格式化为续接指令（同时支持直接传入补充 prompt）。"""
     if pending_interaction is not None and interaction_response is None:
-        raise ValueError(
+        raise InvalidInputError(
             f"A response for request_id '{pending_interaction.request_id}' is required"
         )
     if interaction_response is not None and (
         pending_interaction is None
         or interaction_response.request_id != pending_interaction.request_id
     ):
-        raise ValueError("Interaction request_id does not match the pending request")
+        raise InvalidInputError("Interaction request_id does not match the pending request")
     parts: list[str] = []
     if interaction_response is not None:
         assert pending_interaction is not None
@@ -468,7 +473,7 @@ def format_resume_prompt(
                 parts.append(f"The user cancelled the question ({title}).")
             else:
                 if interaction_response.value is None:
-                    raise ValueError("Answering a pending question requires a value")
+                    raise InvalidInputError("Answering a pending question requires a value")
                 answer = interaction_response.value
                 parts.append(f"The user answered your question ({title}): {answer}")
         else:

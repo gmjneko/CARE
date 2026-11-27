@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from agent_runtime.protocol.redaction import redact_sensitive_text
 
@@ -305,6 +305,28 @@ class WorkflowCompletedEvent(BaseModel):
     failure: AgentFailure | None = None
 
 
+class RuntimeErrorEvent(BaseModel):
+    """Terminal runtime/transport error frame when a run stream terminates with an exception."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["runtime.error"] = "runtime.error"
+    code: Literal["adapter_error", "internal_error"]
+    message: str
+
+    @classmethod
+    def from_raw(
+        cls,
+        *,
+        code: Literal["adapter_error", "internal_error"],
+        message: str,
+    ) -> RuntimeErrorEvent:
+        return cls(
+            code=code,
+            message=redact_sensitive_text(message, max_chars=512),
+        )
+
+
 WorkflowEvent = Annotated[
     WorkflowStartedEvent
     | WorkflowResumedEvent
@@ -333,7 +355,8 @@ RuntimeEventPayload = Annotated[
     | NodeStartedEvent
     | NodeCompletedEvent
     | WorkflowInterruptedEvent
-    | WorkflowCompletedEvent,
+    | WorkflowCompletedEvent
+    | RuntimeErrorEvent,
     Field(discriminator="type"),
 ]
 
@@ -343,7 +366,7 @@ class RuntimeEvent(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    seq: int
+    seq: int = Field(ge=1)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     run_id: str
     thread_id: str
@@ -351,6 +374,7 @@ class RuntimeEvent(BaseModel):
     node_id: str | None = None
     payload: RuntimeEventPayload
 
+    @computed_field
     @property
     def is_ephemeral(self) -> bool:
         return self.payload.type in EPHEMERAL_EVENT_TYPES

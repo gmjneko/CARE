@@ -9,12 +9,11 @@ from pydantic import SecretStr, ValidationError
 
 from agent_runtime.adapters import ModelEndpoint
 from agent_runtime.api import (
-    format_sse_error,
     format_sse_event,
     resolve_after_seq,
 )
 from agent_runtime.config import ServerConfig, resolve_pi_bin, resolve_run_model
-from agent_runtime.protocol import RuntimeEvent, TextDeltaEvent
+from agent_runtime.protocol import RuntimeErrorEvent, RuntimeEvent, TextDeltaEvent
 from agent_runtime.settings import LocalSettings, ModelProfile, save_local_settings
 
 
@@ -139,13 +138,25 @@ def test_sse_formatting_and_error_redaction() -> None:
     assert frame.startswith("id: 7\nevent: text.delta\ndata: ")
     assert frame.endswith("\n\n")
     assert '"delta":"hello"' in frame
+    assert '"is_ephemeral":true' in frame
 
-    err_frame = format_sse_error(
-        "adapter_error",
-        "Upstream failed with Authorization: Bearer topsecret123 and sk-1234567890abcdef1234567890",
+    err_event = RuntimeEvent(
+        seq=8,
+        run_id="run-1",
+        thread_id="thread-1",
+        workflow_id="single_agent",
+        payload=RuntimeErrorEvent.from_raw(
+            code="adapter_error",
+            message=(
+                "Upstream failed with Authorization: Bearer topsecret123 "
+                "and sk-1234567890abcdef1234567890"
+            ),
+        ),
     )
-    assert err_frame.startswith("event: runtime.error\ndata: ")
+    err_frame = format_sse_event(err_event)
+    assert err_frame.startswith("id: 8\nevent: runtime.error\ndata: ")
     assert err_frame.endswith("\n\n")
+    assert '"is_ephemeral":false' in err_frame
     assert "topsecret123" not in err_frame
     assert "sk-1234567890abcdef1234567890" not in err_frame
 

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -101,6 +102,30 @@ def create_app(
             adapter_registry=effective_adapters,
         )
     )
+
+    # FastAPI merges a default `type: "string"` for non-JSON `text/*` response classes even when
+    # `responses[200]` supplies a Pydantic `model`; strip the conflicting `type` next to `$ref`.
+    default_openapi = app.openapi
+
+    def _openapi() -> dict[str, Any]:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = default_openapi()
+        sse_schema = (
+            schema.get("paths", {})
+            .get("/runs/{run_id}/events", {})
+            .get("get", {})
+            .get("responses", {})
+            .get("200", {})
+            .get("content", {})
+            .get("text/event-stream", {})
+            .get("schema")
+        )
+        if isinstance(sse_schema, dict) and "$ref" in sse_schema:
+            sse_schema.pop("type", None)
+        return schema
+
+    app.openapi = _openapi  # type: ignore[method-assign]
     return app
 
 

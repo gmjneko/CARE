@@ -1,4 +1,4 @@
-"""Export cross-language canonical event JSON Schema from RuntimeEvent.
+"""Export cross-language canonical event JSON Schema (Draft-07) from RuntimeEvent.
 
 Usage:
     uv run python scripts/export_contracts.py          # write contracts/canonical-event.schema.json
@@ -14,7 +14,7 @@ from typing import Any
 
 from agent_runtime.protocol import RuntimeEvent
 
-SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
+SCHEMA_DRAFT = "http://json-schema.org/draft-07/schema#"
 SCHEMA_ID = "https://care.local/contracts/canonical-event.schema.json"
 
 
@@ -23,12 +23,52 @@ def default_schema_path() -> Path:
     return repo_root / "contracts" / "canonical-event.schema.json"
 
 
+def _normalize_draft07(node: Any) -> Any:
+    """Normalize Pydantic's Draft 2020-12 output into Draft-07 for TS/Java/Python codegen."""
+    if isinstance(node, list):
+        return [_normalize_draft07(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "$defs":
+            out["definitions"] = _normalize_draft07(value)
+        elif key == "const":
+            out["enum"] = [_normalize_draft07(value)]
+        else:
+            out[key] = _normalize_draft07(value)
+
+    # Collapse primitive nullable `anyOf: [{type: T}, {type: "null"}]` into `type: [T, "null"]`.
+    any_of = out.get("anyOf")
+    if isinstance(any_of, list) and len(any_of) == 2:
+        non_null = [branch for branch in any_of if branch != {"type": "null"}]
+        if len(non_null) == 1 and isinstance(non_null[0], dict):
+            primary = non_null[0]
+            primary_type = primary.get("type")
+            if isinstance(primary_type, str) and "$ref" not in primary:
+                del out["anyOf"]
+                for pkey, pval in primary.items():
+                    if pkey == "type":
+                        out["type"] = [primary_type, "null"]
+                    elif pkey == "enum" and isinstance(pval, list):
+                        out["enum"] = [*pval, None] if None not in pval else list(pval)
+                    else:
+                        out[pkey] = pval
+
+    return out
+
+
 def build_canonical_event_schema() -> dict[str, Any]:
-    schema = RuntimeEvent.model_json_schema(mode="serialization")
+    raw_schema = RuntimeEvent.model_json_schema(
+        mode="serialization",
+        ref_template="#/definitions/{model}",
+    )
+    normalized = _normalize_draft07(raw_schema)
     return {
         "$schema": SCHEMA_DRAFT,
         "$id": SCHEMA_ID,
-        **schema,
+        **normalized,
     }
 
 

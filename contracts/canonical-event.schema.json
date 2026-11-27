@@ -1,19 +1,17 @@
 {
-  "$defs": {
+  "$id": "https://care.local/contracts/canonical-event.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AgentFailure": {
       "description": "Structured, redacted failure metadata for routing and diagnostics.",
       "properties": {
         "code": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Code"
+          "title": "Code",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "failure_class": {
           "enum": [
@@ -55,32 +53,26 @@
           "type": "string"
         },
         "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Reason"
+          "title": "Reason",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "summary": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Summary"
+          "title": "Summary",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "type": {
-          "const": "compaction",
           "default": "compaction",
+          "enum": [
+            "compaction"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -94,17 +86,13 @@
     "InteractionRequestEvent": {
       "properties": {
         "arguments": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "additionalProperties": true,
           "default": null,
-          "title": "Arguments"
+          "title": "Arguments",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "blocking": {
           "default": true,
@@ -112,20 +100,17 @@
           "type": "boolean"
         },
         "input_mode": {
-          "anyOf": [
-            {
-              "enum": [
-                "select",
-                "text"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Input Mode"
+          "enum": [
+            "select",
+            "text",
+            null
+          ],
+          "title": "Input Mode",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "kind": {
           "enum": [
@@ -137,75 +122,57 @@
           "type": "string"
         },
         "message": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Message"
+          "title": "Message",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "options": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Options"
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "request_id": {
           "title": "Request Id",
           "type": "string"
         },
         "title": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Title"
+          "title": "Title",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool_call_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Tool Call Id"
+          "title": "Tool Call Id",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Tool Name"
+          "title": "Tool Name",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "type": {
-          "const": "interaction.request",
           "default": "interaction.request",
+          "enum": [
+            "interaction.request"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -220,16 +187,12 @@
     "MessageCompletedEvent": {
       "properties": {
         "model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Model"
+          "title": "Model",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "role": {
           "enum": [
@@ -244,27 +207,25 @@
           "type": "string"
         },
         "thinking": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Thinking"
+          "title": "Thinking",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "type": {
-          "const": "message.completed",
           "default": "message.completed",
+          "enum": [
+            "message.completed"
+          ],
           "title": "Type",
           "type": "string"
         },
         "usage": {
           "anyOf": [
             {
-              "$ref": "#/$defs/TokenUsage"
+              "$ref": "#/definitions/TokenUsage"
             },
             {
               "type": "null"
@@ -285,7 +246,7 @@
         "failure": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentFailure"
+              "$ref": "#/definitions/AgentFailure"
             },
             {
               "type": "null"
@@ -317,15 +278,17 @@
           "type": "string"
         },
         "type": {
-          "const": "node.completed",
           "default": "node.completed",
+          "enum": [
+            "node.completed"
+          ],
           "title": "Type",
           "type": "string"
         },
         "usage": {
           "anyOf": [
             {
-              "$ref": "#/$defs/TokenUsage"
+              "$ref": "#/definitions/TokenUsage"
             },
             {
               "type": "null"
@@ -345,16 +308,12 @@
     "NodeStartedEvent": {
       "properties": {
         "adapter": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Adapter"
+          "title": "Adapter",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "node_id": {
           "title": "Node Id",
@@ -365,8 +324,10 @@
           "type": "string"
         },
         "type": {
-          "const": "node.started",
           "default": "node.started",
+          "enum": [
+            "node.started"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -384,7 +345,7 @@
         "failure": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentFailure"
+              "$ref": "#/definitions/AgentFailure"
             },
             {
               "type": "null"
@@ -395,7 +356,7 @@
         "interaction": {
           "anyOf": [
             {
-              "$ref": "#/$defs/InteractionRequestEvent"
+              "$ref": "#/definitions/InteractionRequestEvent"
             },
             {
               "type": "null"
@@ -404,16 +365,12 @@
           "default": null
         },
         "interrupt_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Interrupt Id"
+          "title": "Interrupt Id",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "kind": {
           "enum": [
@@ -453,28 +410,20 @@
           "type": "integer"
         },
         "error": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Error"
+          "title": "Error",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "max_attempts": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Max Attempts"
+          "title": "Max Attempts",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "phase": {
           "enum": [
@@ -485,20 +434,18 @@
           "type": "string"
         },
         "succeeded": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Succeeded"
+          "title": "Succeeded",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "type": {
-          "const": "retry",
           "default": "retry",
+          "enum": [
+            "retry"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -507,6 +454,37 @@
         "phase"
       ],
       "title": "RetryEvent",
+      "type": "object"
+    },
+    "RuntimeErrorEvent": {
+      "description": "Terminal runtime/transport error frame when a run stream terminates with an exception.",
+      "properties": {
+        "code": {
+          "enum": [
+            "adapter_error",
+            "internal_error"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "default": "runtime.error",
+          "enum": [
+            "runtime.error"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "RuntimeErrorEvent",
       "type": "object"
     },
     "TextDeltaEvent": {
@@ -521,8 +499,10 @@
           "type": "string"
         },
         "type": {
-          "const": "text.delta",
           "default": "text.delta",
+          "enum": [
+            "text.delta"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -545,8 +525,10 @@
           "type": "string"
         },
         "type": {
-          "const": "thinking.delta",
           "default": "thinking.delta",
+          "enum": [
+            "thinking.delta"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -587,16 +569,12 @@
     "ToolCompletedEvent": {
       "properties": {
         "duration_ms": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Duration Ms"
+          "title": "Duration Ms",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "is_error": {
           "default": false,
@@ -616,8 +594,10 @@
           "type": "string"
         },
         "type": {
-          "const": "tool.completed",
           "default": "tool.completed",
+          "enum": [
+            "tool.completed"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -645,8 +625,10 @@
           "type": "string"
         },
         "type": {
-          "const": "tool.output_delta",
           "default": "tool.output_delta",
+          "enum": [
+            "tool.output_delta"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -667,16 +649,12 @@
           "type": "object"
         },
         "parent_tool_call_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Parent Tool Call Id"
+          "title": "Parent Tool Call Id",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool_call_id": {
           "title": "Tool Call Id",
@@ -687,8 +665,10 @@
           "type": "string"
         },
         "type": {
-          "const": "tool.started",
           "default": "tool.started",
+          "enum": [
+            "tool.started"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -705,7 +685,7 @@
         "failure": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentFailure"
+              "$ref": "#/definitions/AgentFailure"
             },
             {
               "type": "null"
@@ -737,15 +717,17 @@
           "type": "string"
         },
         "type": {
-          "const": "turn.completed",
           "default": "turn.completed",
+          "enum": [
+            "turn.completed"
+          ],
           "title": "Type",
           "type": "string"
         },
         "usage": {
           "anyOf": [
             {
-              "$ref": "#/$defs/TokenUsage"
+              "$ref": "#/definitions/TokenUsage"
             },
             {
               "type": "null"
@@ -764,24 +746,22 @@
     "TurnStartedEvent": {
       "properties": {
         "session_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
           "default": null,
-          "title": "Session Id"
+          "title": "Session Id",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "turn_id": {
           "title": "Turn Id",
           "type": "string"
         },
         "type": {
-          "const": "turn.started",
           "default": "turn.started",
+          "enum": [
+            "turn.started"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -795,13 +775,15 @@
     "UsageUpdatedEvent": {
       "properties": {
         "type": {
-          "const": "usage.updated",
           "default": "usage.updated",
+          "enum": [
+            "usage.updated"
+          ],
           "title": "Type",
           "type": "string"
         },
         "usage": {
-          "$ref": "#/$defs/TokenUsage"
+          "$ref": "#/definitions/TokenUsage"
         }
       },
       "required": [
@@ -815,7 +797,7 @@
         "failure": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AgentFailure"
+              "$ref": "#/definitions/AgentFailure"
             },
             {
               "type": "null"
@@ -838,8 +820,10 @@
           "type": "string"
         },
         "type": {
-          "const": "workflow.completed",
           "default": "workflow.completed",
+          "enum": [
+            "workflow.completed"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -856,14 +840,16 @@
         "interrupts": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/PendingInterrupt"
+            "$ref": "#/definitions/PendingInterrupt"
           },
           "title": "Interrupts",
           "type": "array"
         },
         "type": {
-          "const": "workflow.interrupted",
           "default": "workflow.interrupted",
+          "enum": [
+            "workflow.interrupted"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -886,8 +872,10 @@
           "type": "string"
         },
         "type": {
-          "const": "workflow.resumed",
           "default": "workflow.resumed",
+          "enum": [
+            "workflow.resumed"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -905,8 +893,10 @@
           "type": "string"
         },
         "type": {
-          "const": "workflow.started",
           "default": "workflow.started",
+          "enum": [
+            "workflow.started"
+          ],
           "title": "Type",
           "type": "string"
         }
@@ -918,100 +908,103 @@
       "type": "object"
     }
   },
-  "$id": "https://care.local/contracts/canonical-event.schema.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Sequenced canonical event envelope emitted by WorkflowRunner.",
   "properties": {
+    "is_ephemeral": {
+      "readOnly": true,
+      "title": "Is Ephemeral",
+      "type": "boolean"
+    },
     "node_id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
       "default": null,
-      "title": "Node Id"
+      "title": "Node Id",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "payload": {
       "discriminator": {
         "mapping": {
-          "compaction": "#/$defs/CompactionEvent",
-          "interaction.request": "#/$defs/InteractionRequestEvent",
-          "message.completed": "#/$defs/MessageCompletedEvent",
-          "node.completed": "#/$defs/NodeCompletedEvent",
-          "node.started": "#/$defs/NodeStartedEvent",
-          "retry": "#/$defs/RetryEvent",
-          "text.delta": "#/$defs/TextDeltaEvent",
-          "thinking.delta": "#/$defs/ThinkingDeltaEvent",
-          "tool.completed": "#/$defs/ToolCompletedEvent",
-          "tool.output_delta": "#/$defs/ToolOutputDeltaEvent",
-          "tool.started": "#/$defs/ToolStartedEvent",
-          "turn.completed": "#/$defs/TurnCompletedEvent",
-          "turn.started": "#/$defs/TurnStartedEvent",
-          "usage.updated": "#/$defs/UsageUpdatedEvent",
-          "workflow.completed": "#/$defs/WorkflowCompletedEvent",
-          "workflow.interrupted": "#/$defs/WorkflowInterruptedEvent",
-          "workflow.resumed": "#/$defs/WorkflowResumedEvent",
-          "workflow.started": "#/$defs/WorkflowStartedEvent"
+          "compaction": "#/definitions/CompactionEvent",
+          "interaction.request": "#/definitions/InteractionRequestEvent",
+          "message.completed": "#/definitions/MessageCompletedEvent",
+          "node.completed": "#/definitions/NodeCompletedEvent",
+          "node.started": "#/definitions/NodeStartedEvent",
+          "retry": "#/definitions/RetryEvent",
+          "runtime.error": "#/definitions/RuntimeErrorEvent",
+          "text.delta": "#/definitions/TextDeltaEvent",
+          "thinking.delta": "#/definitions/ThinkingDeltaEvent",
+          "tool.completed": "#/definitions/ToolCompletedEvent",
+          "tool.output_delta": "#/definitions/ToolOutputDeltaEvent",
+          "tool.started": "#/definitions/ToolStartedEvent",
+          "turn.completed": "#/definitions/TurnCompletedEvent",
+          "turn.started": "#/definitions/TurnStartedEvent",
+          "usage.updated": "#/definitions/UsageUpdatedEvent",
+          "workflow.completed": "#/definitions/WorkflowCompletedEvent",
+          "workflow.interrupted": "#/definitions/WorkflowInterruptedEvent",
+          "workflow.resumed": "#/definitions/WorkflowResumedEvent",
+          "workflow.started": "#/definitions/WorkflowStartedEvent"
         },
         "propertyName": "type"
       },
       "oneOf": [
         {
-          "$ref": "#/$defs/TurnStartedEvent"
+          "$ref": "#/definitions/TurnStartedEvent"
         },
         {
-          "$ref": "#/$defs/TextDeltaEvent"
+          "$ref": "#/definitions/TextDeltaEvent"
         },
         {
-          "$ref": "#/$defs/ThinkingDeltaEvent"
+          "$ref": "#/definitions/ThinkingDeltaEvent"
         },
         {
-          "$ref": "#/$defs/MessageCompletedEvent"
+          "$ref": "#/definitions/MessageCompletedEvent"
         },
         {
-          "$ref": "#/$defs/ToolStartedEvent"
+          "$ref": "#/definitions/ToolStartedEvent"
         },
         {
-          "$ref": "#/$defs/ToolOutputDeltaEvent"
+          "$ref": "#/definitions/ToolOutputDeltaEvent"
         },
         {
-          "$ref": "#/$defs/ToolCompletedEvent"
+          "$ref": "#/definitions/ToolCompletedEvent"
         },
         {
-          "$ref": "#/$defs/CompactionEvent"
+          "$ref": "#/definitions/CompactionEvent"
         },
         {
-          "$ref": "#/$defs/RetryEvent"
+          "$ref": "#/definitions/RetryEvent"
         },
         {
-          "$ref": "#/$defs/InteractionRequestEvent"
+          "$ref": "#/definitions/InteractionRequestEvent"
         },
         {
-          "$ref": "#/$defs/UsageUpdatedEvent"
+          "$ref": "#/definitions/UsageUpdatedEvent"
         },
         {
-          "$ref": "#/$defs/TurnCompletedEvent"
+          "$ref": "#/definitions/TurnCompletedEvent"
         },
         {
-          "$ref": "#/$defs/WorkflowStartedEvent"
+          "$ref": "#/definitions/WorkflowStartedEvent"
         },
         {
-          "$ref": "#/$defs/WorkflowResumedEvent"
+          "$ref": "#/definitions/WorkflowResumedEvent"
         },
         {
-          "$ref": "#/$defs/NodeStartedEvent"
+          "$ref": "#/definitions/NodeStartedEvent"
         },
         {
-          "$ref": "#/$defs/NodeCompletedEvent"
+          "$ref": "#/definitions/NodeCompletedEvent"
         },
         {
-          "$ref": "#/$defs/WorkflowInterruptedEvent"
+          "$ref": "#/definitions/WorkflowInterruptedEvent"
         },
         {
-          "$ref": "#/$defs/WorkflowCompletedEvent"
+          "$ref": "#/definitions/WorkflowCompletedEvent"
+        },
+        {
+          "$ref": "#/definitions/RuntimeErrorEvent"
         }
       ],
       "title": "Payload"
@@ -1021,6 +1014,7 @@
       "type": "string"
     },
     "seq": {
+      "minimum": 1,
       "title": "Seq",
       "type": "integer"
     },
@@ -1043,7 +1037,8 @@
     "run_id",
     "thread_id",
     "workflow_id",
-    "payload"
+    "payload",
+    "is_ephemeral"
   ],
   "title": "RuntimeEvent",
   "type": "object"

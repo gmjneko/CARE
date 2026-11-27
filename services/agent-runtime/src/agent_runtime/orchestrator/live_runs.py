@@ -19,6 +19,7 @@ from agent_runtime.adapters.base import (
 )
 from agent_runtime.adapters.errors import AdapterCapabilityError, AdapterError
 from agent_runtime.adapters.registry import AdapterRegistry
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.persistence import InflightNodeStore
 from agent_runtime.protocol.events import InteractionRequestEvent, InteractionResponse
 
@@ -26,10 +27,6 @@ InteractionHandler = Callable[[InteractionRequestEvent], Awaitable[InteractionRe
 InteractionMode = Literal["cancel", "wait", "suspend"]
 
 _ABORT_CANCEL_SETTLE_TIMEOUT_S = 2.0
-
-
-class StateConflictError(ValueError):
-    """Raised when an operation conflicts with the current run or thread lifecycle state."""
 
 
 class _SuspendSignal:
@@ -182,15 +179,15 @@ class LiveRunRegistry:
         """向正在线热等待的节点回传用户审批结果或提问回答。"""
         pending_map = self._pending_interactions.get(run_id)
         if not pending_map:
-            raise KeyError(f"No pending interaction found for run_id '{run_id}'")
+            raise NotFoundError(f"No pending interaction found for run_id '{run_id}'")
         if node_id is not None:
             pending = pending_map.get(node_id)
             if pending is None:
-                raise KeyError(
+                raise NotFoundError(
                     f"No pending interaction found for run_id '{run_id}', node_id '{node_id}'"
                 )
             if pending.request.request_id != response.request_id:
-                raise ValueError(
+                raise InvalidInputError(
                     f"Interaction request_id mismatch for run_id '{run_id}' node '{node_id}': "
                     f"expected '{pending.request.request_id}', got '{response.request_id}'"
                 )
@@ -204,13 +201,13 @@ class LiveRunRegistry:
                 pending = matches[0][1]
             elif len(matches) > 1:
                 nodes = ", ".join(nid for nid, _ in matches)
-                raise ValueError(
+                raise InvalidInputError(
                     f"Ambiguous request_id '{response.request_id}' across nodes ({nodes}); "
                     "specify node_id"
                 )
             else:
                 expected = ", ".join(item.request.request_id for item in pending_map.values())
-                raise ValueError(
+                raise InvalidInputError(
                     f"Interaction request_id mismatch for run_id '{run_id}': "
                     f"expected one of [{expected}], got '{response.request_id}'"
                 )
@@ -256,7 +253,7 @@ class LiveRunRegistry:
     async def abort(self, run_id: str) -> None:
         sessions = self._active_sessions.get(run_id)
         if not sessions:
-            raise KeyError(f"No active agent session found for run_id '{run_id}'")
+            raise NotFoundError(f"No active agent session found for run_id '{run_id}'")
         entries = list(sessions.values())
         for entry in entries:
             if not entry.capabilities.abort:
@@ -291,18 +288,18 @@ class LiveRunRegistry:
     ) -> _ActiveSessionEntry:
         sessions = self._active_sessions.get(run_id)
         if not sessions:
-            raise KeyError(f"No active agent session found for run_id '{run_id}'")
+            raise NotFoundError(f"No active agent session found for run_id '{run_id}'")
         if node_id is not None:
             entry = sessions.get(node_id)
             if entry is None:
-                raise KeyError(
+                raise NotFoundError(
                     f"No active agent session found for run_id '{run_id}', node_id '{node_id}'"
                 )
             return entry
         if len(sessions) == 1:
             return next(iter(sessions.values()))
         nodes = ", ".join(sorted(sessions))
-        raise ValueError(
+        raise InvalidInputError(
             f"Multiple active agent sessions for run_id '{run_id}' ({nodes}); specify node_id"
         )
 

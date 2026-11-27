@@ -635,7 +635,7 @@ async def test_local_profile_cloud_isolation_and_secret_redaction(tmp_path: Path
         assert cloud_report["model"] == "gateway-model"
         assert cloud_report["env_api_key_set"] is True
 
-    # Malformed stdout propagates as terminal SSE runtime.error and failed RunSnapshot.
+    # Malformed stdout propagates as canonical RuntimeEvent(runtime.error) and failed RunSnapshot.
     err_app = _make_app("malformed_stdout")
     async with _running_client(err_app) as client:
         start_err = await client.post(
@@ -654,9 +654,15 @@ async def test_local_profile_cloud_isolation_and_secret_redaction(tmp_path: Path
             async for frame in _iter_sse_frames(stream_resp):
                 if "comment" not in frame:
                     sse_frames.append(frame)
-        assert sse_frames[-1]["event"] == "runtime.error"
-        assert sse_frames[-1]["data"]["code"] == "adapter_error"
-        assert "Malformed JSON" in sse_frames[-1]["data"]["message"]
+        last_frame = sse_frames[-1]
+        assert last_frame["event"] == "runtime.error"
+        err_event = RuntimeEvent.model_validate(last_frame["data"])
+        assert last_frame["id"] == str(err_event.seq)
+        assert last_frame["data"]["is_ephemeral"] is False
+        assert err_event.run_id == "err-http-1"
+        assert err_event.payload.type == "runtime.error"
+        assert err_event.payload.code == "adapter_error"
+        assert "Malformed JSON" in err_event.payload.message
 
         failed_snap = (await client.get("/runs/err-http-1")).json()
         assert failed_snap["status"] == "failed"
@@ -670,7 +676,17 @@ async def test_http_error_codes_and_bounded_run_retention(tmp_path: Path) -> Non
     )
 
     async with _running_client(app) as client:
-        # 404 Not Found
+        # 404 Not Found & 405 Method Not Allowed from FastAPI routing use unified ErrorResponse.
+        unknown_route = await client.get("/does-not-exist-route")
+        assert unknown_route.status_code == 404
+        assert unknown_route.json()["error"]["code"] == "not_found"
+
+        wrong_method = await client.delete("/runs")
+        assert wrong_method.status_code == 405
+        assert wrong_method.json()["error"]["code"] == "method_not_allowed"
+        assert "allow" in wrong_method.headers
+
+        # 404 Not Found on domain resources
         assert (await client.get("/runs/does-not-exist")).status_code == 404
         assert (await client.get("/runs/does-not-exist/events")).status_code == 404
         assert (await client.post("/runs/does-not-exist/abort")).status_code == 404
@@ -842,6 +858,61 @@ def test_canonical_event_contract_schema_is_in_sync() -> None:
     schema_path = export_contracts.default_schema_path()
     assert schema_path.is_file(), f"Missing exported contract schema at {schema_path}"
     assert export_contracts.export_canonical_event_schema(schema_path, check=True)
-    parsed = json.loads(schema_path.read_text(encoding="utf-8"))
+    raw_text = schema_path.read_text(encoding="utf-8")
+    parsed = json.loads(raw_text)
+    assert parsed["$schema"] == "http://json-schema.org/draft-07/schema#"
+    assert "$defs" not in parsed
+    assert '"const"' not in raw_text
     assert parsed["title"] == "RuntimeEvent"
-    assert "payload" in parsed["properties"]
+    assert "is_ephemeral" in parsed["properties"]
+    assert "is_ephemeral" in parsed["required"]
+    assert parsed["properties"]["seq"]["minimum"] == 1
+    assert "RuntimeErrorEvent" in parsed["definitions"]
+    assert parsed["properties"]["payload"]["discriminator"]["mapping"]["runtime.error"] == (
+        "#/definitions/RuntimeErrorEvent"
+    )
+    assert None in parsed["definitions"]["InteractionRequestEvent"]["properties"]["input_mode"][
+        "enum"
+    ]
+
+    # OpenAPI declares text/event-stream referencing canonical RuntimeEvent (with runtime.error).
+    openapi = _make_app("standard").openapi()
+    sse_200 = openapi["paths"]["/runs/{run_id}/events"]["get"]["responses"]["200"]
+    assert list(sse_200["content"].keys()) == ["text/event-stream"]
+    assert sse_200["content"]["text/event-stream"]["schema"] == {
+        "$ref": "#/components/schemas/RuntimeEvent"
+    }
+    assert "RuntimeErrorEvent" in openapi["components"]["schemas"]
+
+
+async def test_unexpected_internal_key_and_value_errors_surface_as_sanitized_500(
+    caplog: Any,
+) -> None:
+    """Gap: global KeyError/ValueError handlers previously masked internal bugs as 404/400
+    and leaked raw exception text without server-side logging."""
+    app = _make_app("standard")
+
+    @app.get("/_test_internal_key_bug")
+    async def _bug_key() -> dict[str, str]:
+        raise KeyError("secret_internal_dict_key")
+
+    @app.get("/_test_internal_value_bug")
+    async def _bug_val() -> dict[str, str]:
+        raise ValueError("internal_parse_detail_xyz")
+
+    caplog.clear()
+    async with _running_client(app) as client:
+        for path, leaked in (
+            ("/_test_internal_key_bug", "secret_internal_dict_key"),
+            ("/_test_internal_value_bug", "internal_parse_detail_xyz"),
+        ):
+            resp = await client.get(path)
+            assert resp.status_code == 500
+            body = resp.json()
+            assert body == {
+                "error": {"code": "internal_error", "message": "Internal server error"}
+            }
+            assert leaked not in resp.text
+
+    assert "secret_internal_dict_key" in caplog.text
+    assert "internal_parse_detail_xyz" in caplog.text

@@ -56,6 +56,7 @@ services/agent-runtime/
 ├── src/agent_runtime/
 │   ├── app.py                             # 极薄组装根（create_app / lifespan / care-runtime CLI）
 │   ├── config.py                          # Runtime/Server 启动配置（ServerConfig、from_env() 与统一模型/pi_bin 解析）
+│   ├── errors.py                          # 显式领域异常（NotFoundError / InvalidInputError / StateConflictError）
 │   ├── settings.py                        # 本地用户配置加载/持久化 (~/.care/settings.json，含 profiles 与 adapter_bins)
 │   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
 │   ├── api/                               # 【HTTP + SSE 服务接口层】
@@ -157,6 +158,7 @@ class RuntimeEvent(BaseModel, frozen=True):
 | **Workflow** | `node.completed` | 否 | `node_id`, `role`, `status`, `summary`, `usage`, `failure` | 节点执行结束与结构化交接摘要 |
 | **Workflow** | `workflow.interrupted` | 否 | `interrupts` | 工作流因审批门、节点内交互或挂起暂停 |
 | **Workflow** | `workflow.completed` | 否 | `status(completed\|failed\|aborted)`, `final_output`, `failure` | 工作流最终状态与汇总产出 |
+| **Runtime** | `runtime.error` | 否 | `code(adapter_error\|internal_error)`, `message` | 后台运行流因未捕获异常终止时的规范化终态错误事件（含脱敏） |
 
 ### 3.4 结构化失败分类与凭据脱敏
 

@@ -7,6 +7,7 @@ from typing import Protocol
 
 from langgraph.graph import StateGraph
 
+from agent_runtime.errors import NotFoundError
 from agent_runtime.orchestrator.state import WorkflowState
 
 
@@ -45,7 +46,9 @@ class WorkflowRegistry:
             return self._definitions[name]
         except KeyError as exc:
             available = ", ".join(sorted(self._definitions)) or "<none>"
-            raise KeyError(f"Unknown workflow '{name}'. Registered workflows: {available}") from exc
+            raise NotFoundError(
+                f"Unknown workflow '{name}'. Registered workflows: {available}"
+            ) from exc
 
     def list_definitions(self) -> tuple[WorkflowDefinition, ...]:
         return tuple(self._definitions[name] for name in sorted(self._definitions))

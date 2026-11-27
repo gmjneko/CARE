@@ -28,6 +28,7 @@ from agent_runtime.adapters.errors import (
     AdapterError,
     AdapterProtocolError,
 )
+from agent_runtime.errors import InvalidInputError
 from agent_runtime.orchestrator.live_runs import (
     ExecutionContext,
     PendingInteraction,
@@ -558,19 +559,21 @@ def parse_approval_decision(
 ) -> tuple[Literal["approve", "deny", "cancel"], str | None]:
     """Validate and normalize an approval decision payload."""
     if not isinstance(raw, Mapping):
-        raise ValueError(
+        raise InvalidInputError(
             f"Approval node '{node_id}' requires a mapping with "
             "'decision' ('approve' | 'deny' | 'cancel')"
         )
     decision = raw.get("decision")
     if decision not in ("approve", "deny", "cancel"):
-        raise ValueError(
+        raise InvalidInputError(
             f"Approval node '{node_id}' received invalid decision {decision!r}; "
             "expected 'approve', 'deny', or 'cancel'"
         )
     feedback = raw.get("feedback")
     if feedback is not None and not isinstance(feedback, str):
-        raise ValueError(f"Approval node '{node_id}' field 'feedback' must be a string or None")
+        raise InvalidInputError(
+            f"Approval node '{node_id}' field 'feedback' must be a string or None"
+        )
     clean_feedback = feedback.strip() if feedback and feedback.strip() else None
     return decision, clean_feedback
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent_runtime.adapters.base import AgentAdapter
+from agent_runtime.errors import NotFoundError
 
 
 class AdapterRegistry:
@@ -27,7 +28,7 @@ class AdapterRegistry:
             return self._adapters[kind]
         except KeyError as exc:
             available = ", ".join(sorted(self._adapters)) or "<none>"
-            raise KeyError(
+            raise NotFoundError(
                 f"Unknown agent adapter '{kind}'. Registered adapters: {available}"
             ) from exc
 

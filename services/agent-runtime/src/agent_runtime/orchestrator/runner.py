@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
 from agent_runtime.adapters.registry import AdapterRegistry
+from agent_runtime.errors import NotFoundError, StateConflictError
 from agent_runtime.orchestrator.live_runs import (
     ExecutionContext,
     InteractionHandler,
@@ -20,7 +21,6 @@ from agent_runtime.orchestrator.live_runs import (
     LiveRunRegistry,
     NodeRuntimeOverride,
     RunOptions,
-    StateConflictError,
 )
 from agent_runtime.orchestrator.node import StreamPacket
 from agent_runtime.orchestrator.persistence import (
@@ -113,7 +113,7 @@ class WorkflowRunner:
                 inspected = await inspect_thread(
                     compiled, inflight_store, effective_thread_id, cleanup=True
                 )
-            except KeyError:
+            except NotFoundError:
                 inspected = None
 
             preserved_sessions: dict[str, str] = {}

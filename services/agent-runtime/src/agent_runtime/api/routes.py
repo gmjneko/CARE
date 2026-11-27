@@ -19,9 +19,11 @@ from agent_runtime.api.schemas import (
     StartRunRequest,
     WorkflowInfo,
 )
-from agent_runtime.api.sse import build_sse_response, resolve_after_seq
+from agent_runtime.api.sse import EventStreamResponse, build_sse_response, resolve_after_seq
 from agent_runtime.config import ServerConfig, resolve_run_model
+from agent_runtime.errors import InvalidInputError
 from agent_runtime.orchestrator import ThreadState, WorkflowRegistry
+from agent_runtime.protocol import RuntimeEvent
 from agent_runtime.runtime import RunManager, RunSnapshot
 
 
@@ -85,7 +87,7 @@ def build_api_router(
     async def start_run(body: StartRunRequest) -> RunSnapshot:
         workspace = Path(body.workspace_dir).expanduser()
         if not workspace.is_dir():
-            raise ValueError(
+            raise InvalidInputError(
                 f"workspace_dir does not exist or is not a directory: '{body.workspace_dir}'"
             )
         effective_endpoint, effective_thinking = resolve_run_model(
@@ -116,21 +118,36 @@ def build_api_router(
     async def get_run(run_id: str) -> RunSnapshot:
         return manager.get_run(run_id)
 
-    @api.get("/runs/{run_id}/events", tags=["runs"])
+    @api.get(
+        "/runs/{run_id}/events",
+        response_class=EventStreamResponse,
+        responses={
+            200: {
+                "description": (
+                    "Server-Sent Events stream of canonical RuntimeEvent frames "
+                    "(id=seq, event=payload.type, data=RuntimeEvent JSON)."
+                ),
+                "model": RuntimeEvent,
+            }
+        },
+        tags=["runs"],
+    )
     async def stream_run_events(
         run_id: str,
         after_seq: int | None = Query(default=None),
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     ) -> StreamingResponse:
         start_seq = resolve_after_seq(after_seq, last_event_id)
-        # Validate existence before opening the SSE response so unknown run_id returns 404.
-        manager.get_run(run_id)
-        return build_sse_response(
-            manager,
-            run_id,
-            start_seq=start_seq,
-            keepalive_s=config.sse_keepalive_s,
-        )
+        # Atomically validate run existence and pin an active subscriber lease before opening SSE.
+        subscription = manager.subscribe(run_id, after_seq=start_seq)
+        try:
+            return build_sse_response(
+                subscription,
+                keepalive_s=config.sse_keepalive_s,
+            )
+        except BaseException:
+            await subscription.aclose()
+            raise
 
     @api.post(
         "/runs/{run_id}/interactions",

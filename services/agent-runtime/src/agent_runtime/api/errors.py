@@ -2,22 +2,34 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent_runtime.adapters import AdapterCapabilityError, AdapterError
 from agent_runtime.api.schemas import ErrorDetail, ErrorResponse
-from agent_runtime.orchestrator import StateConflictError
+from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.protocol import redact_sensitive_text
+
+logger = logging.getLogger(__name__)
+
+_HTTP_ERROR_CODES: dict[int, str] = {
+    status.HTTP_400_BAD_REQUEST: "bad_request",
+    status.HTTP_401_UNAUTHORIZED: "unauthorized",
+    status.HTTP_403_FORBIDDEN: "forbidden",
+    status.HTTP_404_NOT_FOUND: "not_found",
+    status.HTTP_405_METHOD_NOT_ALLOWED: "method_not_allowed",
+    status.HTTP_409_CONFLICT: "conflict",
+    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: "unsupported_media_type",
+    422: "validation_error",
+}
 
 
 class UnauthorizedError(Exception):
     """Raised when Bearer authentication fails on a protected route."""
-
-
-def _key_error_message(exc: KeyError) -> str:
-    return str(exc.args[0]) if exc.args else str(exc)
 
 
 def _error_response(
@@ -41,7 +53,7 @@ def _error_response(
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Register redacted HTTP exception handlers mapping domain errors to status codes."""
+    """Register redacted HTTP exception handlers mapping explicit domain errors to status codes."""
 
     @app.exception_handler(UnauthorizedError)
     async def _handle_unauthorized(_request: Request, exc: UnauthorizedError) -> JSONResponse:
@@ -52,9 +64,9 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    @app.exception_handler(KeyError)
-    async def _handle_not_found(_request: Request, exc: KeyError) -> JSONResponse:
-        return _error_response(status.HTTP_404_NOT_FOUND, "not_found", _key_error_message(exc))
+    @app.exception_handler(NotFoundError)
+    async def _handle_not_found(_request: Request, exc: NotFoundError) -> JSONResponse:
+        return _error_response(status.HTTP_404_NOT_FOUND, "not_found", str(exc))
 
     @app.exception_handler(StateConflictError)
     async def _handle_conflict(_request: Request, exc: StateConflictError) -> JSONResponse:
@@ -66,8 +78,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _error_response(status.HTTP_400_BAD_REQUEST, "unsupported_capability", str(exc))
 
-    @app.exception_handler(ValueError)
-    async def _handle_bad_request(_request: Request, exc: ValueError) -> JSONResponse:
+    @app.exception_handler(InvalidInputError)
+    async def _handle_bad_request(_request: Request, exc: InvalidInputError) -> JSONResponse:
         return _error_response(status.HTTP_400_BAD_REQUEST, "bad_request", str(exc))
 
     @app.exception_handler(AdapterError)
@@ -87,12 +99,26 @@ def register_exception_handlers(app: FastAPI) -> None:
         detail = "; ".join(parts) or "Request validation failed"
         return _error_response(422, "validation_error", detail)
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _handle_http_exception(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        code = _HTTP_ERROR_CODES.get(exc.status_code, f"http_{exc.status_code}")
+        message = str(exc.detail) if exc.detail else f"HTTP {exc.status_code}"
+        headers = dict(exc.headers) if exc.headers else None
+        return _error_response(exc.status_code, code, message, headers=headers)
+
     @app.exception_handler(Exception)
-    async def _handle_internal_error(_request: Request, exc: Exception) -> JSONResponse:
+    async def _handle_internal_error(request: Request, _exc: Exception) -> JSONResponse:
+        logger.exception(
+            "Unhandled error while processing %s %s",
+            request.method,
+            request.url.path,
+        )
         return _error_response(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_error",
-            str(exc) or "Internal server error",
+            "Internal server error",
         )
 
 
