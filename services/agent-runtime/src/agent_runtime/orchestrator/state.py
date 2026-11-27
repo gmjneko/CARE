@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
@@ -28,7 +28,11 @@ class NodeOutput(BaseModel):
     role: str
     status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
     summary: str
+    # 产出该节点的后端名称（非 Agent 节点为 None），供下游继承会话时校验同构后端
+    adapter: str | None = None
     session_ref: str | None = None
+    # 记录节点生效的提示词与工具配置，供下游 inherit_session_from 节点跨进程自动继承
+    session_settings: dict[str, Any] | None = None
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
     # 节点因阻塞式交互或进程退出而中断时，保留待用户回复的原始交互请求，供重启后还原弹窗

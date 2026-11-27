@@ -80,7 +80,7 @@ services/agent-runtime/
 │   └── workflows/                         # 【具体业务工作流集合，纯拓扑定义，彼此互不依赖】
 │       ├── __init__.py                    # BUILTIN_WORKFLOWS 与 create_default_workflow_registry() 显式注册
 │       ├── single_agent.py                # SINGLE_AGENT_WORKFLOW (START -> agent -> END)
-│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner[read_only] -> plan_approval -> executor -> END)
+│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner -> plan_approval -> executor[inherit planner] -> END)
 └── tests/
     ├── fakes/fake_pi_rpc.py               # 独立子进程 Fake Pi RPC 协议替身（外部边界注入）
     ├── e2e/test_workflow_scenarios.py     # 生产路径工作流与适配层 E2E 场景测试
@@ -167,6 +167,7 @@ class AgentCapabilities(BaseModel, frozen=True):
     follow_up: bool = False      # 队列追加指令
     abort: bool = False          # 主动中止
     session_resume: bool = False # 基于 session_ref 断点恢复
+    session_fork: bool = False   # 基于 fork_from_session_ref 派生独立新会话
     interactions: bool = False   # 双向工具审批 / 用户提问交互
 
 class AgentSession(Protocol):
@@ -196,7 +197,7 @@ class AgentAdapter(Protocol):
 - **`ModelEndpoint` / `SessionConfig` 构造期 fail-fast 校验**：
   - `model` 不可为空；传入 `base_url` 时须为 `http://` 或 `https://`；未指定 `base_url` 而传入 `api_key` 时必须同时指定内置 `provider`；
   - `SessionConfig` 使用后端无关的 `tool_policy: Literal["full", "read_only", "none"] = "full"`（由各 Adapter 映射到具体实现，如 Pi 的 `read,grep,find,ls` / `--no-tools`），与显式 `tools=(...)` 互斥；Pi 专属的 `extensions` / `sessions_dir` / `tmp_dir` 收口在 `PiRpcConfig`；
-  - 传入 `session_ref` 恢复会话时必须设置 `persist_session=True`。
+  - 传入 `session_ref` 恢复会话或传入 `fork_from_session_ref` 从上游会话派生时，两者互斥且必须设置 `persist_session=True`。
 - **异常分层（`adapters/errors.py`）**：
   - `AdapterCapabilityError`：调用方或编排层请求了当前 Adapter 能力矩阵（`AgentCapabilities`）未声明支持的能力（如 `steering`、`follow_up`、`abort`、`session_resume`、`interactions`）；
   - `AdapterStartupError`：二进制未找到、工作目录不存在或握手失败；
@@ -306,8 +307,10 @@ class NodeOutput(BaseModel, frozen=True):
     node_id: str
     role: str
     status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
-    summary: str                   # 供下游节点消费的结构化交接文本
-    session_ref: str | None = None # 若开启持久化会话，记录会话文件引用
+    summary: str                                     # 供下游节点消费的结构化交接文本
+    adapter: str | None = None                       # 产出该节点的后端名称（非 Agent 节点为 None）
+    session_ref: str | None = None                   # 若开启持久化会话，记录会话文件引用
+    session_settings: dict[str, Any] | None = None   # 节点生效的工具与系统提示配置（供下游继承会话时自动沿用）
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
     pending_interaction: InteractionRequestEvent | None = None
@@ -335,7 +338,7 @@ class WorkflowState(AgentChanges):
 
 `build_agent_node(node_config)` 是纯拓扑节点工厂（不接收 `RunContext` 或具体模型参数），返回编译好的 LangGraph 子图。运行期依赖（`run_id`、`RunOptions`、`node_overrides`、`AdapterRegistry`、`LiveRunRegistry`、`InflightNodeStore`）全部通过 LangGraph 原生 `context=ExecutionContext(...)` 动态注入：
 
-- **`run_turn` 执行 Agent。** 按 `NodeRuntimeOverride > AgentNodeConfig > RunOptions` 优先级解析当前节点的后端、模型端点、推理深度与工具策略，先校验 `AdapterCapabilities`（如 `session_resume`、`interactions`），打开会话并登记到 `LiveRunRegistry` 以支持 `steer()`、`follow_up()`、`abort()` 与 `suspend()`，通过 `StreamPacket` 转发事件，在退出时注销会话。正常完成一轮后，默认（`should_complete=None`）提交 `NodeOutput(status="completed")` 并结束子图；若配置了 `AgentNodeConfig.should_complete(output, completed_tools)` 且返回 `False`，则记为 `status="waiting"`（保留 `session_ref`）并进入 `await_input` 等待继续对话或显式放行；冷挂起、失败或中止时同样保留会话并进入 `await_input`。
+- **`run_turn` 执行 Agent。** 按 `NodeRuntimeOverride > AgentNodeConfig > 源节点继承配置 > RunOptions` 优先级解析当前节点的后端、模型端点、推理深度、系统提示与工具策略，先校验 `AdapterCapabilities`（如 `session_resume`、`session_fork`、`interactions`）。若节点配置了 `inherit_session_from` 且本轮尚未启动，则校验源节点本轮已产出持久化会话且同属同一 Adapter，自动沿用源节点的系统提示与工具配置（若节点自身显式覆写了 `system_prompt` / `append_system_prompt` / `tool_policy` / `tools`，则允许生效并输出警告日志；设置 `inherit_session_lenient=True` 可消除该警告），随后通过 `fork_from_session_ref`（Pi 侧映射为 `--fork <src> --session-dir <dir>`）派生独立新会话；若节点在同轮内中断/失败后恢复，则直接复用本节点已派生出的 `session_ref`。随后打开会话并登记到 `LiveRunRegistry` 以支持 `steer()`、`follow_up()`、`abort()` 与 `suspend()`，通过 `StreamPacket` 转发事件，在退出时注销会话。正常完成一轮后，默认（`should_complete=None`）提交 `NodeOutput(status="completed")` 并结束子图；若配置了 `AgentNodeConfig.should_complete(output, completed_tools)` 且返回 `False`，则记为 `status="waiting"`（保留 `session_ref`）并进入 `await_input` 等待继续对话或显式放行；冷挂起、失败或中止时同样保留会话并进入 `await_input`。
 - **`await_input` 中性等待节点。** 它调用 `interrupt()` 持久化挂起。恢复时 LangGraph 从 `await_input` 的开头重放：收到继续对话或故障恢复输入后回到 `run_turn` 复用同一会话继续执行；在 `awaiting_input` 态下收到 `complete=True` 时，直接提交最终 `NodeOutput(status="completed")` 并结束子图，无需额外再跑一轮 LLM。父图在 Agent 真正完成后才调度下游。[设计理由与 Planner 提问示例](session-and-recovery-design.md#41-为什么把-agentnode-拆成子图)
 
 除 Agent 节点外，`orchestrator/node.py` 同时提供内置人工审批节点工厂 `build_approval_node(node_id, *, message, title=None, content_builder=None)`：进入门控时发射 `NodeStartedEvent(adapter=None)` 并调用 LangGraph `interrupt()` 挂起，将审批请求归一化为强类型 `PendingInterrupt.interaction`（`InteractionRequestEvent(kind="approval", title, message)`）并在 `payload["content"]` 携带待审内容；恢复时严格校验 `{"decision": "approve" | "deny" | "cancel", "feedback": str | None}`（兼容 `InteractionResponse` 并校验 `request_id`），写入 `node_outputs[node_id]` 并发出 `NodeCompletedEvent`；批准时不修改父图 `status` 继续下游，拒绝或取消时写入 `status="aborted"` 配合 `continue_if_running()` 短路终止。
@@ -354,8 +357,8 @@ flowchart LR
     end
 
     subgraph plan_and_execute ["工作流 2: plan_and_execute"]
-        S2((START)) --> P["planner (tool_policy=read_only)"] --> G["plan_approval (是否按照plan执行)"]
-        G -- "approve" --> C["executor (tool_policy=full + planner summary)"]
+        S2((START)) --> P["planner (Plan 阶段提示横幅)"] --> G["plan_approval (是否按照plan执行)"]
+        G -- "approve" --> C["executor (inherit_session_from=planner + 审批意见)"]
         G -- "deny / cancel" --> E2((END))
         C --> E2
     end
@@ -363,9 +366,9 @@ flowchart LR
 
 1. **`single_agent`**（`workflows/single_agent.py`）：1 节点通用图，对应总体架构中的 `SingleVibeGraph`。
 2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：3 节点审批串行图：
-   - `planner` 通过 `tool_policy="read_only"` 声明只读边界（由各 Adapter 映射，如 Pi 映射为 `--tools read,grep,find,ls`），分析工作区并产出分步执行计划；
+   - `planner` 与 `executor` 保持严格同构的默认工具与系统提示配置，`planner` 在用户级 prompt 顶部注入 Plan 阶段只读约束横幅，分析工作区并产出分步执行计划；
    - `plan_approval` 由 `build_approval_node()` 构造，挂起并携带计划摘要询问“是否按照plan执行”；拒绝或取消时短路结束并保留计划摘要，批准（可选附带审批备注）后放行下游；
-   - `executor` 读取 `state["node_outputs"]["planner"].summary`（及可选审批备注）与原始 `prompt`，以全量工具执行计划并验证。
+   - `executor` 通过 `inherit_session_from="planner"` 从 `planner` 本轮会话 fork 独立副本（完整继承规划上下文且不污染 `planner` 源会话），并注入“Plan 阶段已结束、按计划执行”指令及可选审批备注。
 
 #### 如何新增工作流
 

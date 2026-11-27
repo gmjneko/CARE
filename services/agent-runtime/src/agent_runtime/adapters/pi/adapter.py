@@ -30,6 +30,7 @@ PI_CAPABILITIES = AgentCapabilities(
     follow_up=True,
     abort=True,
     session_resume=True,
+    session_fork=True,
     interactions=True,
 )
 

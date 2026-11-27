@@ -87,6 +87,14 @@ def resolve_pi_executable(executable: str) -> str:
     )
 
 
+def _ensure_sessions_dir(rpc_config: PiRpcConfig) -> Path:
+    sess_dir = rpc_config.sessions_dir if rpc_config.sessions_dir is not None else sessions_dir()
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(sess_dir, 0o700)
+    return sess_dir
+
+
 def build_pi_argv(
     *,
     rpc_config: PiRpcConfig,
@@ -104,14 +112,15 @@ def build_pi_argv(
     if session_config.session_ref:
         # 显式传入 session_ref 时恢复既有的 Pi JSONL 会话历史
         argv.extend(["--session", session_config.session_ref])
+    elif session_config.fork_from_session_ref:
+        # 从上游会话派生独立的新 JSONL 会话文件，不修改源会话树
+        sess_dir = _ensure_sessions_dir(rpc_config)
+        argv.extend(
+            ["--fork", session_config.fork_from_session_ref, "--session-dir", str(sess_dir)]
+        )
     elif session_config.persist_session:
         # 优先使用注入的 sessions_dir，未注入时落盘到 ~/.care/sessions/（受 CARE_HOME 覆盖）
-        sess_dir = (
-            rpc_config.sessions_dir if rpc_config.sessions_dir is not None else sessions_dir()
-        )
-        sess_dir.mkdir(parents=True, exist_ok=True)
-        if os.name != "nt":
-            os.chmod(sess_dir, 0o700)
+        sess_dir = _ensure_sessions_dir(rpc_config)
         argv.extend(["--session-dir", str(sess_dir)])
     else:
         argv.append("--no-session")

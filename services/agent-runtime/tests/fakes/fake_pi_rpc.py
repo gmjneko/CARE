@@ -39,6 +39,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", default="rpc")
     parser.add_argument("--no-session", action="store_true")
     parser.add_argument("--session", default=None)
+    parser.add_argument("--fork", default=None)
     parser.add_argument("--session-dir", default=None)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--provider", default=None)
@@ -79,13 +80,24 @@ def _state_payload(
     return data
 
 
+def _is_planner_turn(prompt: str, append_prompt: str, tools: str | None) -> bool:
+    return (
+        "Currently in the **Plan** phase" in prompt
+        or "Planner agent" in append_prompt
+        or tools == "read,grep,find,ls"
+    )
+
+
 def _handle_standard(
     req_id: str | None,
     prompt: str,
     *,
     tools: str | None,
     append_prompt: str,
+    session_file: str | None = None,
 ) -> None:
+    history = _load_session_history(session_file)
+    _append_session_history(session_file, prompt)
     _emit(
         {
             "type": "response",
@@ -109,7 +121,7 @@ def _handle_standard(
         }
     )
 
-    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    is_planner = _is_planner_turn(prompt, append_prompt, tools)
     role_tag = "PLANNER" if is_planner else "EXECUTOR"
 
     _emit(
@@ -150,10 +162,13 @@ def _handle_standard(
 
     if is_planner:
         final_text = (
-            f"[PLAN tools={tools}] Step 1: update module for prompt: {prompt.splitlines()[-1]}"
+            f"[PLAN tools={tools or 'default'}] Step 1: update module for prompt: "
+            f"{prompt.splitlines()[-1]}"
         )
     else:
-        has_plan = "[PLAN tools=" in prompt
+        has_plan = "[PLAN tools=" in prompt or any(
+            "Currently in the **Plan** phase" in item for item in history
+        )
         final_text = f"[EXEC tools={tools or 'default'} received_plan={has_plan}] Done."
 
     mid = len(final_text) // 2
@@ -408,8 +423,13 @@ def _handle_steerable(req_id: str | None, *, reject_first_steer: bool = False) -
     _emit({"type": "agent_settled", "aborted": False})
 
 
-def _handle_provider_fail_planner(req_id: str | None, tools: str | None) -> None:
-    if tools != "read,grep,find,ls":
+def _handle_provider_fail_planner(
+    req_id: str | None,
+    prompt: str,
+    append_prompt: str,
+    tools: str | None,
+) -> None:
+    if not _is_planner_turn(prompt, append_prompt, tools):
         # Executor must never execute after planner fails.
         sys.stderr.write("ERROR: downstream executor node should not have been invoked\n")
         sys.stderr.flush()
@@ -491,6 +511,12 @@ def _handle_inspect_endpoint(req_id: str | None, args: argparse.Namespace) -> No
         "provider": args.provider,
         "model": args.model,
         "thinking": args.thinking,
+        "tools": args.tools,
+        "no_tools": args.no_tools,
+        "system_prompt": _read_text_or_file(args.system_prompt) if args.system_prompt else None,
+        "append_system_prompt": (
+            _read_text_or_file(args.append_system_prompt) if args.append_system_prompt else None
+        ),
         "models_json": models_json,
         "env_api_key_set": env_key is not None,
         "env_api_key_sha256": (
@@ -599,16 +625,19 @@ def _handle_ui_question(
     question_id: str = "ui-q-1",
 ) -> bool:
     """模拟节点内 ask_question 阻塞提问；若已有历史则直接按恢复后回答继续完成。"""
-    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    is_planner = _is_planner_turn(prompt, append_prompt, tools)
     if is_planner:
-        _handle_standard(req_id, prompt, tools=tools, append_prompt=append_prompt)
+        _handle_standard(
+            req_id, prompt, tools=tools, append_prompt=append_prompt, session_file=session_file
+        )
         return False
 
     history = _load_session_history(session_file)
+    prior_exec_turns = [item for item in history if "Currently in the **Plan** phase" not in item]
     _append_session_history(session_file, prompt)
 
-    # 若历史非空，说明是冷恢复后的续接轮次，直接消费恢复指令完成任务
-    if history:
+    # 若已有本节点执行历史，说明是冷恢复后的续接轮次，直接消费恢复指令完成任务
+    if prior_exec_turns:
         _emit(
             {
                 "type": "response",
@@ -618,7 +647,7 @@ def _handle_ui_question(
                 "data": {"disposition": "started"},
             }
         )
-        final_text = f"RESUMED_WITH_HISTORY({len(history)}):{prompt}"
+        final_text = f"RESUMED_WITH_HISTORY({len(prior_exec_turns)}):{prompt}"
         _emit(
             {
                 "type": "message_end",
@@ -685,12 +714,15 @@ def _handle_fail_executor_once(
     tools: str | None,
 ) -> None:
     """planner 正常成功，executor 首次执行模拟 429 限流失败，带 session_ref 恢复后成功。"""
-    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    is_planner = _is_planner_turn(prompt, append_prompt, tools)
     if is_planner:
-        _handle_standard(req_id, prompt, tools=tools, append_prompt=append_prompt)
+        _handle_standard(
+            req_id, prompt, tools=tools, append_prompt=append_prompt, session_file=session_file
+        )
         return
 
     history = _load_session_history(session_file)
+    prior_exec_turns = [item for item in history if "Currently in the **Plan** phase" not in item]
     _append_session_history(session_file, prompt)
     _emit(
         {
@@ -701,7 +733,7 @@ def _handle_fail_executor_once(
             "data": {"disposition": "started"},
         }
     )
-    if not history:
+    if not prior_exec_turns:
         _emit(
             {
                 "type": "message_end",
@@ -716,7 +748,7 @@ def _handle_fail_executor_once(
         _emit({"type": "agent_settled", "aborted": False})
         return
 
-    final_text = f"EXECUTOR_RECOVERED(turns={len(history) + 1}):{prompt}"
+    final_text = f"EXECUTOR_RECOVERED(turns={len(prior_exec_turns) + 1}):{prompt}"
     _emit(
         {
             "type": "message_end",
@@ -753,7 +785,7 @@ def _handle_interactive_handoff(
         }
     )
 
-    is_planner = "Planner agent" in append_prompt or tools == "read,grep,find,ls"
+    is_planner = _is_planner_turn(prompt, append_prompt, tools)
     if is_planner and ("SUBMIT_PLAN" in prompt or "FAIL_SUBMIT" in prompt):
         is_err = "FAIL_SUBMIT" in prompt
         _emit(
@@ -811,6 +843,17 @@ def main() -> int:
     append_prompt = _read_text_or_file(args.append_system_prompt)
     if args.session:
         session_file: str | None = args.session
+    elif args.fork:
+        src = Path(args.fork)
+        if not src.is_file():
+            sys.stderr.write(f"Source session file not found for --fork: {src}\n")
+            sys.stderr.flush()
+            return 1
+        target_dir = Path(args.session_dir) if args.session_dir else src.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        sess_path = target_dir / f"fake-fork-{uuid4().hex[:10]}.jsonl"
+        sess_path.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        session_file = str(sess_path)
     elif args.no_session:
         session_file = None
     elif args.session_dir:
@@ -851,7 +894,13 @@ def main() -> int:
             prompt = str(record.get("message", ""))
             scenario = args.scenario
             if scenario == "standard":
-                _handle_standard(req_id, prompt, tools=args.tools, append_prompt=append_prompt)
+                _handle_standard(
+                    req_id,
+                    prompt,
+                    tools=args.tools,
+                    append_prompt=append_prompt,
+                    session_file=session_file,
+                )
             elif scenario == "ui_confirm":
                 _handle_ui_confirm(req_id)
             elif scenario == "ui_abort_order":
@@ -863,7 +912,7 @@ def main() -> int:
             elif scenario == "steer_reject_once":
                 _handle_steerable(req_id, reject_first_steer=True)
             elif scenario == "provider_fail_planner":
-                _handle_provider_fail_planner(req_id, args.tools)
+                _handle_provider_fail_planner(req_id, prompt, append_prompt, args.tools)
             elif scenario == "compaction_race":
                 _handle_compaction_race(req_id, prompt, compaction_state)
             elif scenario == "inspect_endpoint":

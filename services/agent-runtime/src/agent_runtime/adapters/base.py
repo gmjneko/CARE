@@ -75,6 +75,8 @@ class AgentCapabilities(BaseModel):
     follow_up: bool = False
     abort: bool = False
     session_resume: bool = False
+    # 是否支持基于已有持久化会话派生独立的新会话（用于跨节点上下文继承）
+    session_fork: bool = False
     interactions: bool = False
 
 
@@ -91,14 +93,20 @@ class SessionConfig(BaseModel):
     tool_policy: ToolPolicy = "full"
     tools: tuple[str, ...] | None = None
     session_ref: str | None = None
+    # 从上游持久化会话 fork 独立新会话，与 session_ref 互斥
+    fork_from_session_ref: str | None = None
     persist_session: bool = False
 
     @model_validator(mode="after")
     def _validate_combinations(self) -> SessionConfig:
         if self.tools is not None and self.tool_policy != "full":
             raise ValueError("Cannot combine explicit 'tools' with non-default 'tool_policy'")
-        if self.session_ref and not self.persist_session:
-            raise ValueError("'session_ref' requires 'persist_session=True'")
+        if self.session_ref and self.fork_from_session_ref:
+            raise ValueError("Cannot combine 'session_ref' and 'fork_from_session_ref'")
+        if (self.session_ref or self.fork_from_session_ref) and not self.persist_session:
+            raise ValueError(
+                "'session_ref' and 'fork_from_session_ref' require 'persist_session=True'"
+            )
         return self
 
 

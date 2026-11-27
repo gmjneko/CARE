@@ -128,14 +128,16 @@ flowchart LR
 | **微观（Agent 对话层）** | `~/.care/sessions/<id>.jsonl`（Pi 原生会话树） | `session_ref`（文件路径） | 单个节点内完整的消息历史、思考过程、工具调用与输出上下文。 |
 
 **严格边界约束**：
-- 多节点工作流中，**每个节点按 `node_id` 独立维护各自的 `session_ref`**（例如 `planner` 与 `executor` 各自拥有独立的 Pi 会话文件，绝不共享同一份对话树），确保节点间上下文不膨胀。
-- 内置工作流（`single_agent`、`plan_and_execute`）**默认开启 `persist_session=True`**（支持显式传参关闭）。
+- 多节点工作流中，**每个节点默认按 `node_id` 独立维护各自的 `session_ref`**，确保节点间上下文不膨胀；
+- 当工作流显式为下游节点配置 `AgentNodeConfig(inherit_session_from="<upstream_node>")` 时，下游节点本轮首次运行前基于上游本轮会话 **fork 出独立的 `session_ref`**（绝不与上游共享同一份会话文件写入），跨 Adapter 仍 Fail-Fast 拦截；系统提示与工具配置默认自动继承上游，若下游显式覆盖则允许生效并打印警告日志（设置 `inherit_session_lenient=True` 可消除警告）；
+- 内置工作流（`single_agent`、`plan_and_execute`）**默认开启 `persist_session=True`**（支持显式传参关闭；开启 `inherit_session_from` 的节点必须保持 `persist_session=True`）。
 
 ### 3.2 `PiRpcTransport` 会话目录解耦
 
-在 `build_pi_argv()` 中补齐 `--session-dir` 透传逻辑：
+在 `build_pi_argv()` 中补齐 `--session-dir` 与 `--fork` 透传逻辑：
 - 当 `session_config.session_ref` 非空：传 `--session <session_ref>` 恢复既有会话；
-- 否则当 `session_config.persist_session` 为 `True`：自动创建 `~/.care/sessions/`（受 `CARE_HOME` 控制）并传 `--session-dir <sessions_dir>`；
+- 否则当 `session_config.fork_from_session_ref` 非空：自动创建 `~/.care/sessions/`（受 `CARE_HOME` 控制）并传 `--fork <fork_from_session_ref> --session-dir <sessions_dir>` 派生独立新会话；
+- 否则当 `session_config.persist_session` 为 `True`：自动创建 `~/.care/sessions/` 并传 `--session-dir <sessions_dir>`；
 - 否则（`persist_session=False`）：传 `--no-session`。
 
 这样即使 `PI_CODING_AGENT_DIR` 指向 `~/.care/tmp/care-pi-*`，Pi 生成的 `.jsonl` 对话文件也会持久写入 `~/.care/sessions/`，子进程退出清理 `runtime_dir` 时毫发无损。
@@ -363,7 +365,9 @@ class NodeOutput(BaseModel):
     role: str
     status: Literal["completed", "waiting", "interrupted", "failed", "aborted"]
     summary: str
+    adapter: str | None = None
     session_ref: str | None = None
+    session_settings: dict[str, Any] | None = None
     usage: TokenUsage | None = None
     failure: AgentFailure | None = None
     pending_interaction: InteractionRequestEvent | None = None

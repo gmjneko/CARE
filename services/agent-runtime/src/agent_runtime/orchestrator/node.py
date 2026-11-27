@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,9 @@ APPROVAL_INTERACTION_KEY = "interaction"
 APPROVAL_CONTENT_KEY = "content"
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class StreamPacket:
     """Internal packet written to LangGraph's custom stream writer."""
@@ -74,11 +78,16 @@ class AgentNodeConfig:
     adapter: str | None = None
     system_prompt: str | None = None
     append_system_prompt: str | None = None
-    tool_policy: ToolPolicy = "full"
+    # 默认 None 而非 "full"，用于区分“未显式配置（可从上游继承）”与“显式覆盖为 full”
+    tool_policy: ToolPolicy | None = None
     tools: tuple[str, ...] | None = None
     endpoint: ModelEndpoint | None = None
     thinking_level: ThinkingLevel | None = None
     persist_session: bool | None = None
+    # 指定本轮上游节点 ID：首次运行时从其会话 fork 独立副本，并默认继承其提示词与工具配置
+    inherit_session_from: str | None = None
+    # 宽容模式：为 True 时，抑制“继承会话的同时显式覆盖提示词/工具”产生的警告日志
+    inherit_session_lenient: bool = False
     should_complete: TurnCompletionCheck | None = None
 
 
@@ -91,6 +100,15 @@ class AgentTurnState(WorkflowState):
 
 def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
     """Build a pure topology AgentNode subgraph whose runtime dependencies arrive via context."""
+    inherit_source: str | None = None
+    if node_config.inherit_session_from is not None:
+        inherit_source = node_config.inherit_session_from.strip()
+        if not inherit_source:
+            raise ValueError("inherit_session_from must be non-empty when provided")
+        if inherit_source == node_config.id:
+            raise ValueError(f"Agent node '{node_config.id}' cannot inherit session from itself")
+    elif node_config.inherit_session_lenient:
+        raise ValueError("inherit_session_lenient=True requires inherit_session_from to be set")
 
     async def run_turn(state: AgentTurnState) -> dict[str, Any]:
         runtime = get_runtime(ExecutionContext)
@@ -106,11 +124,24 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
         thread_id = ctx.thread_id
         run_id = ctx.run_id
 
+        source_output = (
+            state["node_outputs"].get(inherit_source) if inherit_source is not None else None
+        )
+        source_settings = source_output.session_settings if source_output is not None else None
+
         override = ctx.options.node_overrides.get(node_config.id)
         effective_adapter_kind = (
             override.adapter
             if override is not None and override.adapter is not None
-            else (node_config.adapter if node_config.adapter is not None else ctx.options.adapter)
+            else (
+                node_config.adapter
+                if node_config.adapter is not None
+                else (
+                    source_output.adapter
+                    if source_output is not None and source_output.adapter is not None
+                    else ctx.options.adapter
+                )
+            )
         )
         effective_endpoint = (
             override.endpoint
@@ -137,25 +168,63 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
                 else ctx.options.persist_session
             )
         )
-        effective_tool_policy = (
+
+        # 仅记录本节点显式设置的提示词与工具字段；继承会话时按需告警而不计算内容指纹
+        overridden_fields: list[str] = []
+        if node_config.system_prompt is not None:
+            effective_system_prompt: str | None = node_config.system_prompt
+            overridden_fields.append("system_prompt")
+        elif source_settings is not None:
+            effective_system_prompt = source_settings.get("system_prompt")
+        else:
+            effective_system_prompt = None
+
+        if node_config.append_system_prompt is not None:
+            effective_append_system_prompt: str | None = node_config.append_system_prompt
+            overridden_fields.append("append_system_prompt")
+        elif source_settings is not None:
+            effective_append_system_prompt = source_settings.get("append_system_prompt")
+        else:
+            effective_append_system_prompt = None
+
+        explicit_tool_policy = (
             override.tool_policy
             if override is not None and override.tool_policy is not None
             else node_config.tool_policy
         )
-        effective_tools = (
+        explicit_tools = (
             override.tools
             if override is not None and override.tools is not None
             else node_config.tools
         )
+        if explicit_tool_policy is not None:
+            overridden_fields.append("tool_policy")
+        if explicit_tools is not None:
+            overridden_fields.append("tools")
+
+        # tool_policy 与 tools 互斥，只要本节点显式设置了其中任一项就整体脱离上游工具继承
+        if explicit_tool_policy is not None or explicit_tools is not None:
+            effective_tool_policy: ToolPolicy = (
+                explicit_tool_policy if explicit_tool_policy is not None else "full"
+            )
+            effective_tools: tuple[str, ...] | None = explicit_tools
+        elif source_settings is not None:
+            effective_tool_policy = source_settings.get("tool_policy", "full")
+            raw_tools = source_settings.get("tools")
+            effective_tools = tuple(raw_tools) if raw_tools is not None else None
+        else:
+            effective_tool_policy = "full"
+            effective_tools = None
 
         adapter = ctx.adapters.get(effective_adapter_kind)
-        prev_session_ref = state["node_sessions"].get(node_config.id) if effective_persist else None
+        session_settings: dict[str, Any] = {
+            "tool_policy": effective_tool_policy,
+            "tools": list(effective_tools) if effective_tools is not None else None,
+            "system_prompt": effective_system_prompt,
+            "append_system_prompt": effective_append_system_prompt,
+        }
 
-        if prev_session_ref is not None and not adapter.capabilities.session_resume:
-            raise AdapterCapabilityError(
-                f"Adapter '{effective_adapter_kind}' does not support resuming persisted sessions"
-            )
-
+        # 先处理崩溃 WAL 补交，确保已 fork 出自身 session_ref 后崩溃的节点不会再次重复 fork
         inflight = ctx.inflight_store
         for row in await inflight.list_for_thread(thread_id):
             if row.task_id == task_id:
@@ -164,9 +233,11 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
                 output = NodeOutput(
                     node_id=node_config.id,
                     role=node_config.role,
+                    adapter=effective_adapter_kind,
                     status="interrupted",
                     summary="",
                     session_ref=row.session_ref,
+                    session_settings=session_settings,
                     pending_interaction=row.pending_interaction,
                 )
                 recovered: dict[str, Any] = {
@@ -177,16 +248,65 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
                     recovered["node_sessions"] = {node_config.id: row.session_ref}
                 return recovered
 
+        # node_outputs 每轮 run() 清空、轮内保留，据此区分“本轮首次进入(fork)”与“轮内续跑(恢复自身)”
+        already_started_this_turn = node_config.id in state["node_outputs"]
+        prev_session_ref: str | None = None
+        fork_from_session_ref: str | None = None
+
+        if inherit_source is not None and not already_started_this_turn:
+            if not effective_persist:
+                raise ValueError(
+                    f"Agent node '{node_config.id}' sets inherit_session_from='{inherit_source}' "
+                    "which requires persist_session=True"
+                )
+            if not adapter.capabilities.session_fork:
+                raise AdapterCapabilityError(
+                    f"Adapter '{effective_adapter_kind}' does not support "
+                    "forking persisted sessions"
+                )
+            if source_output is None or not source_output.session_ref:
+                raise ValueError(
+                    f"Agent node '{node_config.id}' cannot inherit session from "
+                    f"'{inherit_source}': source node has not produced a persisted "
+                    "session in this turn"
+                )
+            if source_output.adapter != effective_adapter_kind:
+                raise AdapterCapabilityError(
+                    f"Agent node '{node_config.id}' (adapter='{effective_adapter_kind}') cannot "
+                    f"inherit session from '{inherit_source}' (adapter='{source_output.adapter}')"
+                )
+            if overridden_fields and not node_config.inherit_session_lenient:
+                logger.warning(
+                    "Agent node '%s' inherits session from '%s' while explicitly setting %s; "
+                    "overriding system prompt or tools on an inherited session may invalidate "
+                    "prompt cache or conflict with historical tool calls. "
+                    "Set inherit_session_lenient=True to silence this warning.",
+                    node_config.id,
+                    inherit_source,
+                    ", ".join(overridden_fields),
+                )
+            fork_from_session_ref = source_output.session_ref
+        elif effective_persist:
+            prev_session_ref = state["node_sessions"].get(node_config.id)
+            if prev_session_ref is None and already_started_this_turn:
+                prev_session_ref = state["node_outputs"][node_config.id].session_ref
+            if prev_session_ref is not None and not adapter.capabilities.session_resume:
+                raise AdapterCapabilityError(
+                    f"Adapter '{effective_adapter_kind}' does not support "
+                    "resuming persisted sessions"
+                )
+
         session_config = SessionConfig(
             cwd=Path(state["workspace_dir"]),
             endpoint=effective_endpoint,
             thinking_level=effective_thinking,
-            system_prompt=node_config.system_prompt,
-            append_system_prompt=node_config.append_system_prompt,
+            system_prompt=effective_system_prompt,
+            append_system_prompt=effective_append_system_prompt,
             tool_policy=effective_tool_policy,
             tools=effective_tools,
             persist_session=effective_persist,
             session_ref=prev_session_ref,
+            fork_from_session_ref=fork_from_session_ref,
         )
 
         writer = get_stream_writer()
@@ -273,9 +393,11 @@ def build_agent_node(node_config: AgentNodeConfig) -> CompiledStateGraph:
         output = NodeOutput(
             node_id=node_config.id,
             role=node_config.role,
+            adapter=effective_adapter_kind,
             status=terminal.status if terminal and not suspended else "interrupted",
             summary=terminal.final_text if terminal else "",
             session_ref=session_ref,
+            session_settings=session_settings,
             usage=terminal.usage if terminal else None,
             failure=terminal.failure if terminal and not suspended else None,
             pending_interaction=interrupted_interaction,

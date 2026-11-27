@@ -167,3 +167,12 @@ def test_invalid_adapter_bins_and_session_tool_policy_fail_fast(tmp_path: Path) 
         SessionConfig(cwd=tmp_path, tool_policy="read_only", tools=("read",))
     with pytest.raises(ValidationError, match="persist_session"):
         SessionConfig(cwd=tmp_path, session_ref="s1.jsonl", persist_session=False)
+    with pytest.raises(ValidationError, match="persist_session"):
+        SessionConfig(cwd=tmp_path, fork_from_session_ref="s1.jsonl", persist_session=False)
+    with pytest.raises(ValidationError, match="fork_from_session_ref"):
+        SessionConfig(
+            cwd=tmp_path,
+            session_ref="s1.jsonl",
+            fork_from_session_ref="s0.jsonl",
+            persist_session=True,
+        )

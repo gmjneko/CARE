@@ -95,6 +95,7 @@ def test_main_continuous_console_handles_plan_approval_and_multi_turn_over_non_t
         tmp_path=tmp_path,
         scenario="stateful_chat",
         stdin_text=stdin_script,
+        code="import main; raise SystemExit(main.run(workflow='plan_and_execute'))",
     )
 
     assert proc.returncode == 1, f"stderr={proc.stderr}\nstdout={proc.stdout}"
@@ -112,6 +113,9 @@ def test_main_continuous_console_handles_plan_approval_and_multi_turn_over_non_t
         json.loads(line) for line in stdout.splitlines() if line.startswith('{"history":')
     ]
     assert len(node_payloads) == 3  # turn1 planner, turn1 executor, turn2 planner
+    assert node_payloads[1]["turn_count"] == 2
+    assert node_payloads[1]["session_file"] != node_payloads[0]["session_file"]
+    assert "Currently in the **Plan** phase" in node_payloads[1]["history"][0]
     assert "## Approval Note\nKeep changes minimal" in node_payloads[1]["history"][-1]
     assert node_payloads[2]["turn_count"] == 2
     assert "Add cache layer" in node_payloads[2]["history"][0]

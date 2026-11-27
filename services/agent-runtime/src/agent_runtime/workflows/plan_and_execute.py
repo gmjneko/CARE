@@ -1,4 +1,4 @@
-"""Plan-approve-execute workflow: read-only planner, approval gate, then full-tool executor."""
+"""Plan-approve-execute workflow: planner, approval gate, then context-inheriting executor."""
 
 from __future__ import annotations
 
@@ -13,11 +13,29 @@ from agent_runtime.orchestrator import (
     continue_if_running,
 )
 
+PLAN_PHASE_BANNER = (
+    "# ---------------------------------------------------------------------------\n"
+    "#  Currently in the **Plan** phase, you can only use **Read-Only** tools.\n"
+    "# ---------------------------------------------------------------------------"
+)
+
+EXECUTE_PHASE_BANNER = (
+    "# ---------------------------------------------------------------------------\n"
+    "#  Currently in the **Execute** phase, you can now use **All** tools.\n"
+    "# ---------------------------------------------------------------------------"
+)
+
+
+def _build_planner_prompt(state: WorkflowState) -> str:
+    return (
+        f"{PLAN_PHASE_BANNER}\n\n"
+        "Analyze the workspace and create a clear execution plan for:\n\n"
+        f"{state['prompt']}"
+    )
+
 
 def _build_executor_prompt(state: WorkflowState) -> str:
-    planner_output = state["node_outputs"].get("planner")
-    if planner_output is None or not planner_output.summary:
-        return state["prompt"]
+    # executor 已继承 planner 完整上下文，此处用对等横幅声明阶段切换并拼接可选审批备注
     approval_output = state["node_outputs"].get("plan_approval")
     approval_note = ""
     if approval_output is not None and approval_output.summary.startswith("approved: "):
@@ -25,15 +43,15 @@ def _build_executor_prompt(state: WorkflowState) -> str:
         if note:
             approval_note = f"\n\n## Approval Note\n{note}"
     return (
-        f"## User Prompt\n{state['prompt']}\n\n"
-        f"## Execution Plan (from planner)\n{planner_output.summary}"
-        f"{approval_note}\n\n"
-        "Follow the plan above carefully, verify your work, and summarize what you did."
+        f"{EXECUTE_PHASE_BANNER}\n\n"
+        "Follow the approved plan above carefully, verify your work, "
+        "and summarize what you did."
+        f"{approval_note}"
     )
 
 
 def build_plan_and_execute_workflow() -> StateGraph[WorkflowState]:
-    """3-node workflow: planner (read-only) -> plan_approval -> executor (full tools) -> END."""
+    """3-node workflow: planner -> plan_approval -> executor (forks planner session) -> END."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
 
     graph.add_node(
@@ -42,16 +60,7 @@ def build_plan_and_execute_workflow() -> StateGraph[WorkflowState]:
             AgentNodeConfig(
                 id="planner",
                 role="planner",
-                tool_policy="read_only",
-                append_system_prompt=(
-                    "You are the Planner agent in a multi-agent workflow. "
-                    "Inspect the workspace using read-only tools and produce a concise, "
-                    "actionable step-by-step plan for the Executor agent. Do not modify files."
-                ),
-                prompt_builder=lambda state: (
-                    "Analyze the workspace and create a clear execution plan for:\n\n"
-                    f"{state['prompt']}"
-                ),
+                prompt_builder=_build_planner_prompt,
             )
         ),
     )
@@ -76,10 +85,7 @@ def build_plan_and_execute_workflow() -> StateGraph[WorkflowState]:
             AgentNodeConfig(
                 id="executor",
                 role="executor",
-                append_system_prompt=(
-                    "You are the Executor agent in a multi-agent workflow. "
-                    "Execute the Planner's plan accurately in the workspace and verify the result."
-                ),
+                inherit_session_from="planner",
                 prompt_builder=_build_executor_prompt,
             )
         ),
@@ -99,8 +105,8 @@ def build_plan_and_execute_workflow() -> StateGraph[WorkflowState]:
 PLAN_AND_EXECUTE_WORKFLOW = WorkflowDefinition(
     name="plan_and_execute",
     description=(
-        "Read-only planner, human plan approval gate, then full-tool executor "
-        "(planner -> plan_approval -> executor -> END)."
+        "Plan phase prompt, human plan approval gate, then executor inheriting planner context "
+        "(START -> planner -> plan_approval -> executor -> END)."
     ),
     build=build_plan_and_execute_workflow,
 )

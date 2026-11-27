@@ -565,7 +565,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
     assert gate_intr.interaction is not None
     assert gate_intr.interaction.kind == "approval"
     assert gate_intr.interaction.message == "是否按照plan执行"
-    assert "[PLAN tools=read,grep,find,ls]" in gate_intr.payload["content"]
+    assert "[PLAN tools=default]" in gate_intr.payload["content"]
 
     # Brand-new Runner resumes across process restart without re-running planner
     run2_events: list[RuntimeEvent] = []
@@ -770,7 +770,8 @@ async def test_failed_multinode_turn_allows_fresh_run_preserving_all_node_sessio
     assert events2[-1].payload.status == "completed"
     assert st2.status == "completed" and st2.resumable is False
     assert st2.node_outputs["planner"].session_ref == plan_ref
-    assert st2.node_outputs["executor"].session_ref == exec_ref
+    assert st2.node_outputs["executor"].session_ref is not None
+    assert st2.node_outputs["executor"].session_ref not in (plan_ref, exec_ref)
 
 
 async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path: Path) -> None:
@@ -839,7 +840,8 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
     assert isinstance(events_after[-1].payload, WorkflowCompletedEvent)
     assert events_after[-1].payload.status == "completed"
     assert st_after.node_outputs["planner"].session_ref == plan_ref
-    assert st_after.node_outputs["executor"].session_ref == exec_ref
+    assert st_after.node_outputs["executor"].session_ref is not None
+    assert st_after.node_outputs["executor"].session_ref not in (plan_ref, exec_ref)
 
     # Case 2: Hard-killed worker crash (crashed with live WAL row)
     thread_crash = "discard-crashed"
@@ -900,7 +902,12 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
     _write_manifest(tmp_path, "discard_crashed_then_run", recovered_events)
     assert isinstance(recovered_events[-1].payload, WorkflowCompletedEvent)
     assert recovered_events[-1].payload.status == "completed"
-    assert st_recovered.node_outputs["executor"].session_ref == crash_exec_ref
+    assert st_recovered.node_outputs["executor"].session_ref is not None
+    assert st_recovered.node_outputs["executor"].session_ref != crash_exec_ref
+    assert (
+        st_recovered.node_outputs["executor"].session_ref
+        != st_recovered.node_outputs["planner"].session_ref
+    )
 
     # Case 3: Workflow-level LangGraph interrupt() gate (paused is None, no WAL)
     def _build_gate_workflow() -> StateGraph[WorkflowState]:
@@ -1683,6 +1690,44 @@ async def test_heterogeneous_per_node_overrides_route_distinct_endpoints_and_ada
     tmp_path: Path,
 ) -> None:
     """Gap: WorkflowBuilder previously baked one global adapter/endpoint/thinking across nodes."""
+
+    def _build_isolated_plan_exec() -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node(
+            "planner",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="planner",
+                    role="planner",
+                    tool_policy="read_only",
+                    prompt_builder=lambda s: f"Plan: {s['prompt']}",
+                )
+            ),
+        )
+        graph.add_node(
+            "plan_approval",
+            build_approval_node("plan_approval", message="Approve?"),
+        )
+        graph.add_node(
+            "executor",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="executor",
+                    role="executor",
+                    prompt_builder=lambda s: s["node_outputs"]["planner"].summary,
+                )
+            ),
+        )
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "plan_approval")
+        graph.add_conditional_edges(
+            "plan_approval",
+            continue_if_running("executor"),
+            {"executor": "executor", END: END},
+        )
+        graph.add_edge("executor", END)
+        return graph
+
     adapter_a = PiRpcAdapter(
         PiRpcConfig(
             command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "inspect_endpoint"),
@@ -1723,7 +1768,7 @@ async def test_heterogeneous_per_node_overrides_route_distinct_endpoints_and_ada
         ev1 = [
             ev
             async for ev in runner.run(
-                "plan_and_execute",
+                _build_isolated_plan_exec,
                 "Heterogeneous task",
                 tmp_path,
                 thread_id="het-1",
@@ -1734,13 +1779,13 @@ async def test_heterogeneous_per_node_overrides_route_distinct_endpoints_and_ada
         ev2 = [
             ev
             async for ev in runner.resume(
-                "plan_and_execute",
+                _build_isolated_plan_exec,
                 "het-1",
                 resume_value={"decision": "approve"},
                 node_overrides=overrides,
             )
         ]
-        st = await runner.get_thread_state("plan_and_execute", "het-1")
+        st = await runner.get_thread_state(_build_isolated_plan_exec, "het-1")
 
     planner_started = next(
         ev.payload
@@ -2303,6 +2348,408 @@ async def test_parallel_interactive_branches_chat_and_complete_independently(
     agg_payload = json.loads(e3[-1].payload.final_output)
     assert "Expand section A" in agg_payload["history"][0]
     assert "B:Design system" in agg_payload["history"][0]
+
+
+async def test_plan_and_execute_inherits_planner_context_via_fork_and_reforks_on_new_turn(
+    tmp_path: Path,
+) -> None:
+    """Executor forks planner's session without mutating parent, and re-forks on a new turn."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "plan-inherit-fork"
+
+    async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
+        # Turn 1: planner -> approval(with note) -> executor (forks planner session)
+        t1_plan = [
+            ev
+            async for ev in runner.run(
+                "plan_and_execute", "Feature alpha", tmp_path, thread_id=thread_id
+            )
+        ]
+        assert isinstance(t1_plan[-1].payload, WorkflowInterruptedEvent)
+        async for _ in runner.resume(
+            "plan_and_execute",
+            thread_id,
+            resume_value={"decision": "approve", "feedback": "Add unit tests"},
+        ):
+            pass
+        st1 = await runner.get_thread_state("plan_and_execute", thread_id)
+
+        plan_ref_1 = st1.node_outputs["planner"].session_ref
+        exec_ref_1 = st1.node_outputs["executor"].session_ref
+        assert plan_ref_1 is not None and exec_ref_1 is not None
+        assert plan_ref_1 != exec_ref_1
+
+        exec_payload_1 = json.loads(st1.node_outputs["executor"].summary)
+        assert exec_payload_1["session_file"] == exec_ref_1
+        assert exec_payload_1["turn_count"] == 2
+        assert "Currently in the **Plan** phase" in exec_payload_1["history"][0]
+        assert "Feature alpha" in exec_payload_1["history"][0]
+        assert "Currently in the **Execute** phase" in exec_payload_1["history"][1]
+        assert "## Approval Note\nAdd unit tests" in exec_payload_1["history"][1]
+
+        # Parent planner session file must remain unpolluted by executor's turn.
+        parent_lines_t1 = Path(plan_ref_1).read_text(encoding="utf-8").splitlines()
+        assert len(parent_lines_t1) == 1
+
+        # Turn 2 on same thread: planner continues its clean session; executor forks fresh from it.
+        t2_plan = [
+            ev
+            async for ev in runner.run(
+                "plan_and_execute", "Feature beta", tmp_path, thread_id=thread_id
+            )
+        ]
+        assert isinstance(t2_plan[-1].payload, WorkflowInterruptedEvent)
+        t2_exec = [
+            ev
+            async for ev in runner.resume(
+                "plan_and_execute",
+                thread_id,
+                resume_value={"decision": "approve", "feedback": "Keep API backwards-compatible"},
+            )
+        ]
+        st2 = await runner.get_thread_state("plan_and_execute", thread_id)
+
+    _write_manifest(tmp_path, "plan_inherit_fork_turn2", [*t2_plan, *t2_exec])
+    assert st2.node_outputs["planner"].session_ref == plan_ref_1
+    exec_ref_2 = st2.node_outputs["executor"].session_ref
+    assert exec_ref_2 is not None and exec_ref_2 not in (plan_ref_1, exec_ref_1)
+
+    plan_payload_2 = json.loads(st2.node_outputs["planner"].summary)
+    assert plan_payload_2["turn_count"] == 2
+    assert "Feature alpha" in plan_payload_2["history"][0]
+    assert "Feature beta" in plan_payload_2["history"][1]
+
+    exec_payload_2 = json.loads(st2.node_outputs["executor"].summary)
+    assert exec_payload_2["session_file"] == exec_ref_2
+    assert exec_payload_2["turn_count"] == 3
+    assert "Feature alpha" in exec_payload_2["history"][0]
+    assert "Feature beta" in exec_payload_2["history"][1]
+    assert "## Approval Note\nKeep API backwards-compatible" in exec_payload_2["history"][2]
+
+
+async def test_interactive_sop_node_then_approval_then_inheriting_node(tmp_path: Path) -> None:
+    """Interactive multi-turn SOP node -> approval -> downstream node inheriting full history."""
+    db_path = tmp_path / "checkpoints.sqlite"
+    thread_id = "sop-prd-inherit"
+    shared_prompt = "Follow standard enterprise engineering SOP."
+
+    def _build_sop_workflow() -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        graph.add_node(
+            "draft_prd",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="draft_prd",
+                    role="prd",
+                    append_system_prompt=shared_prompt,
+                    tools=("read", "write", "grep"),
+                    prompt_builder=lambda s: f"Draft PRD:\n{s['prompt']}",
+                    should_complete=lambda _o, _t: False,
+                )
+            ),
+        )
+        graph.add_node(
+            "prd_approval",
+            build_approval_node("prd_approval", message="确认定稿并进入开发？"),
+        )
+        graph.add_node(
+            "implement",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="implement",
+                    role="developer",
+                    inherit_session_from="draft_prd",
+                    prompt_builder=lambda s: (
+                        "PRD approved "
+                        f"({s['node_outputs']['prd_approval'].summary}). "
+                        "Start implementation."
+                    ),
+                )
+            ),
+        )
+        graph.add_edge(START, "draft_prd")
+        graph.add_edge("draft_prd", "prd_approval")
+        graph.add_conditional_edges(
+            "prd_approval",
+            continue_if_running("implement"),
+            {"implement": "implement", END: END},
+        )
+        graph.add_edge("implement", END)
+        return graph
+
+    async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
+        e1 = [
+            ev
+            async for ev in runner.run(
+                _build_sop_workflow, "Build order export", tmp_path, thread_id=thread_id
+            )
+        ]
+        assert isinstance(e1[-1].payload, WorkflowInterruptedEvent)
+        assert e1[-1].payload.interrupts[0].kind == "awaiting_input"
+
+        # Iterate freely inside draft_prd
+        e2 = [
+            ev
+            async for ev in runner.resume(
+                _build_sop_workflow, thread_id, prompt="Add CSV and Excel support"
+            )
+        ]
+        assert isinstance(e2[-1].payload, WorkflowInterruptedEvent)
+        assert e2[-1].payload.interrupts[0].kind == "awaiting_input"
+
+        # Finalize draft_prd -> enters prd_approval
+        e3 = [ev async for ev in runner.resume(_build_sop_workflow, thread_id, complete=True)]
+        assert isinstance(e3[-1].payload, WorkflowInterruptedEvent)
+        assert e3[-1].payload.interrupts[0].node_id == "prd_approval"
+
+        # Approve -> implement forks full 2-turn draft_prd context + approval feedback
+        e4 = [
+            ev
+            async for ev in runner.resume(
+                _build_sop_workflow,
+                thread_id,
+                resume_value={"decision": "approve", "feedback": "Ship CSV first"},
+            )
+        ]
+        st = await runner.get_thread_state(_build_sop_workflow, thread_id)
+
+    _write_manifest(tmp_path, "sop_prd_inherit", e4)
+    assert isinstance(e4[-1].payload, WorkflowCompletedEvent)
+    assert e4[-1].payload.status == "completed"
+    impl_payload = json.loads(st.node_outputs["implement"].summary)
+    assert impl_payload["turn_count"] == 3
+    assert impl_payload["session_file"] != st.node_outputs["draft_prd"].session_ref
+    assert "Build order export" in impl_payload["history"][0]
+    assert impl_payload["history"][1] == "Add CSV and Excel support"
+    assert "approved: Ship CSV first" in impl_payload["history"][2]
+
+
+async def test_session_inheritance_auto_inherits_warns_on_override_and_supports_lenient_mode(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Inheriting nodes auto-inherit settings, warn on overrides, and fail fast on hard limits."""
+    # Build-time validation: blank, self-reference, or lenient without inherit_session_from.
+    with pytest.raises(ValueError, match="inherit_session_from"):
+        build_agent_node(
+            AgentNodeConfig(
+                id="node_a",
+                role="a",
+                inherit_session_from="   ",
+                prompt_builder=lambda s: s["prompt"],
+            )
+        )
+    with pytest.raises(ValueError, match="cannot inherit session from itself"):
+        build_agent_node(
+            AgentNodeConfig(
+                id="node_a",
+                role="a",
+                inherit_session_from="node_a",
+                prompt_builder=lambda s: s["prompt"],
+            )
+        )
+    with pytest.raises(ValueError, match="inherit_session_lenient=True requires"):
+        build_agent_node(
+            AgentNodeConfig(
+                id="node_a",
+                role="a",
+                inherit_session_lenient=True,
+                prompt_builder=lambda s: s["prompt"],
+            )
+        )
+
+    def _two_node_wf(
+        *,
+        src_cfg: dict[str, Any] | None = None,
+        dst_cfg: dict[str, Any] | None = None,
+        skip_source: bool = False,
+    ) -> StateGraph[WorkflowState]:
+        graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+        if not skip_source:
+            graph.add_node(
+                "src",
+                build_agent_node(
+                    AgentNodeConfig(
+                        id="src",
+                        role="src",
+                        prompt_builder=lambda s: s["prompt"],
+                        **(src_cfg or {}),
+                    )
+                ),
+            )
+        graph.add_node(
+            "dst",
+            build_agent_node(
+                AgentNodeConfig(
+                    id="dst",
+                    role="dst",
+                    inherit_session_from="src",
+                    prompt_builder=lambda s: f"Next: {s['prompt']}",
+                    **(dst_cfg or {}),
+                )
+            ),
+        )
+        if skip_source:
+            graph.add_edge(START, "dst")
+        else:
+            graph.add_edge(START, "src")
+            graph.add_edge("src", "dst")
+        graph.add_edge("dst", END)
+        return graph
+
+    # 1. Auto-inheritance: dst omits prompts/tools -> inherits src's settings with zero warnings.
+    async with _make_runner("inspect_endpoint", checkpoint_db=":memory:") as inspect_runner:
+        with caplog.at_level("WARNING", logger="agent_runtime.orchestrator.node"):
+            caplog.clear()
+            events_auto = [
+                ev
+                async for ev in inspect_runner.run(
+                    lambda: _two_node_wf(
+                        src_cfg={
+                            "system_prompt": "Base SOP",
+                            "append_system_prompt": "Shared rules",
+                            "tools": ("read", "grep"),
+                        },
+                    ),
+                    "Auto inherit",
+                    tmp_path,
+                    thread_id="auto-inherit-1",
+                )
+            ]
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+        dst_report = json.loads(events_auto[-1].payload.final_output)
+        assert dst_report["system_prompt"] == "Base SOP"
+        assert dst_report["append_system_prompt"] == "Shared rules"
+        assert dst_report["tools"] == "read,grep"
+
+        # 2. Explicit overrides on dst succeed and emit a warning naming the overridden fields.
+        with caplog.at_level("WARNING", logger="agent_runtime.orchestrator.node"):
+            caplog.clear()
+            events_override = [
+                ev
+                async for ev in inspect_runner.run(
+                    lambda: _two_node_wf(
+                        src_cfg={
+                            "tool_policy": "read_only",
+                            "append_system_prompt": "Plan rules",
+                        },
+                        dst_cfg={
+                            "tool_policy": "full",
+                            "append_system_prompt": "Exec rules",
+                        },
+                    ),
+                    "Override with warning",
+                    tmp_path,
+                    thread_id="override-warn-1",
+                )
+            ]
+        warn_records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warn_records) == 1
+        assert "append_system_prompt" in warn_records[0].message
+        assert "tool_policy" in warn_records[0].message
+        assert "inherit_session_lenient=True" in warn_records[0].message
+        override_report = json.loads(events_override[-1].payload.final_output)
+        assert override_report["append_system_prompt"] == "Exec rules"
+        assert override_report["tools"] is None
+        assert override_report["no_tools"] is False
+
+        # 3. inherit_session_lenient=True suppresses the override warning.
+        with caplog.at_level("WARNING", logger="agent_runtime.orchestrator.node"):
+            caplog.clear()
+            events_lenient = [
+                ev
+                async for ev in inspect_runner.run(
+                    lambda: _two_node_wf(
+                        src_cfg={"tool_policy": "read_only"},
+                        dst_cfg={
+                            "tool_policy": "full",
+                            "append_system_prompt": "Lenient exec",
+                            "inherit_session_lenient": True,
+                        },
+                    ),
+                    "Override lenient",
+                    tmp_path,
+                    thread_id="override-lenient-1",
+                )
+            ]
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+        lenient_report = json.loads(events_lenient[-1].payload.final_output)
+        assert lenient_report["append_system_prompt"] == "Lenient exec"
+        assert lenient_report["tools"] is None
+
+    # 4. Hard Fail-Fast boundaries: persist_session=False and missing source session.
+    async with _make_runner("stateful_chat", checkpoint_db=":memory:") as runner:
+        with pytest.raises(ValueError, match="requires persist_session=True"):
+            async for _ in runner.run(
+                lambda: _two_node_wf(),
+                "No persist",
+                tmp_path,
+                persist_session=False,
+            ):
+                pass
+
+        with pytest.raises(ValueError, match="has not produced a persisted session"):
+            async for _ in runner.run(lambda: _two_node_wf(skip_source=True), "No src", tmp_path):
+                pass
+
+    # 5. Cross-adapter mismatch on plan_and_execute still fails fast with AdapterCapabilityError.
+    adapter_a = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "stateful_chat"),
+            request_timeout_s=10.0,
+        )
+    )
+    adapter_b = PiRpcAdapter(
+        PiRpcConfig(
+            command=(sys.executable, str(FAKE_PI_SCRIPT), "--scenario", "stateful_chat"),
+            request_timeout_s=10.0,
+        )
+    )
+    cross_overrides = {
+        "planner": NodeRuntimeOverride(adapter="pi_a"),
+        "executor": NodeRuntimeOverride(adapter="pi_b"),
+    }
+    async with WorkflowRunner(
+        AdapterRegistry({"pi_a": adapter_a, "pi_b": adapter_b}),
+        create_default_workflow_registry(),
+    ) as cross_runner:
+        async for _ in cross_runner.run(
+            "plan_and_execute",
+            "Cross adapter",
+            tmp_path,
+            thread_id="cross-1",
+            node_overrides=cross_overrides,
+        ):
+            pass
+        with pytest.raises(AdapterCapabilityError, match="cannot inherit session"):
+            async for _ in cross_runner.resume(
+                "plan_and_execute",
+                "cross-1",
+                resume_value={"decision": "approve"},
+                node_overrides=cross_overrides,
+            ):
+                pass
+
+    # 6. Adapter without session_fork capability fails fast with AdapterCapabilityError.
+    class _NoForkAdapter:
+        kind = "no_fork"
+        capabilities = AgentCapabilities(streaming=True, session_resume=True, session_fork=False)
+
+        def open_session(self, config: Any) -> Any:
+            return adapter_a.open_session(config)
+
+    async with WorkflowRunner(
+        AdapterRegistry({"no_fork": _NoForkAdapter()}),
+        create_default_workflow_registry(),
+    ) as no_fork_runner:
+        with pytest.raises(AdapterCapabilityError, match="forking persisted sessions"):
+            async for _ in no_fork_runner.run(
+                lambda: _two_node_wf(),
+                "No fork cap",
+                tmp_path,
+                adapter="no_fork",
+            ):
+                pass
 
 
 async def _run_until_killed(workspace: Path, thread_id: str) -> None:

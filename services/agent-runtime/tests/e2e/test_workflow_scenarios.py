@@ -167,7 +167,7 @@ async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isola
         assert gate.interaction.kind == "approval"
         assert gate.interaction.title == "确认执行计划"
         assert gate.interaction.message == "是否按照plan执行"
-        assert "[PLAN tools=read,grep,find,ls]" in gate.payload["content"]
+        assert "[PLAN tools=default]" in gate.payload["content"]
 
         # Invalid resume payloads must fail fast without corrupting the paused checkpoint.
         for bad_value in (
@@ -224,12 +224,15 @@ async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isola
     planner_out = checkpoint["node_outputs"]["planner"]
     approval_out = checkpoint["node_outputs"]["plan_approval"]
     executor_out = checkpoint["node_outputs"]["executor"]
-    # Planner was restricted to read-only tools and executor received planner's handoff summary
-    assert "[PLAN tools=read,grep,find,ls]" in planner_out.summary
+    # Planner and executor share identical tools/prompts while executor inherits planner's session
+    assert "[PLAN tools=default]" in planner_out.summary
     assert approval_out.role == "approval"
     assert approval_out.status == "completed"
     assert approval_out.summary == "approved: Keep changes minimal"
     assert "[EXEC tools=default received_plan=True]" in executor_out.summary
+    assert planner_out.session_ref is not None
+    assert executor_out.session_ref is not None
+    assert executor_out.session_ref != planner_out.session_ref
 
     final = run2_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
@@ -276,7 +279,11 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         assert isinstance(approved_final, WorkflowCompletedEvent)
         assert approved_final.status == "completed"
         exec_payload = json.loads(approved_final.final_output)
-        assert "## Approval Note\nAvoid touching config files" in exec_payload["history"][-1]
+        assert exec_payload["turn_count"] == 2
+        assert "Currently in the **Plan** phase" in exec_payload["history"][0]
+        assert "Add cache" in exec_payload["history"][0]
+        assert "Currently in the **Execute** phase" in exec_payload["history"][1]
+        assert "## Approval Note\nAvoid touching config files" in exec_payload["history"][1]
 
     # 2. Denying plan_approval aborts cleanly without invoking executor and allows a fresh run.
     async with _make_runner("standard", checkpoint_db=db_path) as runner:
