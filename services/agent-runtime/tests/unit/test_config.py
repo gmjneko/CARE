@@ -11,17 +11,19 @@ import pytest
 from pydantic import ValidationError
 
 from agent_runtime.adapters import ModelEndpoint, SessionConfig
-from agent_runtime.config import (
+from agent_runtime.paths import (
     CARE_HOME_ENV,
-    LocalSettings,
-    ModelProfile,
     checkpoints_db_path,
-    load_local_settings,
     resolve_care_home,
     runtime_tmp_dir,
-    save_local_settings,
     sessions_dir,
     settings_path,
+)
+from agent_runtime.settings import (
+    LocalSettings,
+    ModelProfile,
+    load_local_settings,
+    save_local_settings,
 )
 
 

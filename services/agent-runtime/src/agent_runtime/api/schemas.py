@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_runtime.adapters import AgentCapabilities, ModelEndpoint, ThinkingLevel
-from agent_runtime.api.config import RuntimeMode
+from agent_runtime.config import RuntimeMode
 from agent_runtime.orchestrator import InteractionMode, NodeRuntimeOverride, ResumeInput
 from agent_runtime.protocol import InteractionResponse
 

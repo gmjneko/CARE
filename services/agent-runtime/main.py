@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -16,8 +15,9 @@ from agent_runtime.adapters import (
     PiRpcConfig,
     ThinkingLevel,
 )
-from agent_runtime.config import checkpoints_db_path, load_local_settings
+from agent_runtime.config import resolve_pi_bin, resolve_run_model
 from agent_runtime.orchestrator import SqlitePersistenceBackend, WorkflowBuilder, WorkflowRunner
+from agent_runtime.paths import checkpoints_db_path
 from agent_runtime.protocol import (
     InteractionRequestEvent,
     InteractionResponse,
@@ -65,7 +65,7 @@ def main() -> int:
         endpoint=None,
         thinking_level=None,  # "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
         # 运行时配置
-        pi_bin=None,  # None 时依次读取 settings.json adapter_bins["pi"] -> $PI_BIN -> "pi"
+        pi_bin=None,  # None 时依次读取 $PI_BIN -> settings.json adapter_bins["pi"] -> "pi"
         # None 时默认持久化到 ~/.care/checkpoints.sqlite（也可填 ":memory:" 仅内存运行）
         checkpoint_db=None,
         json_output=False,  # True 时单次执行并输出原始 RuntimeEvent JSONL
@@ -90,27 +90,17 @@ def run(
         raise ValueError("prompt must be non-empty when provided")
     if json_output and prompt is None:
         raise ValueError("prompt is required when json_output=True")
-    if profile is not None and endpoint is not None:
-        raise ValueError("Cannot specify both 'profile' and 'endpoint'")
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    settings = load_local_settings()
-    resolved_profile = None if endpoint is not None else settings.resolve_profile(profile)
-    effective_endpoint = (
-        endpoint
-        if endpoint is not None
-        else (resolved_profile.to_endpoint() if resolved_profile is not None else None)
+    effective_endpoint, effective_thinking = resolve_run_model(
+        mode="local",
+        profile=profile,
+        endpoint=endpoint,
+        thinking_level=thinking_level,
     )
-    effective_thinking = (
-        thinking_level
-        if thinking_level is not None
-        else (resolved_profile.thinking_level if resolved_profile is not None else None)
-    )
-    effective_pi_bin = (
-        pi_bin or settings.resolve_adapter_bin("pi") or os.environ.get("PI_BIN", "pi")
-    )
+    effective_pi_bin = resolve_pi_bin(mode="local", pi_bin=pi_bin)
     effective_checkpoint_db = checkpoint_db if checkpoint_db is not None else checkpoints_db_path()
     workspace_dir = Path(cwd).expanduser()
     effective_thread_id = thread_id or f"cli-{uuid4().hex[:12]}"

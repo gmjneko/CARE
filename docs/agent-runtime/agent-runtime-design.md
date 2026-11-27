@@ -55,14 +55,14 @@ services/agent-runtime/
 │   └── reset_local_state.py               # 清理开发期 checkpoints/tmp 本地状态（保留 settings.json）
 ├── src/agent_runtime/
 │   ├── app.py                             # 极薄组装根（create_app / lifespan / care-runtime CLI）
+│   ├── config.py                          # Runtime/Server 启动配置（ServerConfig、from_env() 与统一模型/pi_bin 解析）
+│   ├── settings.py                        # 本地用户配置加载/持久化 (~/.care/settings.json，含 profiles 与 adapter_bins)
+│   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
 │   ├── api/                               # 【HTTP + SSE 服务接口层】
-│   │   ├── config.py                      # ServerConfig、from_env() 与 local/cloud 模型解析
 │   │   ├── errors.py                      # UnauthorizedError、脱敏 ErrorResponse 与全局异常处理器注册
 │   │   ├── schemas.py                     # HTTP 请求/响应 Pydantic 模型与 ErrorResponse
 │   │   ├── sse.py                         # resolve_after_seq、SSE 帧序列化与保活流生成器
 │   │   └── routes.py                      # Bearer 鉴权依赖与 /healthz /workflows /adapters /runs /threads 路由
-│   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
-│   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json，含 adapter_bins)
 │   ├── protocol/
 │   │   ├── redaction.py                   # 凭据脱敏与诊断文本裁剪 (redact_sensitive_text)
 │   │   └── events.py                      # AgentEvent / WorkflowEvent / RuntimeEvent(含 thread_id) / InteractionResponse / AgentFailure
@@ -202,7 +202,7 @@ class AgentAdapter(Protocol):
 
 ### 4.2 模型端点配置、本地 `~/.care/` 与异常边界
 
-- **`ModelEndpoint`（`adapters/base.py`）与本地配置（`config.py`）**：
+- **`ModelEndpoint`（`adapters/base.py`）与本地配置（`settings.py`）**：
   - 核心引擎层（`WorkflowRunner` / `AgentNodeConfig` / `SessionConfig`）只接收内存中的 `ModelEndpoint(model, provider, base_url, api_protocol, api_key: SecretStr)`，不强绑定本地文件路径，也不将 `api_key` 写入 `WorkflowState`、Checkpoint 或 `RuntimeEvent`；
   - 本地入口默认读取 `~/.care/settings.json`（支持 `CARE_HOME` 环境变量覆盖，支持多 Profile 切换与 `active_profile`，写入时采用原子替换与 `0600` 权限）；
   - 当传入自定义 `base_url` 或 `api_key` 时，`PiRpcTransport` 在 `~/.care/tmp/care-pi-*`（按会话隔离的临时目录，支持 `CARE_HOME` 覆盖）生成 `models.json`（使用 `"apiKey": "$CARE_LLM_API_KEY"` 引用，无明文落盘），通过子进程环境变量注入 `PI_CODING_AGENT_DIR` 与 `CARE_LLM_API_KEY`，避免污染宿主机 `~/.pi/agent` 且天然支持多节点/多任务并发隔离，会话结束自动清理。
@@ -456,6 +456,6 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
 
 | 后续阶段 | 演进内容 | 与当前代码的衔接点 |
 | :--- | :--- | :--- |
-| **Step 2（服务化与契约导出）** | ✅ 已落地：新增薄入口 `app.py` 与 `api/{config,errors,schemas,sse,routes}.py` 暴露 FastAPI REST + SSE（`GET /healthz`、`/workflows`、`/adapters`、`/runs`、`GET /runs/{id}/events`、热交互与控制接口、`/workflows/{wf}/threads/{tid}` 查询/恢复/放弃）及 `RUNTIME_AUTH_TOKEN` 鉴权；新增 `scripts/export_contracts.py` 导出 `contracts/canonical-event.schema.json` | 直接基于 `RunManager` 托管生命周期与多订阅流，支持 `Last-Event-ID` / `after_seq` 重放、心跳保活、422 脱敏与有界运行历史清理 |
+| **Step 2（服务化与契约导出）** | ✅ 已落地：新增薄入口 `app.py`、顶层 `config.py` 与 `api/{errors,schemas,sse,routes}.py` 暴露 FastAPI REST + SSE（`GET /healthz`、`/workflows`、`/adapters`、`/runs`、`GET /runs/{id}/events`、热交互与控制接口、`/workflows/{wf}/threads/{tid}` 查询/恢复/放弃）及 `RUNTIME_AUTH_TOKEN` 鉴权；新增 `scripts/export_contracts.py` 导出 `contracts/canonical-event.schema.json` | 直接基于 `RunManager` 托管生命周期与多订阅流，支持 `Last-Event-ID` / `after_seq` 重放、心跳保活、422 脱敏与有界运行历史清理 |
 | **Step 3（双层 HITL 审批）** | 节点间人工审批（LangGraph `interrupt()`）与工具级拦截（`packages/pi-extensions/enterprise-approval-gate`） | 节点级通过 `Command(resume=...)` 复用 `AsyncSqliteSaver`；工具级扩展经 `SessionConfig.extensions` 注入，审批与提问统一走已实现的 `InteractionRequestEvent` + `interaction_handler` + `respond_interaction()` |
 | **Step 4（云端模式与多后端）** | 云端沙箱持久化与多 Agent 后端混编 | `WorkflowRunner` 切换 `AsyncPostgresSaver`（`MODE=cloud`）；`AdapterRegistry` 注册第二个 `AgentAdapter`（Codex / Claude Code） |

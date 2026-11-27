@@ -14,19 +14,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agent_runtime.adapters import AdapterRegistry, PiRpcAdapter, PiRpcConfig
 from agent_runtime.api import (
-    ServerConfig,
     build_api_router,
     build_health_router,
     register_exception_handlers,
-    resolve_default_pi_bin,
 )
-from agent_runtime.config import checkpoints_db_path
+from agent_runtime.config import ServerConfig, resolve_pi_bin
 from agent_runtime.orchestrator import (
     PersistenceBackend,
     SqlitePersistenceBackend,
     WorkflowRegistry,
     WorkflowRunner,
 )
+from agent_runtime.paths import checkpoints_db_path
 from agent_runtime.runtime import RunManager
 from agent_runtime.workflows import create_default_workflow_registry
 
@@ -52,7 +51,7 @@ def create_app(
     if adapter_registry is not None:
         effective_adapters = adapter_registry
     else:
-        pi_bin = resolve_default_pi_bin(cfg)
+        pi_bin = resolve_pi_bin(mode=cfg.mode, pi_bin=cfg.pi_bin)
         effective_adapters = AdapterRegistry({"pi": PiRpcAdapter(PiRpcConfig(command=(pi_bin,)))})
 
     if persistence is not None:

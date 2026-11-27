@@ -7,13 +7,15 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from agent_runtime.adapters import ModelEndpoint
 from agent_runtime.api import (
-    ServerConfig,
     format_sse_error,
     format_sse_event,
     resolve_after_seq,
 )
+from agent_runtime.config import ServerConfig, resolve_pi_bin, resolve_run_model
 from agent_runtime.protocol import RuntimeEvent, TextDeltaEvent
+from agent_runtime.settings import LocalSettings, ModelProfile, save_local_settings
 
 
 def test_server_config_defaults_and_loopback_hosts() -> None:
@@ -146,3 +148,66 @@ def test_sse_formatting_and_error_redaction() -> None:
     assert err_frame.endswith("\n\n")
     assert "topsecret123" not in err_frame
     assert "sk-1234567890abcdef1234567890" not in err_frame
+
+
+def test_resolve_pi_bin_precedence_and_cloud_isolation(tmp_path: Path) -> None:
+    save_local_settings(
+        LocalSettings(adapter_bins={"pi": "/settings/pi"}),
+        care_home=tmp_path,
+    )
+    assert (
+        resolve_pi_bin(
+            mode="local",
+            pi_bin="  /explicit/pi  ",
+            environ={"PI_BIN": "/env/pi"},
+            care_home=tmp_path,
+        )
+        == "/explicit/pi"
+    )
+    assert (
+        resolve_pi_bin(
+            mode="local",
+            environ={"PI_BIN": " /env/pi "},
+            care_home=tmp_path,
+        )
+        == "/env/pi"
+    )
+    assert (
+        resolve_pi_bin(mode="local", environ={}, care_home=tmp_path)
+        == "/settings/pi"
+    )
+    assert (
+        resolve_pi_bin(mode="cloud", environ={}, care_home=tmp_path)
+        == "pi"
+    )
+    with pytest.raises(ValueError, match="pi_bin"):
+        resolve_pi_bin(mode="local", pi_bin="   ", environ={}, care_home=tmp_path)
+
+
+def test_resolve_run_model_rules(tmp_path: Path) -> None:
+    save_local_settings(
+        LocalSettings(
+            active_profile="relay",
+            profiles={
+                "relay": ModelProfile(
+                    model="deepseek-chat",
+                    base_url="https://relay.example.com/v1",
+                    thinking_level="medium",
+                )
+            },
+        ),
+        care_home=tmp_path,
+    )
+    ep, thinking = resolve_run_model(mode="local", care_home=tmp_path)
+    assert ep is not None and ep.model == "deepseek-chat"
+    assert thinking == "medium"
+
+    inline = ModelEndpoint(model="gpt-4o", base_url="https://api.example.com/v1")
+    with pytest.raises(ValueError, match="both 'profile' and 'endpoint'"):
+        resolve_run_model(mode="local", profile="relay", endpoint=inline, care_home=tmp_path)
+    with pytest.raises(ValueError, match="local mode"):
+        resolve_run_model(mode="cloud", profile="relay", care_home=tmp_path)
+    assert resolve_run_model(mode="cloud", endpoint=inline, thinking_level="high") == (
+        inline,
+        "high",
+    )

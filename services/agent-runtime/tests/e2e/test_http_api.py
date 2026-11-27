@@ -17,10 +17,10 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 
 from agent_runtime.adapters import AdapterRegistry, PiRpcAdapter, PiRpcConfig
-from agent_runtime.api import ServerConfig
 from agent_runtime.app import create_app
-from agent_runtime.config import LocalSettings, ModelProfile, save_local_settings
+from agent_runtime.config import ServerConfig
 from agent_runtime.protocol import RuntimeEvent
+from agent_runtime.settings import LocalSettings, ModelProfile, save_local_settings
 
 FAKE_PI_SCRIPT = Path(__file__).resolve().parents[1] / "fakes" / "fake_pi_rpc.py"
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"

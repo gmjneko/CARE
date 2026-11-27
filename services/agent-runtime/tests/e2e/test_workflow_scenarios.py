@@ -21,12 +21,6 @@ from agent_runtime.adapters import (
     PiRpcAdapter,
     PiRpcConfig,
 )
-from agent_runtime.config import (
-    LocalSettings,
-    ModelProfile,
-    load_local_settings,
-    save_local_settings,
-)
 from agent_runtime.orchestrator import (
     AgentNodeConfig,
     SqlitePersistenceBackend,
@@ -44,6 +38,12 @@ from agent_runtime.protocol import (
     WorkflowCompletedEvent,
     WorkflowInterruptedEvent,
     WorkflowResumedEvent,
+)
+from agent_runtime.settings import (
+    LocalSettings,
+    ModelProfile,
+    load_local_settings,
+    save_local_settings,
 )
 from agent_runtime.workflows import create_default_workflow_registry
 

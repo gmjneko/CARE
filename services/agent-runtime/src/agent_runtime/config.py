@@ -1,178 +1,203 @@
-"""本地 CARE 配置模块：管理 `~/.care/settings.json`（支持通过 `CARE_HOME` 环境变量覆盖目录）。"""
+"""Runtime server configuration (`MODE=local|cloud`) and unified model/binary resolution."""
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
-from agent_runtime.paths import (
-    CARE_HOME_ENV,
-    DEFAULT_SETTINGS_FILENAME,
-    checkpoints_db_path,
-    resolve_care_home,
-    runtime_tmp_dir,
-    sessions_dir,
-    settings_path,
-)
+from agent_runtime.settings import load_local_settings
+
+RuntimeMode = Literal["local", "cloud"]
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-class ModelProfile(ModelEndpoint):
-    """持久化在 `~/.care/settings.json` 中的单个命名模型配置。
-
-    直接继承 `ModelEndpoint` 以复用连接字段与构造期校验，
-    额外携带该 Profile 默认的 `thinking_level`。
-    """
-
-    thinking_level: ThinkingLevel | None = None
-
-    def to_endpoint(self) -> ModelEndpoint:
-        """剥离 Profile 附加字段，转为引擎层消费的后端无关 `ModelEndpoint`。"""
-        return ModelEndpoint(
-            model=self.model,
-            provider=self.provider,
-            base_url=self.base_url,
-            api_protocol=self.api_protocol,
-            api_key=self.api_key,
-        )
-
-
-class LocalSettings(BaseModel):
-    """本地 `~/.care/settings.json` 对应的配置模型。
-
-    刻意保持默认 `extra="ignore"`，以便后续 Electron 桌面端在同一文件中
-    写入主题、窗口状态等 UI 偏好时，不会导致 Python 运行时解析失败。
-    """
+class ServerConfig(BaseModel):
+    """Runtime process configuration supporting local Sidecar and cloud sandbox modes."""
 
     model_config = ConfigDict(frozen=True)
 
-    active_profile: str | None = None  # 默认启用的 Profile 名称；None 表示沿用后端本机默认配置
-    profiles: dict[str, ModelProfile] = Field(default_factory=dict)  # 按名称索引的模型配置表
-    # 按 adapter kind 映射可执行文件路径（如 {"pi": "/opt/homebrew/bin/pi"}）
-    adapter_bins: dict[str, str] = Field(default_factory=dict)
+    mode: RuntimeMode = "local"
+    host: str = "127.0.0.1"
+    port: int = 8765
+    auth_token: SecretStr | None = None
+    checkpoint_db: Path | Literal[":memory:"] | None = None
+    pi_bin: str | None = None
+    sse_keepalive_s: float = 15.0
+    max_retained_runs: int = 128
+    cors_origins: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def _validate_settings(self) -> LocalSettings:
-        if any(not name.strip() for name in self.profiles):
-            raise ValueError("Profile names in 'profiles' must be non-empty strings")
+    def _validate_config(self) -> ServerConfig:
+        host = self.host.strip()
+        if not host:
+            raise ValueError("'host' must be a non-empty string")
+        object.__setattr__(self, "host", host)
 
-        if self.active_profile is not None:
-            active = self.active_profile.strip()
-            if not active:
-                raise ValueError("'active_profile' must be non-empty when provided")
-            if active not in self.profiles:
-                available = ", ".join(sorted(self.profiles)) or "<none>"
-                raise ValueError(
-                    f"active_profile '{active}' is not defined in 'profiles' "
-                    f"(available: {available})"
-                )
-            object.__setattr__(self, "active_profile", active)
+        if not (0 <= self.port <= 65535):
+            raise ValueError("'port' must be between 0 and 65535")
+        if self.sse_keepalive_s <= 0:
+            raise ValueError("'sse_keepalive_s' must be greater than 0")
+        if self.max_retained_runs < 1:
+            raise ValueError("'max_retained_runs' must be at least 1")
 
-        normalized_bins: dict[str, str] = {}
-        for kind, bin_path in self.adapter_bins.items():
-            clean_kind = kind.strip()
-            clean_bin = bin_path.strip()
-            if not clean_kind:
-                raise ValueError("Adapter names in 'adapter_bins' must be non-empty strings")
+        if self.auth_token is not None:
+            secret = self.auth_token.get_secret_value().strip()
+            if not secret:
+                raise ValueError("'auth_token' must be non-empty when provided")
+            object.__setattr__(self, "auth_token", SecretStr(secret))
+
+        if host not in _LOOPBACK_HOSTS and self.auth_token is None:
+            raise ValueError(
+                f"Binding to non-loopback host '{host}' requires 'auth_token' (RUNTIME_AUTH_TOKEN)"
+            )
+
+        if self.pi_bin is not None:
+            clean_bin = self.pi_bin.strip()
             if not clean_bin:
-                raise ValueError(f"Executable path for adapter '{clean_kind}' must be non-empty")
-            normalized_bins[clean_kind] = clean_bin
-        object.__setattr__(self, "adapter_bins", normalized_bins)
+                raise ValueError("'pi_bin' must be non-empty when provided")
+            object.__setattr__(self, "pi_bin", clean_bin)
+
+        cleaned_origins: list[str] = []
+        for origin in self.cors_origins:
+            clean = origin.strip()
+            if not clean:
+                raise ValueError("'cors_origins' entries must be non-empty strings")
+            cleaned_origins.append(clean)
+        object.__setattr__(self, "cors_origins", tuple(cleaned_origins))
 
         return self
 
-    def resolve_profile(self, profile_name: str | None = None) -> ModelProfile | None:
-        """按名称解析 Profile；未指定名称时回退到 `active_profile`，均为空则返回 None。"""
-        target = profile_name if profile_name is not None else self.active_profile
-        if target is None:
-            return None
-        try:
-            return self.profiles[target]
-        except KeyError as exc:
-            available = ", ".join(sorted(self.profiles)) or "<none>"
-            raise KeyError(
-                f"Unknown model profile '{target}'. Configured profiles: {available}"
-            ) from exc
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> ServerConfig:
+        """Build ServerConfig from environment variables, failing fast on invalid values."""
+        env = os.environ if environ is None else environ
+        raw_mode = (env.get("MODE") or "local").strip()
+        host = (env.get("CARE_RUNTIME_HOST") or "127.0.0.1").strip()
 
-    def resolve_adapter_bin(self, adapter: str, *, default: str | None = None) -> str | None:
-        """解析指定 Adapter 的可执行文件路径，未配置时回退到 `default`。"""
-        return self.adapter_bins.get(adapter, default)
+        port = _parse_int_env("CARE_RUNTIME_PORT", env.get("CARE_RUNTIME_PORT"), default=8765)
+
+        auth_token: SecretStr | None = None
+        if "RUNTIME_AUTH_TOKEN" in env:
+            token_val = env["RUNTIME_AUTH_TOKEN"].strip()
+            if not token_val:
+                raise ValueError("RUNTIME_AUTH_TOKEN must be non-empty when set")
+            auth_token = SecretStr(token_val)
+
+        raw_db = env.get("CARE_CHECKPOINT_DB")
+        checkpoint_db: Path | Literal[":memory:"] | None = None
+        if raw_db is not None and raw_db.strip():
+            trimmed_db = raw_db.strip()
+            checkpoint_db = (
+                ":memory:" if trimmed_db == ":memory:" else Path(trimmed_db).expanduser()
+            )
+
+        raw_pi_bin = env.get("PI_BIN")
+        pi_bin = raw_pi_bin.strip() if raw_pi_bin and raw_pi_bin.strip() else None
+
+        sse_keepalive_s = _parse_float_env(
+            "CARE_SSE_KEEPALIVE_S", env.get("CARE_SSE_KEEPALIVE_S"), default=15.0
+        )
+        max_retained_runs = _parse_int_env(
+            "CARE_MAX_RETAINED_RUNS", env.get("CARE_MAX_RETAINED_RUNS"), default=128
+        )
+
+        raw_cors = env.get("CARE_CORS_ORIGINS")
+        cors_origins: tuple[str, ...] = ()
+        if raw_cors is not None and raw_cors.strip():
+            cors_origins = tuple(item.strip() for item in raw_cors.split(","))
+
+        return cls(
+            mode=raw_mode,  # type: ignore[arg-type]
+            host=host,
+            port=port,
+            auth_token=auth_token,
+            checkpoint_db=checkpoint_db,
+            pi_bin=pi_bin,
+            sse_keepalive_s=sse_keepalive_s,
+            max_retained_runs=max_retained_runs,
+            cors_origins=cors_origins,
+        )
 
 
-def load_local_settings(care_home: str | Path | None = None) -> LocalSettings:
-    """加载 `<care_home>/settings.json`；文件不存在时返回空默认配置，格式错误则立即报错。"""
-    path = settings_path(care_home)
-    if not path.exists():
-        return LocalSettings()
-    return LocalSettings.model_validate_json(path.read_text(encoding="utf-8"))
-
-
-def save_local_settings(
-    settings: LocalSettings,
+def resolve_run_model(
     *,
+    mode: RuntimeMode,
+    profile: str | None = None,
+    endpoint: ModelEndpoint | None = None,
+    thinking_level: ThinkingLevel | None = None,
     care_home: str | Path | None = None,
-) -> Path:
-    """以原子替换方式写入 `<care_home>/settings.json`，并在 POSIX 下收紧权限为仅属主读写。"""
-    home_dir = resolve_care_home(care_home)
-    home_dir.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        os.chmod(home_dir, 0o700)
+) -> tuple[ModelEndpoint | None, ThinkingLevel | None]:
+    """Resolve effective ModelEndpoint and thinking level according to local/cloud mode rules."""
+    if profile is not None and endpoint is not None:
+        raise ValueError("Cannot specify both 'profile' and 'endpoint'")
+    if mode == "cloud":
+        if profile is not None:
+            raise ValueError("'profile' is only supported in local mode; pass 'endpoint' directly")
+        return endpoint, thinking_level
+    if endpoint is not None:
+        return endpoint, thinking_level
+    settings = load_local_settings(care_home)
+    resolved = settings.resolve_profile(profile)
+    if resolved is None:
+        return None, thinking_level
+    effective_thinking = thinking_level if thinking_level is not None else resolved.thinking_level
+    return resolved.to_endpoint(), effective_thinking
 
-    target_path = home_dir / DEFAULT_SETTINGS_FILENAME
-    payload = _serialize_settings(settings)
-    encoded = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
-    fd, tmp_name = tempfile.mkstemp(prefix=".settings-", suffix=".tmp", dir=home_dir)
-    tmp_path = Path(tmp_name)
+def resolve_pi_bin(
+    *,
+    mode: RuntimeMode = "local",
+    pi_bin: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    care_home: str | Path | None = None,
+) -> str:
+    """Resolve the Pi executable path.
+
+    Precedence: explicit `pi_bin` > `$PI_BIN` > `settings.json` (`mode == "local"`) > `"pi"`.
+    """
+    if pi_bin is not None:
+        clean = pi_bin.strip()
+        if not clean:
+            raise ValueError("'pi_bin' must be non-empty when provided")
+        return clean
+    env = os.environ if environ is None else environ
+    env_bin = env.get("PI_BIN")
+    if env_bin is not None and env_bin.strip():
+        return env_bin.strip()
+    if mode == "local":
+        configured = load_local_settings(care_home).resolve_adapter_bin("pi")
+        if configured is not None:
+            return configured
+    return "pi"
+
+
+def _parse_int_env(name: str, raw: str | None, *, default: int) -> int:
+    if raw is None or not raw.strip():
+        return default
     try:
-        if os.name != "nt":
-            os.chmod(tmp_path, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(encoded)
-        os.replace(tmp_path, target_path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-
-    return target_path
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid integer for environment variable '{name}': {raw!r}") from exc
 
 
-def _serialize_profile(profile: ModelProfile) -> dict[str, Any]:
-    """序列化单条 Profile；仅在写入本地 settings.json 时显式解包 SecretStr 明文。"""
-    data = profile.model_dump(mode="json", exclude_none=True)
-    if profile.api_key is not None:
-        data["api_key"] = profile.api_key.get_secret_value()
-    return data
-
-
-def _serialize_settings(settings: LocalSettings) -> dict[str, Any]:
-    """构建写入 settings.json 的顶层字典结构。"""
-    data: dict[str, Any] = {
-        "active_profile": settings.active_profile,
-        "profiles": {
-            name: _serialize_profile(profile) for name, profile in settings.profiles.items()
-        },
-    }
-    if settings.adapter_bins:
-        data["adapter_bins"] = dict(settings.adapter_bins)
-    return data
+def _parse_float_env(name: str, raw: str | None, *, default: float) -> float:
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid float for environment variable '{name}': {raw!r}") from exc
 
 
 __all__ = [
-    "CARE_HOME_ENV",
-    "DEFAULT_SETTINGS_FILENAME",
-    "LocalSettings",
-    "ModelProfile",
-    "checkpoints_db_path",
-    "load_local_settings",
-    "resolve_care_home",
-    "runtime_tmp_dir",
-    "save_local_settings",
-    "sessions_dir",
-    "settings_path",
+    "RuntimeMode",
+    "ServerConfig",
+    "resolve_pi_bin",
+    "resolve_run_model",
 ]

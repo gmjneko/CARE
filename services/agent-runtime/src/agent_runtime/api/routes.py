@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 
 from agent_runtime.adapters import AdapterRegistry
-from agent_runtime.api.config import ServerConfig, resolve_run_model
 from agent_runtime.api.errors import UnauthorizedError
 from agent_runtime.api.schemas import (
     AdapterInfo,
@@ -21,6 +20,7 @@ from agent_runtime.api.schemas import (
     WorkflowInfo,
 )
 from agent_runtime.api.sse import build_sse_response, resolve_after_seq
+from agent_runtime.config import ServerConfig, resolve_run_model
 from agent_runtime.orchestrator import ThreadState, WorkflowRegistry
 from agent_runtime.runtime import RunManager, RunSnapshot
 
