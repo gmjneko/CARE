@@ -8,6 +8,7 @@ from agent_runtime.orchestrator.live_runs import (
     NodeRuntimeOverride,
     PendingInteraction,
     RunOptions,
+    StateConflictError,
 )
 from agent_runtime.orchestrator.node import (
     AgentNodeConfig,
@@ -53,6 +54,7 @@ __all__ = [
     "RunOptions",
     "SqliteInflightNodeStore",
     "SqlitePersistenceBackend",
+    "StateConflictError",
     "StreamPacket",
     "ThreadState",
     "TurnCompletionCheck",

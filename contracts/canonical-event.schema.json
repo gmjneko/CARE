@@ -1,0 +1,1050 @@
+{
+  "$defs": {
+    "AgentFailure": {
+      "description": "Structured, redacted failure metadata for routing and diagnostics.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        },
+        "failure_class": {
+          "enum": [
+            "provider_error",
+            "transport_error",
+            "permission_error",
+            "protocol_error",
+            "usage_limit",
+            "unknown"
+          ],
+          "title": "Failure Class",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "failure_class",
+        "message"
+      ],
+      "title": "AgentFailure",
+      "type": "object"
+    },
+    "CompactionEvent": {
+      "properties": {
+        "phase": {
+          "enum": [
+            "started",
+            "completed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "type": {
+          "const": "compaction",
+          "default": "compaction",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "CompactionEvent",
+      "type": "object"
+    },
+    "InteractionRequestEvent": {
+      "properties": {
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Arguments"
+        },
+        "blocking": {
+          "default": true,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "input_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "select",
+                "text"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Mode"
+        },
+        "kind": {
+          "enum": [
+            "approval",
+            "user_input",
+            "notify"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Options"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        },
+        "type": {
+          "const": "interaction.request",
+          "default": "interaction.request",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "kind"
+      ],
+      "title": "InteractionRequestEvent",
+      "type": "object"
+    },
+    "MessageCompletedEvent": {
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
+        },
+        "type": {
+          "const": "message.completed",
+          "default": "message.completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "role",
+        "text"
+      ],
+      "title": "MessageCompletedEvent",
+      "type": "object"
+    },
+    "NodeCompletedEvent": {
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "interrupted",
+            "failed",
+            "aborted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "type": {
+          "const": "node.completed",
+          "default": "node.completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "node_id",
+        "role",
+        "status"
+      ],
+      "title": "NodeCompletedEvent",
+      "type": "object"
+    },
+    "NodeStartedEvent": {
+      "properties": {
+        "adapter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adapter"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "type": {
+          "const": "node.started",
+          "default": "node.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "role"
+      ],
+      "title": "NodeStartedEvent",
+      "type": "object"
+    },
+    "PendingInterrupt": {
+      "description": "一个等待外部决策或恢复的挂起分支（Agent 节点内暂停、Workflow interrupt 或崩溃任务）。",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InteractionRequestEvent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "interrupt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interrupt Id"
+        },
+        "kind": {
+          "enum": [
+            "workflow_interrupt",
+            "agent_interaction",
+            "awaiting_input",
+            "suspended",
+            "failed",
+            "aborted",
+            "crashed"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "node_id",
+        "kind"
+      ],
+      "title": "PendingInterrupt",
+      "type": "object"
+    },
+    "RetryEvent": {
+      "properties": {
+        "attempt": {
+          "default": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "max_attempts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Attempts"
+        },
+        "phase": {
+          "enum": [
+            "started",
+            "completed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "succeeded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Succeeded"
+        },
+        "type": {
+          "const": "retry",
+          "default": "retry",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "RetryEvent",
+      "type": "object"
+    },
+    "TextDeltaEvent": {
+      "properties": {
+        "content_index": {
+          "default": 0,
+          "title": "Content Index",
+          "type": "integer"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        },
+        "type": {
+          "const": "text.delta",
+          "default": "text.delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta"
+      ],
+      "title": "TextDeltaEvent",
+      "type": "object"
+    },
+    "ThinkingDeltaEvent": {
+      "properties": {
+        "content_index": {
+          "default": 0,
+          "title": "Content Index",
+          "type": "integer"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        },
+        "type": {
+          "const": "thinking.delta",
+          "default": "thinking.delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta"
+      ],
+      "title": "ThinkingDeltaEvent",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "description": "Normalized token accounting reported by an agent turn or message.",
+      "properties": {
+        "cached_input_tokens": {
+          "default": 0,
+          "title": "Cached Input Tokens",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "default": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "total_tokens": {
+          "default": 0,
+          "title": "Total Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "TokenUsage",
+      "type": "object"
+    },
+    "ToolCompletedEvent": {
+      "properties": {
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "is_error": {
+          "default": false,
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "output": {
+          "title": "Output",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool.completed",
+          "default": "tool.completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool_name",
+        "output"
+      ],
+      "title": "ToolCompletedEvent",
+      "type": "object"
+    },
+    "ToolOutputDeltaEvent": {
+      "properties": {
+        "chunk": {
+          "title": "Chunk",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool.output_delta",
+          "default": "tool.output_delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool_name",
+        "chunk"
+      ],
+      "title": "ToolOutputDeltaEvent",
+      "type": "object"
+    },
+    "ToolStartedEvent": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "parent_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Tool Call Id"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool.started",
+          "default": "tool.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool_name"
+      ],
+      "title": "ToolStartedEvent",
+      "type": "object"
+    },
+    "TurnCompletedEvent": {
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "final_text": {
+          "default": "",
+          "title": "Final Text",
+          "type": "string"
+        },
+        "session_reusable": {
+          "default": true,
+          "title": "Session Reusable",
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "aborted",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.completed",
+          "default": "turn.completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "turn_id",
+        "status"
+      ],
+      "title": "TurnCompletedEvent",
+      "type": "object"
+    },
+    "TurnStartedEvent": {
+      "properties": {
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.started",
+          "default": "turn.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "turn_id"
+      ],
+      "title": "TurnStartedEvent",
+      "type": "object"
+    },
+    "UsageUpdatedEvent": {
+      "properties": {
+        "type": {
+          "const": "usage.updated",
+          "default": "usage.updated",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/TokenUsage"
+        }
+      },
+      "required": [
+        "usage"
+      ],
+      "title": "UsageUpdatedEvent",
+      "type": "object"
+    },
+    "WorkflowCompletedEvent": {
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "final_output": {
+          "default": "",
+          "title": "Final Output",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "aborted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "const": "workflow.completed",
+          "default": "workflow.completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "WorkflowCompletedEvent",
+      "type": "object"
+    },
+    "WorkflowInterruptedEvent": {
+      "description": "工作流因节点间 interrupt() 或节点内待回复交互/挂起而暂停时发射的终态事件。",
+      "properties": {
+        "interrupts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PendingInterrupt"
+          },
+          "title": "Interrupts",
+          "type": "array"
+        },
+        "type": {
+          "const": "workflow.interrupted",
+          "default": "workflow.interrupted",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "WorkflowInterruptedEvent",
+      "type": "object"
+    },
+    "WorkflowResumedEvent": {
+      "description": "工作流从历史断点恢复执行时发射的起始事件。",
+      "properties": {
+        "resumed_from": {
+          "enum": [
+            "workflow_interrupt",
+            "agent_interaction",
+            "awaiting_input",
+            "failure",
+            "crash"
+          ],
+          "title": "Resumed From",
+          "type": "string"
+        },
+        "type": {
+          "const": "workflow.resumed",
+          "default": "workflow.resumed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resumed_from"
+      ],
+      "title": "WorkflowResumedEvent",
+      "type": "object"
+    },
+    "WorkflowStartedEvent": {
+      "properties": {
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "type": {
+          "const": "workflow.started",
+          "default": "workflow.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "title": "WorkflowStartedEvent",
+      "type": "object"
+    }
+  },
+  "$id": "https://care.local/contracts/canonical-event.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Sequenced canonical event envelope emitted by WorkflowRunner.",
+  "properties": {
+    "node_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Node Id"
+    },
+    "payload": {
+      "discriminator": {
+        "mapping": {
+          "compaction": "#/$defs/CompactionEvent",
+          "interaction.request": "#/$defs/InteractionRequestEvent",
+          "message.completed": "#/$defs/MessageCompletedEvent",
+          "node.completed": "#/$defs/NodeCompletedEvent",
+          "node.started": "#/$defs/NodeStartedEvent",
+          "retry": "#/$defs/RetryEvent",
+          "text.delta": "#/$defs/TextDeltaEvent",
+          "thinking.delta": "#/$defs/ThinkingDeltaEvent",
+          "tool.completed": "#/$defs/ToolCompletedEvent",
+          "tool.output_delta": "#/$defs/ToolOutputDeltaEvent",
+          "tool.started": "#/$defs/ToolStartedEvent",
+          "turn.completed": "#/$defs/TurnCompletedEvent",
+          "turn.started": "#/$defs/TurnStartedEvent",
+          "usage.updated": "#/$defs/UsageUpdatedEvent",
+          "workflow.completed": "#/$defs/WorkflowCompletedEvent",
+          "workflow.interrupted": "#/$defs/WorkflowInterruptedEvent",
+          "workflow.resumed": "#/$defs/WorkflowResumedEvent",
+          "workflow.started": "#/$defs/WorkflowStartedEvent"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TurnStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/TextDeltaEvent"
+        },
+        {
+          "$ref": "#/$defs/ThinkingDeltaEvent"
+        },
+        {
+          "$ref": "#/$defs/MessageCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/ToolStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/ToolOutputDeltaEvent"
+        },
+        {
+          "$ref": "#/$defs/ToolCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/CompactionEvent"
+        },
+        {
+          "$ref": "#/$defs/RetryEvent"
+        },
+        {
+          "$ref": "#/$defs/InteractionRequestEvent"
+        },
+        {
+          "$ref": "#/$defs/UsageUpdatedEvent"
+        },
+        {
+          "$ref": "#/$defs/TurnCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/WorkflowStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/WorkflowResumedEvent"
+        },
+        {
+          "$ref": "#/$defs/NodeStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/NodeCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/WorkflowInterruptedEvent"
+        },
+        {
+          "$ref": "#/$defs/WorkflowCompletedEvent"
+        }
+      ],
+      "title": "Payload"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "thread_id": {
+      "title": "Thread Id",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "workflow_id": {
+      "title": "Workflow Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "run_id",
+    "thread_id",
+    "workflow_id",
+    "payload"
+  ],
+  "title": "RuntimeEvent",
+  "type": "object"
+}

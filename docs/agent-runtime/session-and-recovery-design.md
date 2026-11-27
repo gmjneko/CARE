@@ -1,6 +1,6 @@
 # CARE Agent Runtime 配置体系、连续对话与双层中断恢复设计文档
 
-> **文档状态**：已落地（本地 `~/.care/` 配置、Step A 连续对话与 Step B 双层中断恢复均已实现并通过验证）  
+> **文档状态**：已落地（本地 `~/.care/` 配置、Step A 连续对话、Step B 双层中断恢复与 Step C FastAPI 服务化均已实现并通过验证）  
 > **关联文档**：[总体架构设计文档](../architecture.md) · [Agent Runtime 核心设计文档](agent-runtime-design.md)  
 > **适用范围**：AI 工程（Python / LangGraph / Pi）、桌面端（Electron）、后端（Java 控制面与 AI Gateway）
 
@@ -419,7 +419,7 @@ class WorkflowState(AgentChanges):
 | :--- | :--- | :--- | :--- |
 | **Step A（连续对话与持久化）** | ✅ 已完成 | `paths.py`、`adapters/pi/transport.py`、`orchestrator/node.py`、`orchestrator/runner.py`、`workflows/single_agent.py`、`workflows/plan_and_execute.py`、`main.py` | `~/.care/sessions/` 与 `~/.care/checkpoints.sqlite` 落盘；内置工作流默认 `persist_session=True`；同 `thread_id` 跨进程无损续聊；`main.py` 开箱体验多轮对话。 |
 | **Step B（双层中断恢复、架构分层收口与 RunManager）** | ✅ 已完成 | `protocol/`、`adapters/`、`config.py`、`orchestrator/{state,live_runs,node,recovery,runner,registry}.py`、`orchestrator/persistence/`、`runtime/manager.py`、`scripts/reset_local_state.py` | 补齐双层中断恢复与并行分支并发挂起/恢复；拆出 `PersistenceBackend`（支持非 SQLite 替换）、`LiveRunRegistry`、`recovery.py` 与应用层 `RunManager`（后台任务托管、多订阅扇出与 `after_seq` 重放）；分离 `node_sessions` / `node_outputs` 与静态工作流拓扑，支持 `node_overrides` 异构节点覆盖与 `AgentCapabilities` 强校验。 |
-| **Step C（服务化与桌面端对接）** | ⏳ 待实施 | 新增 `app.py`、`contracts/canonical-event.schema.json` | 直接基于 `RunManager` 暴露 FastAPI HTTP / SSE / WS 接口，导出跨语言契约，接入 Electron 桌面端与 Java 控制面。 |
+| **Step C（服务化与契约导出）** | ✅ 已完成 | `pyproject.toml`、`app.py`、`api/{config,errors,schemas,sse,routes}.py`、`runtime/manager.py`、`orchestrator/{live_runs,runner}.py`、`scripts/export_contracts.py`、`contracts/canonical-event.schema.json` | 基于 `RunManager` 暴露 FastAPI HTTP REST + SSE 服务（`MODE=local|cloud`、`RUNTIME_AUTH_TOKEN` 鉴权、`Last-Event-ID`/`after_seq` 重放与心跳保活、有界历史淘汰、422 脱敏与 `StateConflictError` 409 映射），导出 `contracts/canonical-event.schema.json` 供 Electron 与 Java 对接。 |
 
 ### 7.2 端到端验证矩阵（遵循外部边界替身策略）
 

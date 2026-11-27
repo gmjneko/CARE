@@ -1,7 +1,7 @@
 # CARE Agent Runtime 详细设计文档（Workflow + Agent）
 
-> **文档状态**：已落地（Step 1 实现基线，对应 `../../services/agent-runtime` v0.0.1）  
-> **关联文档**：[总体架构设计文档](./architecture.md)  
+> **文档状态**：已落地（Step 1 执行引擎 + Step 2 FastAPI HTTP/SSE 服务化与事件契约导出均已落地，对应 `../../services/agent-runtime` v0.0.1）  
+> **关联文档**：[总体架构设计文档](../architecture.md)  
 > **适用范围**：AI 工程（Python / LangGraph / Pi）、后端（Java 事件消费与契约对接）、前端（Electron / Web 流式渲染）
 
 ---
@@ -28,7 +28,7 @@
 
 ```mermaid
 flowchart TD
-    Entry["main.py (组装根 / 后续 Step 2 扩展 app.py)"] --> Runtime["runtime/ (RunManager: 后台任务托管、多订阅扇出与 after_seq 重放)"]
+    Entry["app.py (FastAPI HTTP+SSE 服务入口) / main.py (CLI 调试入口)"] --> Runtime["runtime/ (RunManager: 后台任务托管、有界历史清理、多订阅扇出与 after_seq 重放)"]
     Entry --> WF["workflows/ (纯拓扑定义，一文件一工作流 + create_default_workflow_registry)"]
     Entry --> Adapters["adapters/ (AdapterRegistry, PiRpcAdapter)"]
     Entry --> Persist["orchestrator/persistence/ (PersistenceBackend -> SqlitePersistenceBackend)"]
@@ -48,9 +48,19 @@ flowchart TD
 
 ```text
 services/agent-runtime/
-├── pyproject.toml                         # Python >=3.14, 轻量依赖 (langgraph, checkpoint-sqlite, pydantic)
+├── pyproject.toml                         # Python >=3.14, 轻量依赖 (fastapi, uvicorn, langgraph, checkpoint-sqlite, pydantic)
 ├── main.py                                # 直接右键运行的 main() 入口（经 RunManager 驱动与非阻塞控制台交互）
+├── scripts/
+│   ├── export_contracts.py                # 导出/校验 contracts/canonical-event.schema.json
+│   └── reset_local_state.py               # 清理开发期 checkpoints/tmp 本地状态（保留 settings.json）
 ├── src/agent_runtime/
+│   ├── app.py                             # 极薄组装根（create_app / lifespan / care-runtime CLI）
+│   ├── api/                               # 【HTTP + SSE 服务接口层】
+│   │   ├── config.py                      # ServerConfig、from_env() 与 local/cloud 模型解析
+│   │   ├── errors.py                      # UnauthorizedError、脱敏 ErrorResponse 与全局异常处理器注册
+│   │   ├── schemas.py                     # HTTP 请求/响应 Pydantic 模型与 ErrorResponse
+│   │   ├── sse.py                         # resolve_after_seq、SSE 帧序列化与保活流生成器
+│   │   └── routes.py                      # Bearer 鉴权依赖与 /healthz /workflows /adapters /runs /threads 路由
 │   ├── paths.py                           # 本地 CARE 目录路径约定 (~/.care/settings.json, ~/.care/tmp，支持 CARE_HOME 覆盖)
 │   ├── config.py                          # 本地配置加载/持久化 (~/.care/settings.json，含 adapter_bins)
 │   ├── protocol/
@@ -86,9 +96,11 @@ services/agent-runtime/
     ├── e2e/test_workflow_scenarios.py     # 生产路径工作流与适配层 E2E 场景测试
     ├── e2e/test_session_and_recovery.py   # 多轮持久化、双层中断恢复、并行分支与异构覆盖 E2E 测试
     ├── e2e/test_run_manager.py            # RunManager 断连续传、多订阅 Observe 与异常传播 E2E 测试
+    ├── e2e/test_http_api.py               # FastAPI HTTP/SSE 实测（鉴权、断连重放、多端观测、跨重启恢复、保活与契约防漂移）
     ├── e2e/test_main_cli.py               # main.py 控制台交互与非 TTY 审批 E2E 测试
     └── unit/
         ├── test_config.py                 # ModelEndpoint、SessionConfig 与 ~/.care/settings.json 失败模式测试
+        ├── test_server_config.py          # ServerConfig、环境变量解析与 SSE 帧/游标失败模式测试
         ├── test_framing.py                # JsonlFramer 失败模式隔离测试
         └── test_normalizer.py             # PiEventNormalizer 失败模式隔离测试
 ```
@@ -446,6 +458,6 @@ SECURITY_AUDIT_WORKFLOW = WorkflowDefinition(
 
 | 后续阶段 | 演进内容 | 与当前代码的衔接点 |
 | :--- | :--- | :--- |
-| **Step 2（服务化与契约导出）** | 导出 `contracts/canonical-event.schema.json`；新增 `app.py` 暴露 FastAPI HTTP / SSE / WebSocket 接口 | 直接调用 `RuntimeEvent.model_json_schema()`；FastAPI 路由直接透传 `WorkflowRunner.run()` 产出的 `RuntimeEvent` 及 `steer`/`follow_up`/`abort` 控制方法 |
+| **Step 2（服务化与契约导出）** | ✅ 已落地：新增薄入口 `app.py` 与 `api/{config,errors,schemas,sse,routes}.py` 暴露 FastAPI REST + SSE（`GET /healthz`、`/workflows`、`/adapters`、`/runs`、`GET /runs/{id}/events`、热交互与控制接口、`/workflows/{wf}/threads/{tid}` 查询/恢复/放弃）及 `RUNTIME_AUTH_TOKEN` 鉴权；新增 `scripts/export_contracts.py` 导出 `contracts/canonical-event.schema.json` | 直接基于 `RunManager` 托管生命周期与多订阅流，支持 `Last-Event-ID` / `after_seq` 重放、心跳保活、422 脱敏与有界运行历史清理 |
 | **Step 3（双层 HITL 审批）** | 节点间人工审批（LangGraph `interrupt()`）与工具级拦截（`packages/pi-extensions/enterprise-approval-gate`） | 节点级通过 `Command(resume=...)` 复用 `AsyncSqliteSaver`；工具级扩展经 `SessionConfig.extensions` 注入，审批与提问统一走已实现的 `InteractionRequestEvent` + `interaction_handler` + `respond_interaction()` |
 | **Step 4（云端模式与多后端）** | 云端沙箱持久化与多 Agent 后端混编 | `WorkflowRunner` 切换 `AsyncPostgresSaver`（`MODE=cloud`）；`AdapterRegistry` 注册第二个 `AgentAdapter`（Codex / Claude Code） |

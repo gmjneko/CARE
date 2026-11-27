@@ -28,6 +28,10 @@ InteractionMode = Literal["cancel", "wait", "suspend"]
 _ABORT_CANCEL_SETTLE_TIMEOUT_S = 2.0
 
 
+class StateConflictError(ValueError):
+    """Raised when an operation conflicts with the current run or thread lifecycle state."""
+
+
 class _SuspendSignal:
     """内部哨兵：由 runner.suspend() / suspend_all() 注入，通知等待中的热交互立即冷挂起。"""
 
@@ -98,7 +102,7 @@ class LiveRunRegistry:
     @contextlib.contextmanager
     def claim(self, thread_id: str, run_id: str) -> Iterator[None]:
         if thread_id in self._active_run_ids or run_id in self._active_run_ids.values():
-            raise ValueError(f"Thread '{thread_id}' or run '{run_id}' is already running")
+            raise StateConflictError(f"Thread '{thread_id}' or run '{run_id}' is already running")
         self._active_run_ids[thread_id] = run_id
         try:
             yield

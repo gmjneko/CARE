@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +16,7 @@ from agent_runtime.orchestrator import (
     InteractionMode,
     NodeRuntimeOverride,
     ResumeInput,
+    StateConflictError,
     ThreadState,
     WorkflowBuilder,
     WorkflowRunner,
@@ -49,7 +50,12 @@ class RunSnapshot(BaseModel):
 class _ManagedRun:
     """Internal background task + append-only event buffer supporting multi-subscriber fan-out."""
 
-    def __init__(self, first_event: RuntimeEvent) -> None:
+    def __init__(
+        self,
+        first_event: RuntimeEvent,
+        *,
+        on_complete: Callable[[], None] | None = None,
+    ) -> None:
         self.run_id = first_event.run_id
         self.thread_id = first_event.thread_id
         self.workflow_id = first_event.workflow_id
@@ -57,8 +63,10 @@ class _ManagedRun:
         self.events: list[RuntimeEvent] = [first_event]
         self.exception: BaseException | None = None
         self.done: bool = False
+        self.active_subscribers: int = 0
         self.condition = asyncio.Condition()
         self.task: asyncio.Task[None] | None = None
+        self._on_complete = on_complete
 
     def snapshot(self) -> RunSnapshot:
         return RunSnapshot(
@@ -90,6 +98,8 @@ class _ManagedRun:
                 self.status = "failed"
                 self.done = True
                 self.condition.notify_all()
+            if self._on_complete is not None:
+                self._on_complete()
             return
         finally:
             if hasattr(stream, "aclose"):
@@ -99,6 +109,8 @@ class _ManagedRun:
         async with self.condition:
             self.done = True
             self.condition.notify_all()
+        if self._on_complete is not None:
+            self._on_complete()
 
 
 class RunManager:
@@ -108,8 +120,11 @@ class RunManager:
     `after_seq` to catch up on missed events, or attach multiple concurrent observers.
     """
 
-    def __init__(self, runner: WorkflowRunner) -> None:
+    def __init__(self, runner: WorkflowRunner, *, max_retained_runs: int = 128) -> None:
+        if max_retained_runs < 1:
+            raise ValueError("max_retained_runs must be at least 1")
         self._runner = runner
+        self._max_retained_runs = max_retained_runs
         self._runs: dict[str, _ManagedRun] = {}
         self._entered = False
 
@@ -226,23 +241,28 @@ class RunManager:
             raise ValueError("after_seq must be non-negative")
         managed = self._require_run(run_id)
         cursor = after_seq
+        managed.active_subscribers += 1
+        try:
+            while True:
+                async with managed.condition:
+                    while cursor >= len(managed.events) and not managed.done:
+                        await managed.condition.wait()
+                    batch = managed.events[cursor:]
+                    cursor += len(batch)
+                    done = managed.done
+                    exc = managed.exception
 
-        while True:
-            async with managed.condition:
-                while cursor >= len(managed.events) and not managed.done:
-                    await managed.condition.wait()
-                batch = managed.events[cursor:]
-                cursor += len(batch)
-                done = managed.done
-                exc = managed.exception
+                for event in batch:
+                    yield event
 
-            for event in batch:
-                yield event
-
-            if done:
-                if exc is not None:
-                    raise exc
-                return
+                if done:
+                    if exc is not None:
+                        raise exc
+                    return
+        finally:
+            managed.active_subscribers -= 1
+            if managed.done and managed.active_subscribers == 0:
+                self._prune_completed_runs()
 
     async def wait(self, run_id: str) -> RunSnapshot:
         """Await background completion of `run_id`, re-raising any unhandled run exception."""
@@ -266,18 +286,37 @@ class RunManager:
         *,
         node_id: str | None = None,
     ) -> None:
-        await self._runner.respond_interaction(run_id, response, node_id=node_id)
+        self._require_run(run_id)
+        try:
+            await self._runner.respond_interaction(run_id, response, node_id=node_id)
+        except KeyError as exc:
+            raise StateConflictError(_key_error_message(exc)) from exc
 
     async def steer(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
-        await self._runner.steer(run_id, message, node_id=node_id)
+        self._require_run(run_id)
+        try:
+            await self._runner.steer(run_id, message, node_id=node_id)
+        except KeyError as exc:
+            raise StateConflictError(_key_error_message(exc)) from exc
 
     async def follow_up(self, run_id: str, message: str, *, node_id: str | None = None) -> None:
-        await self._runner.follow_up(run_id, message, node_id=node_id)
+        self._require_run(run_id)
+        try:
+            await self._runner.follow_up(run_id, message, node_id=node_id)
+        except KeyError as exc:
+            raise StateConflictError(_key_error_message(exc)) from exc
 
     async def abort(self, run_id: str) -> None:
-        await self._runner.abort(run_id)
+        self._require_run(run_id)
+        try:
+            await self._runner.abort(run_id)
+        except KeyError as exc:
+            raise StateConflictError(_key_error_message(exc)) from exc
 
     async def suspend(self, run_id: str) -> None:
+        managed = self._require_run(run_id)
+        if managed.done:
+            raise StateConflictError(f"Run '{run_id}' is already {managed.status}")
         await self._runner.suspend(run_id)
 
     async def suspend_all(self) -> None:
@@ -312,15 +351,26 @@ class RunManager:
             if hasattr(stream, "aclose"):
                 with contextlib.suppress(BaseException):
                     await stream.aclose()
-            raise ValueError(f"Run '{first_event.run_id}' already exists in RunManager")
+            raise StateConflictError(f"Run '{first_event.run_id}' already exists in RunManager")
 
-        managed = _ManagedRun(first_event)
+        managed = _ManagedRun(first_event, on_complete=self._prune_completed_runs)
         self._runs[managed.run_id] = managed
+        self._prune_completed_runs()
         managed.task = asyncio.create_task(
             managed.pump(stream),
             name=f"care-run-{managed.run_id}",
         )
         return managed.snapshot()
+
+    def _prune_completed_runs(self) -> None:
+        completed_ids = [
+            rid
+            for rid, managed in self._runs.items()
+            if managed.done and managed.active_subscribers == 0
+        ]
+        overflow = len(completed_ids) - self._max_retained_runs
+        for rid in completed_ids[: max(overflow, 0)]:
+            self._runs.pop(rid, None)
 
     def _require_entered(self) -> None:
         if not self._entered:
@@ -331,6 +381,10 @@ class RunManager:
         if managed is None:
             raise KeyError(f"Unknown run_id '{run_id}'")
         return managed
+
+
+def _key_error_message(exc: KeyError) -> str:
+    return str(exc.args[0]) if exc.args else str(exc)
 
 
 __all__ = ["RunManager", "RunSnapshot", "RunStatus"]

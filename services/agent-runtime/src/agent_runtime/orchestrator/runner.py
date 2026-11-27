@@ -20,6 +20,7 @@ from agent_runtime.orchestrator.live_runs import (
     LiveRunRegistry,
     NodeRuntimeOverride,
     RunOptions,
+    StateConflictError,
 )
 from agent_runtime.orchestrator.node import StreamPacket
 from agent_runtime.orchestrator.persistence import (
@@ -118,7 +119,7 @@ class WorkflowRunner:
             preserved_sessions: dict[str, str] = {}
             if inspected is not None and inspected.state.resumable:
                 if inspected.state.status not in ("failed", "aborted"):
-                    raise ValueError(
+                    raise StateConflictError(
                         f"Thread '{effective_thread_id}' is {inspected.state.status}; "
                         "call resume() or discard()"
                     )
@@ -199,7 +200,7 @@ class WorkflowRunner:
         with self._live_runs.claim(thread_id, effective_run_id):
             inspected = await inspect_thread(compiled, inflight_store, thread_id, cleanup=True)
             if not inspected.state.resumable:
-                raise ValueError(
+                raise StateConflictError(
                     f"Thread '{thread_id}' is already {inspected.state.status}; "
                     "start a new turn with run()"
                 )
