@@ -115,6 +115,53 @@ def _write_manifest(run_dir: Path, name: str, events: list[RuntimeEvent]) -> dic
     return manifest
 
 
+def _build_approval_gate_workflow() -> StateGraph[WorkflowState]:
+    """3-node workflow: planner -> plan_approval (build_approval_node) -> executor -> END."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "planner",
+        build_agent_node(
+            AgentNodeConfig(
+                id="planner",
+                role="planner",
+                prompt_builder=lambda s: f"Currently in the **Plan** phase.\n\n{s['prompt']}",
+            )
+        ),
+    )
+    graph.add_node(
+        "plan_approval",
+        build_approval_node(
+            "plan_approval",
+            title="确认执行计划",
+            message="是否按照plan执行",
+            content_builder=lambda s: s["node_outputs"]["planner"].summary,
+        ),
+    )
+    graph.add_node(
+        "executor",
+        build_agent_node(
+            AgentNodeConfig(
+                id="executor",
+                role="executor",
+                inherit_session_from="planner",
+                prompt_builder=lambda s: (
+                    "Currently in the **Execute** phase.\n\n"
+                    f"Follow plan: {s['node_outputs']['planner'].summary}"
+                ),
+            )
+        ),
+    )
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "plan_approval")
+    graph.add_conditional_edges(
+        "plan_approval",
+        continue_if_running("executor"),
+        {"executor": "executor", END: END},
+    )
+    graph.add_edge("executor", END)
+    return graph
+
+
 def _build_three_node_workflow() -> StateGraph[WorkflowState]:
     """3-node workflow: planner -> executor -> reviewer (verifies downstream resume)."""
     graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
@@ -209,9 +256,9 @@ async def test_plan_and_execute_isolates_session_refs_per_node(tmp_path: Path) -
     async with _make_runner("standard", checkpoint_db=db_path) as runner:
         async for _ in runner.run("plan_and_execute", "Add cache", tmp_path, thread_id=thread_id):
             pass
-        async for _ in runner.resume(
-            "plan_and_execute", thread_id, resume_value={"decision": "approve"}
-        ):
+        async for _ in runner.resume("plan_and_execute", thread_id, complete=True):
+            pass
+        async for _ in runner.resume("plan_and_execute", thread_id, complete=True):
             pass
         state = await runner.get_thread_state("plan_and_execute", thread_id)
 
@@ -220,8 +267,8 @@ async def test_plan_and_execute_isolates_session_refs_per_node(tmp_path: Path) -
     assert planner_ref is not None
     assert executor_ref is not None
     assert planner_ref != executor_ref
-    assert state.node_outputs["plan_approval"].session_ref is None
-    assert state.node_outputs["plan_approval"].status == "completed"
+    assert state.node_outputs["planner"].status == "completed"
+    assert state.node_outputs["executor"].status == "completed"
     assert Path(planner_ref).parent == sessions_dir()
     assert Path(executor_ref).parent == sessions_dir()
 
@@ -356,7 +403,7 @@ async def test_suspend_all_during_hot_interaction_and_resume_after_restart(tmp_p
         async for ev in runner1.resume(
             "plan_and_execute",
             thread_id,
-            resume_value={"decision": "approve"},
+            complete=True,
             interaction_mode="wait",
         ):
             run1_events.append(ev)
@@ -387,10 +434,15 @@ async def test_suspend_all_during_hot_interaction_and_resume_after_restart(tmp_p
             ),
         ):
             run2_events.append(ev)
+        run3_events = [
+            ev async for ev in runner2.resume("plan_and_execute", thread_id, complete=True)
+        ]
 
     started_nodes = [ev.payload.node_id for ev in run2_events if ev.payload.type == "node.started"]
     assert started_nodes == ["executor"]
-    final = run2_events[-1].payload
+    assert isinstance(run2_events[-1].payload, WorkflowInterruptedEvent)
+    assert run2_events[-1].payload.interrupts[0].kind == "awaiting_input"
+    final = run3_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
     assert "memory" in final.final_output
@@ -446,7 +498,7 @@ async def test_executor_failure_resumes_skipping_completed_planner(tmp_path: Pat
         async for ev in runner1.resume(
             "plan_and_execute",
             thread_id,
-            resume_value={"decision": "approve"},
+            complete=True,
         ):
             events1.append(ev)
 
@@ -468,12 +520,15 @@ async def test_executor_failure_resumes_skipping_completed_planner(tmp_path: Pat
             prompt="Retry after backoff",
         ):
             events2.append(ev)
+        events3 = [ev async for ev in runner2.resume("plan_and_execute", thread_id, complete=True)]
 
     assert isinstance(events2[0].payload, WorkflowResumedEvent)
     assert events2[0].payload.resumed_from == "failure"
     started_nodes = [ev.payload.node_id for ev in events2 if ev.payload.type == "node.started"]
     assert started_nodes == ["executor"]
-    final2 = events2[-1].payload
+    assert isinstance(events2[-1].payload, WorkflowInterruptedEvent)
+    assert events2[-1].payload.interrupts[0].kind == "awaiting_input"
+    final2 = events3[-1].payload
     assert isinstance(final2, WorkflowCompletedEvent)
     assert final2.status == "completed"
     assert final2.final_output == "EXECUTOR_RECOVERED(turns=2):Retry after backoff"
@@ -488,9 +543,9 @@ async def test_hard_kill_crash_recovers_session_and_pending_interaction_from_wal
     async with _make_runner("standard", checkpoint_db=db_path) as first:
         async for _ in first.run("plan_and_execute", "First turn", tmp_path, thread_id=thread_id):
             pass
-        async for _ in first.resume(
-            "plan_and_execute", thread_id, resume_value={"decision": "approve"}
-        ):
+        async for _ in first.resume("plan_and_execute", thread_id, complete=True):
+            pass
+        async for _ in first.resume("plan_and_execute", thread_id, complete=True):
             pass
 
     # Kill the actual worker while its RPC child is waiting in the second turn.
@@ -525,6 +580,9 @@ async def test_hard_kill_crash_recovers_session_and_pending_interaction_from_wal
                 ),
             )
         ]
+        done_events = [
+            ev async for ev in runner2.resume("plan_and_execute", thread_id, complete=True)
+        ]
         after = await runner2.get_thread_state("plan_and_execute", thread_id)
         assert ref and after.node_outputs["executor"].session_ref == ref
 
@@ -534,7 +592,7 @@ async def test_hard_kill_crash_recovers_session_and_pending_interaction_from_wal
         ev.payload.node_id for ev in resumed_events if ev.payload.type == "node.started"
     ]
     assert started_nodes == ["executor"]
-    final = resumed_events[-1].payload
+    final = done_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
     assert "staging" in final.final_output
@@ -549,7 +607,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
     run1_events: list[RuntimeEvent] = []
     async with _make_runner("standard", checkpoint_db=db_path) as runner1:
         async for ev in runner1.run(
-            "plan_and_execute",
+            _build_approval_gate_workflow,
             "Ship v2",
             tmp_path,
             thread_id=thread_id,
@@ -570,14 +628,14 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
     # Brand-new Runner resumes across process restart without re-running planner
     run2_events: list[RuntimeEvent] = []
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner2:
-        st = await runner2.get_thread_state("plan_and_execute", thread_id)
+        st = await runner2.get_thread_state(_build_approval_gate_workflow, thread_id)
         assert st.status == "interrupted"
         assert st.resumable is True
         assert len(st.interrupts) == 1
         assert st.interrupts[0].node_id == "plan_approval"
 
         async for ev in runner2.resume(
-            "plan_and_execute",
+            _build_approval_gate_workflow,
             thread_id,
             resume_value={"decision": "approve"},
             interaction_mode="suspend",
@@ -591,7 +649,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
     async with _make_runner("ui_question", checkpoint_db=db_path) as runner3:
         with pytest.raises(ValueError, match="request_id"):
             async for _ in runner3.resume(
-                "plan_and_execute",
+                _build_approval_gate_workflow,
                 thread_id,
                 interaction_response=InteractionResponse(request_id="stale", decision="deny"),
             ):
@@ -599,7 +657,7 @@ async def test_workflow_level_langgraph_interrupt_resumes_across_restart(tmp_pat
         run3_events = [
             ev
             async for ev in runner3.resume(
-                "plan_and_execute",
+                _build_approval_gate_workflow,
                 thread_id,
                 interaction_response=InteractionResponse(
                     request_id=pause_req.request_id, decision="approve", value="redis"
@@ -729,12 +787,7 @@ async def test_failed_multinode_turn_allows_fresh_run_preserving_all_node_sessio
             "plan_and_execute", "Original task", tmp_path, thread_id=thread_id
         ):
             pass
-        events1 = [
-            ev
-            async for ev in runner1.resume(
-                "plan_and_execute", thread_id, resume_value={"decision": "approve"}
-            )
-        ]
+        events1 = [ev async for ev in runner1.resume("plan_and_execute", thread_id, complete=True)]
         st1 = await runner1.get_thread_state("plan_and_execute", thread_id)
 
     assert isinstance(events1[-1].payload, WorkflowCompletedEvent)
@@ -753,19 +806,20 @@ async def test_failed_multinode_turn_allows_fresh_run_preserving_all_node_sessio
         ]
         assert isinstance(events2_plan[-1].payload, WorkflowInterruptedEvent)
         events2_exec = [
-            ev
-            async for ev in runner2.resume(
-                "plan_and_execute", thread_id, resume_value={"decision": "approve"}
-            )
+            ev async for ev in runner2.resume("plan_and_execute", thread_id, complete=True)
         ]
-        events2 = [*events2_plan, *events2_exec]
+        assert isinstance(events2_exec[-1].payload, WorkflowInterruptedEvent)
+        events2_done = [
+            ev async for ev in runner2.resume("plan_and_execute", thread_id, complete=True)
+        ]
+        events2 = [*events2_plan, *events2_exec, *events2_done]
         st2 = await runner2.get_thread_state("plan_and_execute", thread_id)
 
     _write_manifest(tmp_path, "fail_then_new_run", events2)
     started_plan = [ev.payload.node_id for ev in events2_plan if ev.payload.type == "node.started"]
     started_exec = [ev.payload.node_id for ev in events2_exec if ev.payload.type == "node.started"]
-    assert started_plan == ["planner", "plan_approval"]
-    assert started_exec == ["plan_approval", "executor"]
+    assert started_plan == ["planner"]
+    assert started_exec == ["executor"]
     assert isinstance(events2[-1].payload, WorkflowCompletedEvent)
     assert events2[-1].payload.status == "completed"
     assert st2.status == "completed" and st2.resumable is False
@@ -794,7 +848,7 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
             async for ev in runner1.resume(
                 "plan_and_execute",
                 thread_int,
-                resume_value={"decision": "approve"},
+                complete=True,
                 interaction_mode="suspend",
             )
         ]
@@ -828,11 +882,10 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
             "plan_and_execute", "Start fresh after discard", tmp_path, thread_id=thread_int
         ):
             pass
+        async for _ in runner2.resume("plan_and_execute", thread_int, complete=True):
+            pass
         events_after = [
-            ev
-            async for ev in runner2.resume(
-                "plan_and_execute", thread_int, resume_value={"decision": "approve"}
-            )
+            ev async for ev in runner2.resume("plan_and_execute", thread_int, complete=True)
         ]
         st_after = await runner2.get_thread_state("plan_and_execute", thread_int)
 
@@ -848,9 +901,9 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
     async with _make_runner("standard", checkpoint_db=db_path) as first:
         async for _ in first.run("plan_and_execute", "Turn 1", tmp_path, thread_id=thread_crash):
             pass
-        async for _ in first.resume(
-            "plan_and_execute", thread_crash, resume_value={"decision": "approve"}
-        ):
+        async for _ in first.resume("plan_and_execute", thread_crash, complete=True):
+            pass
+        async for _ in first.resume("plan_and_execute", thread_crash, complete=True):
             pass
 
     worker = await asyncio.create_subprocess_exec(
@@ -891,11 +944,10 @@ async def test_unresolved_interrupt_and_crash_block_run_until_discarded(tmp_path
             thread_id=thread_crash,
         ):
             pass
+        async for _ in runner3.resume("plan_and_execute", thread_crash, complete=True):
+            pass
         recovered_events = [
-            ev
-            async for ev in runner3.resume(
-                "plan_and_execute", thread_crash, resume_value={"decision": "approve"}
-            )
+            ev async for ev in runner3.resume("plan_and_execute", thread_crash, complete=True)
         ]
         st_recovered = await runner3.get_thread_state("plan_and_execute", thread_crash)
 
@@ -1599,16 +1651,13 @@ async def test_workflow_runner_operates_with_custom_non_sqlite_persistence_backe
             )
         ]
         assert isinstance(run1[-1].payload, WorkflowInterruptedEvent)
-        run2 = [
-            ev
-            async for ev in runner.resume(
-                "plan_and_execute", "m1", resume_value={"decision": "approve"}
-            )
-        ]
+        run2 = [ev async for ev in runner.resume("plan_and_execute", "m1", complete=True)]
+        assert isinstance(run2[-1].payload, WorkflowInterruptedEvent)
+        run3 = [ev async for ev in runner.resume("plan_and_execute", "m1", complete=True)]
         st = await runner.get_thread_state("plan_and_execute", "m1")
 
-    assert isinstance(run2[-1].payload, WorkflowCompletedEvent)
-    assert run2[-1].payload.status == "completed"
+    assert isinstance(run3[-1].payload, WorkflowCompletedEvent)
+    assert run3[-1].payload.status == "completed"
     assert st.status == "completed"
     assert st.inflight_nodes == ()
 
@@ -2253,10 +2302,12 @@ async def test_interactive_node_explicit_completion_skips_extra_turn_and_support
         assert st_done.status == "completed" and not st_done.resumable
 
         # complete=True on a non-awaiting_input interrupt (plan_approval) must fail fast.
-        async for _ in runner.run("plan_and_execute", "Check gate", tmp_path, thread_id="gate-chk"):
+        async for _ in runner.run(
+            _build_approval_gate_workflow, "Check gate", tmp_path, thread_id="gate-chk"
+        ):
             pass
         with pytest.raises(ValueError, match="only valid for awaiting_input"):
-            await anext(runner.resume("plan_and_execute", "gate-chk", complete=True))
+            await anext(runner.resume(_build_approval_gate_workflow, "gate-chk", complete=True))
 
         # Discard while awaiting_input preserves planner session_ref for a fresh run.
         thread_discard = "explicit-handoff-discard"
@@ -2358,7 +2409,7 @@ async def test_plan_and_execute_inherits_planner_context_via_fork_and_reforks_on
     thread_id = "plan-inherit-fork"
 
     async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
-        # Turn 1: planner -> approval(with note) -> executor (forks planner session)
+        # Turn 1: planner (2 turns) -> complete -> executor (forks planner, 2 turns) -> complete
         t1_plan = [
             ev
             async for ev in runner.run(
@@ -2366,11 +2417,21 @@ async def test_plan_and_execute_inherits_planner_context_via_fork_and_reforks_on
             )
         ]
         assert isinstance(t1_plan[-1].payload, WorkflowInterruptedEvent)
-        async for _ in runner.resume(
-            "plan_and_execute",
-            thread_id,
-            resume_value={"decision": "approve", "feedback": "Add unit tests"},
-        ):
+        async for _ in runner.resume("plan_and_execute", thread_id, prompt="Include unit tests"):
+            pass
+        t1_exec_1 = [ev async for ev in runner.resume("plan_and_execute", thread_id, complete=True)]
+        assert isinstance(t1_exec_1[-1].payload, WorkflowInterruptedEvent)
+        assert t1_exec_1[-1].payload.interrupts[0].node_id == "executor"
+
+        # Follow-up inside executor resumes its own forked session (does not re-fork planner).
+        t1_exec_2 = [
+            ev
+            async for ev in runner.resume(
+                "plan_and_execute", thread_id, prompt="Also update docstrings"
+            )
+        ]
+        assert isinstance(t1_exec_2[-1].payload, WorkflowInterruptedEvent)
+        async for _ in runner.resume("plan_and_execute", thread_id, complete=True):
             pass
         st1 = await runner.get_thread_state("plan_and_execute", thread_id)
 
@@ -2381,15 +2442,16 @@ async def test_plan_and_execute_inherits_planner_context_via_fork_and_reforks_on
 
         exec_payload_1 = json.loads(st1.node_outputs["executor"].summary)
         assert exec_payload_1["session_file"] == exec_ref_1
-        assert exec_payload_1["turn_count"] == 2
+        assert exec_payload_1["turn_count"] == 4
         assert "Currently in the **Plan** phase" in exec_payload_1["history"][0]
         assert "Feature alpha" in exec_payload_1["history"][0]
-        assert "Currently in the **Execute** phase" in exec_payload_1["history"][1]
-        assert "## Approval Note\nAdd unit tests" in exec_payload_1["history"][1]
+        assert exec_payload_1["history"][1] == "Include unit tests"
+        assert "Currently in the **Execute** phase" in exec_payload_1["history"][2]
+        assert exec_payload_1["history"][3] == "Also update docstrings"
 
-        # Parent planner session file must remain unpolluted by executor's turn.
+        # Parent planner session file must remain unpolluted by executor's turns.
         parent_lines_t1 = Path(plan_ref_1).read_text(encoding="utf-8").splitlines()
-        assert len(parent_lines_t1) == 1
+        assert len(parent_lines_t1) == 2
 
         # Turn 2 on same thread: planner continues its clean session; executor forks fresh from it.
         t2_plan = [
@@ -2399,32 +2461,28 @@ async def test_plan_and_execute_inherits_planner_context_via_fork_and_reforks_on
             )
         ]
         assert isinstance(t2_plan[-1].payload, WorkflowInterruptedEvent)
-        t2_exec = [
-            ev
-            async for ev in runner.resume(
-                "plan_and_execute",
-                thread_id,
-                resume_value={"decision": "approve", "feedback": "Keep API backwards-compatible"},
-            )
-        ]
+        t2_exec = [ev async for ev in runner.resume("plan_and_execute", thread_id, complete=True)]
+        t2_done = [ev async for ev in runner.resume("plan_and_execute", thread_id, complete=True)]
         st2 = await runner.get_thread_state("plan_and_execute", thread_id)
 
-    _write_manifest(tmp_path, "plan_inherit_fork_turn2", [*t2_plan, *t2_exec])
+    _write_manifest(tmp_path, "plan_inherit_fork_turn2", [*t2_plan, *t2_exec, *t2_done])
     assert st2.node_outputs["planner"].session_ref == plan_ref_1
     exec_ref_2 = st2.node_outputs["executor"].session_ref
     assert exec_ref_2 is not None and exec_ref_2 not in (plan_ref_1, exec_ref_1)
 
     plan_payload_2 = json.loads(st2.node_outputs["planner"].summary)
-    assert plan_payload_2["turn_count"] == 2
+    assert plan_payload_2["turn_count"] == 3
     assert "Feature alpha" in plan_payload_2["history"][0]
-    assert "Feature beta" in plan_payload_2["history"][1]
+    assert plan_payload_2["history"][1] == "Include unit tests"
+    assert "Feature beta" in plan_payload_2["history"][2]
 
     exec_payload_2 = json.loads(st2.node_outputs["executor"].summary)
     assert exec_payload_2["session_file"] == exec_ref_2
-    assert exec_payload_2["turn_count"] == 3
+    assert exec_payload_2["turn_count"] == 4
     assert "Feature alpha" in exec_payload_2["history"][0]
-    assert "Feature beta" in exec_payload_2["history"][1]
-    assert "## Approval Note\nKeep API backwards-compatible" in exec_payload_2["history"][2]
+    assert exec_payload_2["history"][1] == "Include unit tests"
+    assert "Feature beta" in exec_payload_2["history"][2]
+    assert "Currently in the **Execute** phase" in exec_payload_2["history"][3]
 
 
 async def test_interactive_sop_node_then_approval_then_inheriting_node(tmp_path: Path) -> None:
@@ -2725,7 +2783,7 @@ async def test_session_inheritance_auto_inherits_warns_on_override_and_supports_
             async for _ in cross_runner.resume(
                 "plan_and_execute",
                 "cross-1",
-                resume_value={"decision": "approve"},
+                complete=True,
                 node_overrides=cross_overrides,
             ):
                 pass
@@ -2795,7 +2853,7 @@ async def _run_until_killed(workspace: Path, thread_id: str) -> None:
         async for event in r.resume(
             "plan_and_execute",
             thread_id,
-            resume_value={"decision": "approve"},
+            complete=True,
             interaction_mode="wait",
         ):
             if isinstance(event.payload, InteractionRequestEvent):

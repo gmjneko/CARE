@@ -335,10 +335,10 @@ async def test_multi_observer_sse_and_hot_interaction_control(tmp_path: Path) ->
     assert manifest["events"][-1]["payload"]["final_output"] == "QUESTION_ANSWER=redis"
 
 
-async def test_plan_and_execute_approval_gate_across_server_restart(tmp_path: Path) -> None:
+async def test_plan_and_execute_interactive_handoff_across_server_restart(tmp_path: Path) -> None:
     db_path = tmp_path / "checkpoints.sqlite"
 
-    # Server instance 1: planner runs and stops at plan_approval interrupt.
+    # Server instance 1: planner runs and pauses in awaiting_input for interactive refinement.
     app1 = _make_app("standard", config=ServerConfig(checkpoint_db=db_path))
     async with _running_client(app1) as client1:
         start = await client1.post(
@@ -368,13 +368,15 @@ async def test_plan_and_execute_approval_gate_across_server_restart(tmp_path: Pa
         thread_state = state_resp.json()
         assert thread_state["status"] == "interrupted"
         assert thread_state["resumable"] is True
-        assert thread_state["interrupts"][0]["node_id"] == "plan_approval"
+        assert thread_state["interrupts"][0]["node_id"] == "planner"
+        assert thread_state["interrupts"][0]["kind"] == "awaiting_input"
 
+        # Complete planner -> executor forks planner session, runs, and pauses in awaiting_input.
         resume_resp = await client2.post(
             "/workflows/plan_and_execute/threads/pae-thread-1/resume",
             json={
                 "run_id": "pae-run-2",
-                "resume_value": {"decision": "approve", "feedback": "Ship it"},
+                "complete": True,
             },
         )
         assert resume_resp.status_code == 201
@@ -384,8 +386,29 @@ async def test_plan_and_execute_approval_gate_across_server_restart(tmp_path: Pa
             async for frame in _iter_sse_frames(resp):
                 if "comment" not in frame:
                     part2_events.append(RuntimeEvent.model_validate(frame["data"]))
+        assert part2_events[-1].payload.type == "workflow.interrupted"
+        assert part2_events[-1].payload.interrupts[0].node_id == "executor"
+        assert part2_events[-1].payload.interrupts[0].kind == "awaiting_input"
 
-    manifest = _write_manifest(tmp_path, "http_plan_and_execute_resume", part2_events)
+        # Complete executor -> workflow completes with executor output.
+        done_resp = await client2.post(
+            "/workflows/plan_and_execute/threads/pae-thread-1/resume",
+            json={
+                "run_id": "pae-run-3",
+                "complete": True,
+            },
+        )
+        assert done_resp.status_code == 201
+        part3_events: list[RuntimeEvent] = []
+        async with client2.stream("GET", "/runs/pae-run-3/events") as resp:
+            assert resp.status_code == 200
+            async for frame in _iter_sse_frames(resp):
+                if "comment" not in frame:
+                    part3_events.append(RuntimeEvent.model_validate(frame["data"]))
+
+    manifest = _write_manifest(
+        tmp_path, "http_plan_and_execute_resume", [*part2_events, *part3_events]
+    )
     assert manifest["events"][0]["payload"]["type"] == "workflow.resumed"
     final_payload = manifest["events"][-1]["payload"]
     assert final_payload["type"] == "workflow.completed"

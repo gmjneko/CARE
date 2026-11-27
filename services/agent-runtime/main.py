@@ -192,13 +192,15 @@ def run(
                         _end_stream(render_state)
                         raw = await _read_line_async(
                             f"\n[{intr.node_id}] "
-                            "继续对话，输入 /next 进入下一节点，或输入 /discard 放弃: "
+                            "继续对话，输入 /next 结束当前节点，/discard 放弃，或 exit 退出: "
                         )
                         if raw is None:
                             return False
                         text = raw.strip()
                         if not text:
                             continue
+                        if text.lower() in _EXIT_COMMANDS:
+                            return False
                         if text.lower() in ("/next", "/done"):
                             resume_kwargs["complete"] = True
                         elif text.lower() == "/discard":

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langgraph.graph import END, START, StateGraph
 
 from agent_runtime.adapters import (
     AdapterProtocolError,
@@ -27,9 +28,13 @@ from agent_runtime.config import (
     save_local_settings,
 )
 from agent_runtime.orchestrator import (
+    AgentNodeConfig,
     SqlitePersistenceBackend,
     WorkflowRunner,
+    WorkflowState,
+    build_agent_node,
     build_approval_node,
+    continue_if_running,
 )
 from agent_runtime.protocol import (
     InteractionRequestEvent,
@@ -139,6 +144,63 @@ async def test_single_agent_preset_streams_canonical_events_and_checkpoints(tmp_
     assert checkpoint["node_outputs"]["agent"].usage.total_tokens == 80
 
 
+def _build_approval_gate_workflow() -> StateGraph[WorkflowState]:
+    """3-node approval-gated workflow exercising build_approval_node and continue_if_running."""
+    graph: StateGraph[WorkflowState] = StateGraph(WorkflowState)
+    graph.add_node(
+        "planner",
+        build_agent_node(
+            AgentNodeConfig(
+                id="planner",
+                role="planner",
+                prompt_builder=lambda state: (
+                    "Currently in the **Plan** phase.\n\n"
+                    f"Analyze the workspace and plan:\n\n{state['prompt']}"
+                ),
+            )
+        ),
+    )
+    graph.add_node(
+        "plan_approval",
+        build_approval_node(
+            "plan_approval",
+            title="确认执行计划",
+            message="是否按照plan执行",
+            content_builder=lambda state: state["node_outputs"]["planner"].summary,
+        ),
+    )
+
+    def _exec_prompt(state: WorkflowState) -> str:
+        approval_output = state["node_outputs"].get("plan_approval")
+        note = ""
+        if approval_output is not None and approval_output.summary.startswith("approved: "):
+            clean = approval_output.summary.removeprefix("approved: ").strip()
+            if clean:
+                note = f"\n\n## Approval Note\n{clean}"
+        return f"Currently in the **Execute** phase.\n\nFollow the approved plan.{note}"
+
+    graph.add_node(
+        "executor",
+        build_agent_node(
+            AgentNodeConfig(
+                id="executor",
+                role="executor",
+                inherit_session_from="planner",
+                prompt_builder=_exec_prompt,
+            )
+        ),
+    )
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "plan_approval")
+    graph.add_conditional_edges(
+        "plan_approval",
+        continue_if_running("executor"),
+        {"executor": "executor", END: END},
+    )
+    graph.add_edge("executor", END)
+    return graph
+
+
 async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isolation(
     tmp_path: Path,
 ) -> None:
@@ -146,6 +208,7 @@ async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isola
     thread_id = "thread-plan-exec-1"
     run1_events: list[RuntimeEvent] = []
     run2_events: list[RuntimeEvent] = []
+    run3_events: list[RuntimeEvent] = []
 
     async with _make_runner("standard", checkpoint_db=db_path) as runner:
         async for event in runner.run(
@@ -161,80 +224,96 @@ async def test_plan_and_execute_preset_hands_off_structured_plan_with_tool_isola
         assert isinstance(paused, WorkflowInterruptedEvent)
         assert len(paused.interrupts) == 1
         gate = paused.interrupts[0]
-        assert gate.kind == "workflow_interrupt"
-        assert gate.node_id == "plan_approval"
-        assert gate.interaction is not None
-        assert gate.interaction.kind == "approval"
-        assert gate.interaction.title == "确认执行计划"
-        assert gate.interaction.message == "是否按照plan执行"
-        assert "[PLAN tools=default]" in gate.payload["content"]
+        assert gate.kind == "awaiting_input"
+        assert gate.node_id == "planner"
+        assert "[PLAN tools=default]" in gate.payload["summary"]
 
-        # Invalid resume payloads must fail fast without corrupting the paused checkpoint.
-        for bad_value in (
-            True,
-            "approve",
-            {"approved": True},
-            {"decision": "maybe"},
-            {"decision": "approve", "feedback": 123},
-        ):
-            with pytest.raises(ValueError, match="plan_approval"):
-                async for _ in runner.resume("plan_and_execute", thread_id, resume_value=bad_value):
-                    pass
-        with pytest.raises(ValueError, match="request_id"):
-            async for _ in runner.resume(
+        # Refine the plan with a follow-up turn inside planner before advancing.
+        refine_events = [
+            ev
+            async for ev in runner.resume(
                 "plan_and_execute",
                 thread_id,
-                interaction_response=InteractionResponse(request_id="stale", decision="approve"),
+                prompt="Use Redis with TTL",
+            )
+        ]
+        assert isinstance(refine_events[-1].payload, WorkflowInterruptedEvent)
+        assert refine_events[-1].payload.interrupts[0].node_id == "planner"
+        assert refine_events[-1].payload.interrupts[0].kind == "awaiting_input"
+
+        # Invalid resume payloads must fail fast without corrupting the paused checkpoint.
+        with pytest.raises(ValueError, match="planner"):
+            async for _ in runner.resume("plan_and_execute", thread_id):
+                pass
+        with pytest.raises(ValueError, match="does not accept resume_value"):
+            async for _ in runner.resume(
+                "plan_and_execute", thread_id, resume_value={"decision": "approve"}
             ):
                 pass
 
+        # Complete planner -> executor forks planner session, runs, and pauses in awaiting_input.
         async for event in runner.resume(
             "plan_and_execute",
             thread_id,
             run_id="run-plan-exec-2",
-            resume_value={"decision": "approve", "feedback": "Keep changes minimal"},
+            complete=True,
         ):
             run2_events.append(event)
+
+        exec_paused = run2_events[-1].payload
+        assert isinstance(exec_paused, WorkflowInterruptedEvent)
+        assert len(exec_paused.interrupts) == 1
+        assert exec_paused.interrupts[0].node_id == "executor"
+        assert exec_paused.interrupts[0].kind == "awaiting_input"
+
+        # Complete executor explicitly -> workflow finishes.
+        async for event in runner.resume(
+            "plan_and_execute",
+            thread_id,
+            run_id="run-plan-exec-3",
+            complete=True,
+        ):
+            run3_events.append(event)
 
         checkpoint = await runner.get_checkpoint_state("plan_and_execute", thread_id)
 
     manifest1 = _write_manifest(tmp_path / "run1", run1_events)
     manifest2 = _write_manifest(tmp_path / "run2", run2_events)
+    manifest3 = _write_manifest(tmp_path / "run3", run3_events)
     assert [e["seq"] for e in manifest1["events"]] == list(range(1, len(run1_events) + 1))
     assert [e["seq"] for e in manifest2["events"]] == list(range(1, len(run2_events) + 1))
+    assert [e["seq"] for e in manifest3["events"]] == list(range(1, len(run3_events) + 1))
 
-    assert [
-        e["payload"]["node_id"]
-        for e in manifest1["events"]
-        if e["payload"]["type"] == "node.completed"
-    ] == ["planner"]
+    assert not any(e["payload"]["type"] == "node.completed" for e in manifest1["events"])
     assert isinstance(run2_events[0].payload, WorkflowResumedEvent)
-    assert run2_events[0].payload.resumed_from == "workflow_interrupt"
+    assert run2_events[0].payload.resumed_from == "awaiting_input"
     assert [
         e["payload"]["node_id"]
         for e in manifest2["events"]
         if e["payload"]["type"] == "node.started"
-    ] == ["plan_approval", "executor"]
+    ] == ["executor"]
     assert [
         e["payload"]["node_id"]
         for e in manifest2["events"]
         if e["payload"]["type"] == "node.completed"
-    ] == ["plan_approval", "executor"]
+    ] == ["planner"]
+    assert [
+        e["payload"]["node_id"]
+        for e in manifest3["events"]
+        if e["payload"]["type"] == "node.completed"
+    ] == ["executor"]
 
     planner_out = checkpoint["node_outputs"]["planner"]
-    approval_out = checkpoint["node_outputs"]["plan_approval"]
     executor_out = checkpoint["node_outputs"]["executor"]
     # Planner and executor share identical tools/prompts while executor inherits planner's session
     assert "[PLAN tools=default]" in planner_out.summary
-    assert approval_out.role == "approval"
-    assert approval_out.status == "completed"
-    assert approval_out.summary == "approved: Keep changes minimal"
+    assert "Use Redis with TTL" in planner_out.summary
     assert "[EXEC tools=default received_plan=True]" in executor_out.summary
     assert planner_out.session_ref is not None
     assert executor_out.session_ref is not None
     assert executor_out.session_ref != planner_out.session_ref
 
-    final = run2_events[-1].payload
+    final = run3_events[-1].payload
     assert isinstance(final, WorkflowCompletedEvent)
     assert final.status == "completed"
     assert final.final_output == executor_out.summary
@@ -251,22 +330,47 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
     with pytest.raises(ValueError, match="title"):
         build_approval_node("gate", message="是否按照plan执行", title="   ")
 
-    # 1. Approval feedback reaches executor prompt; denial halts before executor and preserves plan.
+    # 1. Approval feedback reaches executor prompt; invalid resume payloads fail fast.
     async with _make_runner("stateful_chat", checkpoint_db=db_path) as runner:
         thread_approve = "plan-approve-note"
         run_approve = [
             ev
             async for ev in runner.run(
-                "plan_and_execute", "Add cache", tmp_path, thread_id=thread_approve
+                _build_approval_gate_workflow, "Add cache", tmp_path, thread_id=thread_approve
             )
         ]
         assert isinstance(run_approve[-1].payload, WorkflowInterruptedEvent)
-        approve_req = run_approve[-1].payload.interrupts[0].interaction
+        gate = run_approve[-1].payload.interrupts[0]
+        assert gate.kind == "workflow_interrupt" and gate.node_id == "plan_approval"
+        approve_req = gate.interaction
         assert approve_req is not None
+        assert approve_req.title == "确认执行计划"
+        assert approve_req.message == "是否按照plan执行"
+
+        for bad_value in (
+            True,
+            "approve",
+            {"approved": True},
+            {"decision": "maybe"},
+            {"decision": "approve", "feedback": 123},
+        ):
+            with pytest.raises(ValueError, match="plan_approval"):
+                async for _ in runner.resume(
+                    _build_approval_gate_workflow, thread_approve, resume_value=bad_value
+                ):
+                    pass
+        with pytest.raises(ValueError, match="request_id"):
+            async for _ in runner.resume(
+                _build_approval_gate_workflow,
+                thread_approve,
+                interaction_response=InteractionResponse(request_id="stale", decision="approve"),
+            ):
+                pass
+
         approved_events = [
             ev
             async for ev in runner.resume(
-                "plan_and_execute",
+                _build_approval_gate_workflow,
                 thread_approve,
                 interaction_response=InteractionResponse(
                     request_id=approve_req.request_id,
@@ -291,7 +395,7 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         run1 = [
             ev
             async for ev in runner.run(
-                "plan_and_execute", "Risky refactor", tmp_path, thread_id=thread_deny
+                _build_approval_gate_workflow, "Risky refactor", tmp_path, thread_id=thread_deny
             )
         ]
         assert isinstance(run1[-1].payload, WorkflowInterruptedEvent)
@@ -300,12 +404,12 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         deny_events = [
             ev
             async for ev in runner.resume(
-                "plan_and_execute",
+                _build_approval_gate_workflow,
                 thread_deny,
                 resume_value={"decision": "deny", "feedback": "Too broad"},
             )
         ]
-        st_denied = await runner.get_thread_state("plan_and_execute", thread_deny)
+        st_denied = await runner.get_thread_state(_build_approval_gate_workflow, thread_deny)
 
         assert [e.payload.node_id for e in deny_events if e.payload.type == "node.started"] == [
             "plan_approval"
@@ -329,7 +433,7 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         fresh_events = [
             ev
             async for ev in runner.run(
-                "plan_and_execute", "Narrow refactor", tmp_path, thread_id=thread_deny
+                _build_approval_gate_workflow, "Narrow refactor", tmp_path, thread_id=thread_deny
             )
         ]
         assert isinstance(fresh_events[-1].payload, WorkflowInterruptedEvent)
@@ -338,14 +442,14 @@ async def test_plan_and_execute_approval_note_denial_and_cancel_behavior(tmp_pat
         cancel_events = [
             ev
             async for ev in runner.resume(
-                "plan_and_execute",
+                _build_approval_gate_workflow,
                 thread_deny,
                 interaction_response=InteractionResponse(
                     request_id=cancel_req.request_id, decision="cancel"
                 ),
             )
         ]
-        st_cancelled = await runner.get_thread_state("plan_and_execute", thread_deny)
+        st_cancelled = await runner.get_thread_state(_build_approval_gate_workflow, thread_deny)
 
     _write_manifest(tmp_path / "denied", deny_events)
     assert isinstance(cancel_events[-1].payload, WorkflowCompletedEvent)

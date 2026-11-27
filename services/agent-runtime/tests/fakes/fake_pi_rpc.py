@@ -80,9 +80,19 @@ def _state_payload(
     return data
 
 
-def _is_planner_turn(prompt: str, append_prompt: str, tools: str | None) -> bool:
+def _is_planner_turn(
+    prompt: str,
+    append_prompt: str,
+    tools: str | None,
+    history: list[str] = (),
+) -> bool:
+    if "Currently in the **Execute** phase" in prompt or any(
+        "Currently in the **Execute** phase" in item for item in history
+    ):
+        return False
     return (
         "Currently in the **Plan** phase" in prompt
+        or any("Currently in the **Plan** phase" in item for item in history)
         or "Planner agent" in append_prompt
         or tools == "read,grep,find,ls"
     )
@@ -121,7 +131,7 @@ def _handle_standard(
         }
     )
 
-    is_planner = _is_planner_turn(prompt, append_prompt, tools)
+    is_planner = _is_planner_turn(prompt, append_prompt, tools, history)
     role_tag = "PLANNER" if is_planner else "EXECUTOR"
 
     _emit(
@@ -785,7 +795,7 @@ def _handle_interactive_handoff(
         }
     )
 
-    is_planner = _is_planner_turn(prompt, append_prompt, tools)
+    is_planner = _is_planner_turn(prompt, append_prompt, tools, history)
     if is_planner and ("SUBMIT_PLAN" in prompt or "FAIL_SUBMIT" in prompt):
         is_err = "FAIL_SUBMIT" in prompt
         _emit(

@@ -90,7 +90,7 @@ services/agent-runtime/
 │   └── workflows/                         # 【具体业务工作流集合，纯拓扑定义，彼此互不依赖】
 │       ├── __init__.py                    # BUILTIN_WORKFLOWS 与 create_default_workflow_registry() 显式注册
 │       ├── single_agent.py                # SINGLE_AGENT_WORKFLOW (START -> agent -> END)
-│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner -> plan_approval -> executor[inherit planner] -> END)
+│       └── plan_and_execute.py            # PLAN_AND_EXECUTE_WORKFLOW (planner[交互] -> executor[inherit planner, 交互] -> END)
 └── tests/
     ├── fakes/fake_pi_rpc.py               # 独立子进程 Fake Pi RPC 协议替身（外部边界注入）
     ├── e2e/test_workflow_scenarios.py     # 生产路径工作流与适配层 E2E 场景测试
@@ -369,18 +369,16 @@ flowchart LR
     end
 
     subgraph plan_and_execute ["工作流 2: plan_and_execute"]
-        S2((START)) --> P["planner (Plan 阶段提示横幅)"] --> G["plan_approval (是否按照plan执行)"]
-        G -- "approve" --> C["executor (inherit_session_from=planner + 审批意见)"]
-        G -- "deny / cancel" --> E2((END))
-        C --> E2
+        S2((START)) --> P["planner (Plan 阶段横幅, 多轮交互)"]
+        P -- "complete=True" --> C["executor (inherit_session_from=planner, 多轮交互)"]
+        C -- "complete=True" --> E2((END))
     end
 ```
 
 1. **`single_agent`**（`workflows/single_agent.py`）：1 节点通用图，对应总体架构中的 `SingleVibeGraph`。
-2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：3 节点审批串行图：
-   - `planner` 与 `executor` 保持严格同构的默认工具与系统提示配置，`planner` 在用户级 prompt 顶部注入 Plan 阶段只读约束横幅，分析工作区并产出分步执行计划；
-   - `plan_approval` 由 `build_approval_node()` 构造，挂起并携带计划摘要询问“是否按照plan执行”；拒绝或取消时短路结束并保留计划摘要，批准（可选附带审批备注）后放行下游；
-   - `executor` 通过 `inherit_session_from="planner"` 从 `planner` 本轮会话 fork 独立副本（完整继承规划上下文且不污染 `planner` 源会话），并注入“Plan 阶段已结束、按计划执行”指令及可选审批备注。
+2. **`plan_and_execute`**（`workflows/plan_and_execute.py`）：2 节点全交互图：
+   - `planner` 与 `executor` 保持严格同构的默认工具与系统提示配置，`planner` 在用户级 prompt 顶部注入 Plan 阶段只读约束横幅并配置 `should_complete=_stay_interactive`，在节点内与用户多轮打磨计划；用户满意后通过 `resume(..., complete=True)` 放行下游（或 `discard()` 放弃）；
+   - `executor` 通过 `inherit_session_from="planner"` 从 `planner` 本轮会话 fork 独立副本（完整继承规划上下文且不污染 `planner` 源会话），注入 Execute 阶段横幅并同样保持多轮交互供用户持续追问微调，直至 `complete=True` 结束本轮工作流（或直接暂停保留会话）。
 
 #### 如何新增工作流
 

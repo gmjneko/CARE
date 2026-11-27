@@ -165,21 +165,23 @@ async def test_run_manager_preflight_validation_and_background_exception_propaga
         with pytest.raises(KeyError, match="Unknown workflow 'nope'"):
             await manager.start_run("nope", "Hello", tmp_path)
 
-        # Start plan_and_execute -> pauses at plan_approval; invalid resume fails fast immediately.
+        # Start plan_and_execute -> pauses at planner(awaiting_input); invalid resume fails fast.
         s1 = await manager.start_run("plan_and_execute", "Check", tmp_path, thread_id="rm-gate")
         done1 = await manager.wait(s1.run_id)
         assert done1.status == "interrupted"
         ev1 = [ev async for ev in manager.subscribe(s1.run_id)]
         assert isinstance(ev1[-1].payload, WorkflowInterruptedEvent)
 
-        with pytest.raises(ValueError, match="plan_approval"):
+        with pytest.raises(ValueError, match="planner"):
             await manager.start_resume("plan_and_execute", "rm-gate", resume_value={"bad": True})
 
-        s2 = await manager.start_resume(
-            "plan_and_execute", "rm-gate", resume_value={"decision": "approve"}
-        )
+        s2 = await manager.start_resume("plan_and_execute", "rm-gate", complete=True)
         done2 = await manager.wait(s2.run_id)
-        assert done2.status == "completed"
+        assert done2.status == "interrupted"
+
+        s3 = await manager.start_resume("plan_and_execute", "rm-gate", complete=True)
+        done3 = await manager.wait(s3.run_id)
+        assert done3.status == "completed"
 
     # Unhandled protocol error in background task propagates to both subscribe() and wait().
     async with _make_manager("malformed_stdout") as manager_err:
