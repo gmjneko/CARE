@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -118,18 +119,20 @@ def build_api_router(
     async def get_run(run_id: str) -> RunSnapshot:
         return manager.get_run(run_id)
 
+    _SSE_RESPONSES: dict[int | str, dict[str, Any]] = {
+        200: {
+            "description": (
+                "Server-Sent Events stream of canonical RuntimeEvent frames "
+                "(id=seq, event=payload.type, data=RuntimeEvent JSON)."
+            ),
+            "model": RuntimeEvent,
+        }
+    }
+
     @api.get(
         "/runs/{run_id}/events",
         response_class=EventStreamResponse,
-        responses={
-            200: {
-                "description": (
-                    "Server-Sent Events stream of canonical RuntimeEvent frames "
-                    "(id=seq, event=payload.type, data=RuntimeEvent JSON)."
-                ),
-                "model": RuntimeEvent,
-            }
-        },
+        responses=_SSE_RESPONSES,
         tags=["runs"],
     )
     async def stream_run_events(
