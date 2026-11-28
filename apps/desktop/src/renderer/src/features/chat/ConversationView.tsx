@@ -168,11 +168,9 @@ function StageSegmentView({
               onOpenChange={setProcessOpen}
               className="border-b border-[var(--border-hairline)] pb-3"
             >
-              <Collapsible.Trigger className="inline-flex items-center gap-1 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
+              <Collapsible.Trigger className="inline-flex items-center gap-1 rounded-lg py-0.5 text-body text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
                 <span>{collapsedLabel}</span>
-                <ChevronRight
-                  className={cn('care-chevron h-3.5 w-3.5', processOpen && 'rotate-90')}
-                />
+                <ChevronRight className={cn('care-chevron h-4 w-4', processOpen && 'rotate-90')} />
               </Collapsible.Trigger>
               <Collapsible.Content className="care-collapsible">
                 <div className="pt-3">
