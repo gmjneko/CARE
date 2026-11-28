@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as Collapsible from '@radix-ui/react-collapsible'
 import { AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
 import {
@@ -226,13 +226,15 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
 })
 
 export function ConversationView(): React.JSX.Element {
+  const activeThreadId = useSessionStore((s) => s.activeThreadId)
   const events = useSessionStore((s) => s.events)
   const activeRunId = useSessionStore((s) => s.activeRunId)
   const threadState = useSessionStore((s) => s.threadState)
   const loadingSession = useSessionStore((s) => s.loadingSession)
   const error = useSessionStore((s) => s.error)
 
-  const bottomRef = useRef<HTMLDivElement | null>(null)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const positionedThreadRef = useRef<string | null>(null)
   const timeline = useMemo(() => projectEventsToTimeline(events), [events])
 
   const isRunning = Boolean(activeRunId) || timeline.isRunning
@@ -244,14 +246,29 @@ export function ConversationView(): React.JSX.Element {
   const isAwaitingInput =
     !isRunning && pendingInterrupts.some((item) => item.kind === 'awaiting_input')
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [events.length, pendingInterrupts.length])
+  // Instant bottom-snap before paint on thread switch; smooth follow only for live updates near bottom.
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    if (loadingSession) {
+      positionedThreadRef.current = null
+      return
+    }
+    if (positionedThreadRef.current !== activeThreadId) {
+      el.scrollTop = el.scrollHeight
+      positionedThreadRef.current = activeThreadId
+      return
+    }
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom < 180) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [activeThreadId, loadingSession, events.length, pendingInterrupts.length])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Scrollable conversation stream */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-[760px] space-y-8">
           {loadingSession ? (
             <div className="flex items-center justify-center gap-2 py-16 text-ui text-[var(--text-muted)]">
@@ -274,7 +291,7 @@ export function ConversationView(): React.JSX.Element {
             </div>
           )}
 
-          <div ref={bottomRef} className="h-4" />
+          <div className="h-4" />
         </div>
       </div>
 
