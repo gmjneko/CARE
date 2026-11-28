@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
 from agent_runtime.adapters import AdapterError
@@ -117,9 +119,39 @@ def build_sse_response(
     )
 
 
+def patch_sse_openapi(app: FastAPI) -> None:
+    """Strip conflicting `type: string` next to `$ref` on the SSE endpoint OpenAPI schema.
+
+    FastAPI merges a default `type: "string"` for non-JSON `text/*` response classes even when
+    `responses[200]` supplies a Pydantic `model`.
+    """
+    default_openapi = app.openapi
+
+    def _openapi() -> dict[str, Any]:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = default_openapi()
+        sse_schema = (
+            schema.get("paths", {})
+            .get("/runs/{run_id}/events", {})
+            .get("get", {})
+            .get("responses", {})
+            .get("200", {})
+            .get("content", {})
+            .get("text/event-stream", {})
+            .get("schema")
+        )
+        if isinstance(sse_schema, dict) and "$ref" in sse_schema:
+            sse_schema.pop("type", None)
+        return schema
+
+    app.openapi = _openapi  # type: ignore[method-assign]
+
+
 __all__ = [
     "EventStreamResponse",
     "build_sse_response",
     "format_sse_event",
+    "patch_sse_openapi",
     "resolve_after_seq",
 ]

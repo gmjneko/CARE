@@ -94,12 +94,15 @@ def run(
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    effective_endpoint, effective_thinking = resolve_run_model(
+    resolved_model = resolve_run_model(
         mode="local",
         profile=profile,
         endpoint=endpoint,
         thinking_level=thinking_level,
     )
+    effective_profile = resolved_model.profile
+    effective_endpoint = resolved_model.endpoint
+    effective_thinking = resolved_model.thinking_level
     effective_pi_bin = resolve_pi_bin(mode="local", pi_bin=pi_bin)
     effective_checkpoint_db = checkpoint_db if checkpoint_db is not None else checkpoints_db_path()
     workspace_dir = Path(cwd).expanduser()
@@ -149,6 +152,7 @@ def run(
                     prompt.strip(),
                     workspace_dir,
                     thread_id=effective_thread_id,
+                    profile=effective_profile,
                     endpoint=effective_endpoint,
                     thinking_level=effective_thinking,
                 )
@@ -273,6 +277,7 @@ def run(
                         current_prompt,
                         workspace_dir,
                         thread_id=effective_thread_id,
+                        profile=effective_profile,
                         endpoint=effective_endpoint,
                         thinking_level=effective_thinking,
                         interaction_handler=_console_interaction_handler,

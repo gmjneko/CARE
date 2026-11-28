@@ -164,6 +164,11 @@ class WorkflowRunner:
         """发起一次新工作流运行，或携带既有 `thread_id` 进行连续多轮对话。"""
         compiled, workflow_name = self._get_compiled(workflow)
         inflight_store = self._require_inflight_store()
+        workspace = Path(workspace_dir).expanduser()
+        if not workspace.is_dir():
+            raise InvalidInputError(
+                f"workspace_dir does not exist or is not a directory: '{workspace_dir}'"
+            )
 
         effective_run_id = run_id or f"run-{uuid4().hex[:12]}"
         effective_thread_id = thread_id or effective_run_id
@@ -226,7 +231,7 @@ class WorkflowRunner:
                 "thread_id": effective_thread_id,
                 "workflow_id": workflow_name,
                 "prompt": prompt,
-                "workspace_dir": str(Path(workspace_dir).resolve()),
+                "workspace_dir": str(workspace.resolve()),
                 "run_options": persisted_options,
                 "node_outputs": None if has_outputs else {},
                 "node_sessions": preserved_sessions,

@@ -12,7 +12,7 @@ from agent_runtime.api import (
     format_sse_event,
     resolve_after_seq,
 )
-from agent_runtime.config import ServerConfig, resolve_pi_bin, resolve_run_model
+from agent_runtime.config import ResolvedRunModel, ServerConfig, resolve_pi_bin, resolve_run_model
 from agent_runtime.protocol import RuntimeErrorEvent, RuntimeEvent, TextDeltaEvent
 from agent_runtime.settings import LocalSettings, ModelProfile, save_local_settings
 
@@ -209,16 +209,16 @@ def test_resolve_run_model_rules(tmp_path: Path) -> None:
         ),
         care_home=tmp_path,
     )
-    ep, thinking = resolve_run_model(mode="local", care_home=tmp_path)
-    assert ep is not None and ep.model == "deepseek-chat"
-    assert thinking == "medium"
+    resolved = resolve_run_model(mode="local", care_home=tmp_path)
+    assert resolved.profile == "relay"
+    assert resolved.endpoint is not None and resolved.endpoint.model == "deepseek-chat"
+    assert resolved.thinking_level == "medium"
 
     inline = ModelEndpoint(model="gpt-4o", base_url="https://api.example.com/v1")
     with pytest.raises(ValueError, match="both 'profile' and 'endpoint'"):
         resolve_run_model(mode="local", profile="relay", endpoint=inline, care_home=tmp_path)
     with pytest.raises(ValueError, match="local mode"):
         resolve_run_model(mode="cloud", profile="relay", care_home=tmp_path)
-    assert resolve_run_model(mode="cloud", endpoint=inline, thinking_level="high") == (
-        inline,
-        "high",
-    )
+    assert resolve_run_model(
+        mode="cloud", endpoint=inline, thinking_level="high"
+    ) == ResolvedRunModel(profile=None, endpoint=inline, thinking_level="high")

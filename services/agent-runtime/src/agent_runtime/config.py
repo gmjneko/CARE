@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -126,6 +127,15 @@ class ServerConfig(BaseModel):
         )
 
 
+@dataclass(frozen=True)
+class ResolvedRunModel:
+    """Resolved model profile name, endpoint, and thinking level for a run."""
+
+    profile: str | None = None
+    endpoint: ModelEndpoint | None = None
+    thinking_level: ThinkingLevel | None = None
+
+
 def resolve_run_model(
     *,
     mode: RuntimeMode,
@@ -133,8 +143,8 @@ def resolve_run_model(
     endpoint: ModelEndpoint | None = None,
     thinking_level: ThinkingLevel | None = None,
     care_home: str | Path | None = None,
-) -> tuple[ModelEndpoint | None, ThinkingLevel | None]:
-    """Resolve effective ModelEndpoint and thinking level according to local/cloud mode rules."""
+) -> ResolvedRunModel:
+    """Resolve effective profile, ModelEndpoint, and thinking level for local/cloud mode."""
     if profile is not None and endpoint is not None:
         raise InvalidInputError("Cannot specify both 'profile' and 'endpoint'")
     if mode == "cloud":
@@ -142,15 +152,20 @@ def resolve_run_model(
             raise InvalidInputError(
                 "'profile' is only supported in local mode; pass 'endpoint' directly"
             )
-        return endpoint, thinking_level
+        return ResolvedRunModel(endpoint=endpoint, thinking_level=thinking_level)
     if endpoint is not None:
-        return endpoint, thinking_level
+        return ResolvedRunModel(endpoint=endpoint, thinking_level=thinking_level)
     settings = load_local_settings(care_home)
-    resolved = settings.resolve_profile(profile)
+    profile_name = profile.strip() if profile is not None else settings.active_profile
+    resolved = settings.resolve_profile(profile_name)
     if resolved is None:
-        return None, thinking_level
+        return ResolvedRunModel(thinking_level=thinking_level)
     effective_thinking = thinking_level if thinking_level is not None else resolved.thinking_level
-    return resolved.to_endpoint(), effective_thinking
+    return ResolvedRunModel(
+        profile=profile_name,
+        endpoint=resolved.to_endpoint(),
+        thinking_level=effective_thinking,
+    )
 
 
 def resolve_named_profile(
@@ -210,6 +225,7 @@ def _parse_float_env(name: str, raw: str | None, *, default: float) -> float:
 
 
 __all__ = [
+    "ResolvedRunModel",
     "RuntimeMode",
     "ServerConfig",
     "resolve_named_profile",

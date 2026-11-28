@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,8 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agent_runtime.adapters import AdapterRegistry, PiRpcAdapter, PiRpcConfig
 from agent_runtime.api import (
-    build_api_router,
-    build_health_router,
+    api_router,
+    health_router,
+    patch_sse_openapi,
     register_exception_handlers,
 )
 from agent_runtime.config import ServerConfig, resolve_named_profile, resolve_pi_bin
@@ -70,9 +70,8 @@ def create_app(
     manager = RunManager(runner, max_retained_runs=cfg.max_retained_runs)
 
     @asynccontextmanager
-    async def _lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+    async def _lifespan(_app_instance: FastAPI) -> AsyncIterator[None]:
         async with manager:
-            app_instance.state.run_manager = manager
             yield
 
     app = FastAPI(
@@ -94,39 +93,9 @@ def create_app(
         )
 
     register_exception_handlers(app)
-    app.include_router(build_health_router(cfg, runtime_version=runtime_version))
-    app.include_router(
-        build_api_router(
-            cfg,
-            manager=manager,
-            workflow_registry=effective_workflows,
-            adapter_registry=effective_adapters,
-        )
-    )
-
-    # FastAPI merges a default `type: "string"` for non-JSON `text/*` response classes even when
-    # `responses[200]` supplies a Pydantic `model`; strip the conflicting `type` next to `$ref`.
-    default_openapi = app.openapi
-
-    def _openapi() -> dict[str, Any]:
-        if app.openapi_schema is not None:
-            return app.openapi_schema
-        schema = default_openapi()
-        sse_schema = (
-            schema.get("paths", {})
-            .get("/runs/{run_id}/events", {})
-            .get("get", {})
-            .get("responses", {})
-            .get("200", {})
-            .get("content", {})
-            .get("text/event-stream", {})
-            .get("schema")
-        )
-        if isinstance(sse_schema, dict) and "$ref" in sse_schema:
-            sse_schema.pop("type", None)
-        return schema
-
-    app.openapi = _openapi  # type: ignore[method-assign]
+    app.include_router(health_router)
+    app.include_router(api_router)
+    patch_sse_openapi(app)
     return app
 
 

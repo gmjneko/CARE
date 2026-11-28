@@ -65,14 +65,20 @@ class StartRunRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_request(self) -> StartRunRequest:
-        if not self.workflow_id.strip():
+        workflow_id = self.workflow_id.strip()
+        if not workflow_id:
             raise ValueError("'workflow_id' must be non-empty")
-        if not self.prompt.strip():
+        prompt = self.prompt.strip()
+        if not prompt:
             raise ValueError("'prompt' must be non-empty")
-        if not self.workspace_dir.strip():
+        workspace_dir = self.workspace_dir.strip()
+        if not workspace_dir:
             raise ValueError("'workspace_dir' must be non-empty")
         if self.profile is not None and self.endpoint is not None:
             raise ValueError("Cannot specify both 'profile' and 'endpoint'")
+        object.__setattr__(self, "workflow_id", workflow_id)
+        object.__setattr__(self, "prompt", prompt)
+        object.__setattr__(self, "workspace_dir", workspace_dir)
         return self
 
 
@@ -116,8 +122,10 @@ class MessageControlRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_message(self) -> MessageControlRequest:
-        if not self.message.strip():
+        message = self.message.strip()
+        if not message:
             raise ValueError("'message' must be non-empty")
+        object.__setattr__(self, "message", message)
         return self
 
 

@@ -883,6 +883,10 @@ def test_canonical_event_contract_schema_is_in_sync() -> None:
         "$ref": "#/components/schemas/RuntimeEvent"
     }
     assert "RuntimeErrorEvent" in openapi["components"]["schemas"]
+    assert openapi["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
 
 
 async def test_unexpected_internal_key_and_value_errors_surface_as_sanitized_500(
