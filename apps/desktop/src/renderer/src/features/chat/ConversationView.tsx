@@ -267,8 +267,11 @@ export function ConversationView(): React.JSX.Element {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Scrollable conversation stream */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-6">
+      {/* Scrollable conversation stream (symmetric scrollbar gutters keep 0px alignment with composer) */}
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto px-6 py-6 [scrollbar-gutter:stable_both-edges]"
+      >
         <div className="mx-auto max-w-[760px] space-y-8">
           {loadingSession ? (
             <div className="flex items-center justify-center gap-2 py-16 text-ui text-[var(--text-muted)]">
@@ -295,8 +298,8 @@ export function ConversationView(): React.JSX.Element {
         </div>
       </div>
 
-      {/* Floating bottom composer */}
-      <div className="shrink-0 px-6 pb-3 pt-1">
+      {/* Floating bottom composer (30px horizontal padding matches 24px + 6px scrollbar gutter above) */}
+      <div className="shrink-0 px-[30px] pb-3 pt-1">
         <div className="mx-auto max-w-[760px]">
           <ComposerCard
             isRunning={isRunning}
