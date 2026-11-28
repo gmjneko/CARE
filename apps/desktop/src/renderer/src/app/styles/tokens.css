@@ -108,6 +108,14 @@ body,
   word-break: break-word;
 }
 
+.care-prose > :first-child {
+  margin-top: 0;
+}
+
+.care-prose > :last-child {
+  margin-bottom: 0;
+}
+
 .care-prose h1,
 .care-prose h2,
 .care-prose h3,
@@ -135,37 +143,77 @@ body,
   margin: 0.6em 0;
 }
 
-.care-prose p:first-child {
-  margin-top: 0;
+.care-prose strong {
+  font-weight: 600;
 }
 
-.care-prose p:last-child {
-  margin-bottom: 0;
+.care-prose del {
+  color: var(--text-muted);
+}
+
+.care-prose a {
+  color: #0284c7;
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+.care-prose a:hover {
+  text-decoration: underline;
 }
 
 .care-prose ul,
 .care-prose ol {
   margin: 0.6em 0;
-  padding-left: 1.4em;
+  padding-left: 1.5em;
+}
+
+.care-prose ul {
+  list-style-type: disc;
+}
+
+.care-prose ul ul {
+  list-style-type: circle;
+}
+
+.care-prose ul ul ul {
+  list-style-type: square;
+}
+
+.care-prose ol {
+  list-style-type: decimal;
+}
+
+.care-prose ul.contains-task-list {
+  list-style-type: none;
+  padding-left: 0.2em;
+}
+
+.care-prose li.task-list-item input[type='checkbox'] {
+  margin-right: 0.45em;
+  vertical-align: -1px;
 }
 
 .care-prose li {
   margin: 0.25em 0;
 }
 
-.care-prose code {
+.care-prose li > ul,
+.care-prose li > ol {
+  margin: 0.25em 0;
+}
+
+.care-prose img {
+  max-width: 100%;
+  border-radius: 10px;
+  margin: 0.75em 0;
+}
+
+.care-prose :not(pre) > code {
   font-family: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: var(--text-code);
   background-color: var(--bg-subtle);
   padding: 0.12em 0.38em;
   border-radius: 5px;
-}
-
-.care-prose pre {
-  margin: 0.85em 0;
-  padding: 0;
-  background: transparent;
-  overflow-x: auto;
 }
 
 .care-prose pre code {
@@ -182,21 +230,122 @@ body,
   color: var(--text-secondary);
 }
 
+.care-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border-hairline);
+  margin: 1.25em 0;
+}
+
 .care-prose table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0.8em 0;
+  margin: 0;
   font-size: var(--text-ui);
 }
 
 .care-prose th,
 .care-prose td {
-  border: 1px solid var(--border-hairline);
-  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-hairline);
+  border-right: 1px solid var(--border-hairline);
+  padding: 8px 12px;
   text-align: left;
+}
+
+.care-prose th:last-child,
+.care-prose td:last-child {
+  border-right: 0;
+}
+
+.care-prose tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .care-prose th {
   background: var(--bg-subtle);
+  font-weight: 600;
+}
+
+/* KaTeX math display block scrolling & vertical rhythm */
+.care-prose .katex-display {
+  margin: 0.9em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+
+/* Crisp light syntax highlighting theme (GitHub Light inspired) for rehype-highlight */
+.care-prose .hljs {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.care-prose .hljs-comment,
+.care-prose .hljs-quote,
+.care-prose .hljs-meta {
+  color: #6e7781;
+}
+
+.care-prose .hljs-keyword,
+.care-prose .hljs-selector-tag,
+.care-prose .hljs-subst,
+.care-prose .hljs-doctag,
+.care-prose .hljs-template-tag,
+.care-prose .hljs-template-variable,
+.care-prose .hljs-type {
+  color: #cf222e;
+}
+
+.care-prose .hljs-string,
+.care-prose .hljs-regexp,
+.care-prose .hljs-addition,
+.care-prose .hljs-attribute,
+.care-prose .hljs-meta .hljs-string {
+  color: #0a3069;
+}
+
+.care-prose .hljs-number,
+.care-prose .hljs-literal,
+.care-prose .hljs-variable,
+.care-prose .hljs-attr,
+.care-prose .hljs-selector-attr,
+.care-prose .hljs-selector-pseudo,
+.care-prose .hljs-bullet,
+.care-prose .hljs-symbol {
+  color: #0550ae;
+}
+
+.care-prose .hljs-title,
+.care-prose .hljs-title.class_,
+.care-prose .hljs-title.function_,
+.care-prose .hljs-section {
+  color: #8250df;
+}
+
+.care-prose .hljs-built_in,
+.care-prose .hljs-name,
+.care-prose .hljs-tag {
+  color: #116329;
+}
+
+.care-prose .hljs-params,
+.care-prose .hljs-property {
+  color: #24292f;
+}
+
+.care-prose .hljs-deletion {
+  color: #82071e;
+  background-color: #ffebe9;
+}
+
+.care-prose .hljs-addition {
+  color: #116329;
+  background-color: #dafbe1;
+}
+
+.care-prose .hljs-emphasis {
+  font-style: italic;
+}
+
+.care-prose .hljs-strong {
   font-weight: 600;
 }

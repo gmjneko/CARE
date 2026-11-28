@@ -1,18 +1,24 @@
-import { memo, useState } from 'react'
+import { isValidElement, memo, useMemo, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
+import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import 'katex/dist/katex.min.css'
 import { Check, Code2, Copy } from 'lucide-react'
+import { normalizeMathDelimiters } from './math-normalize'
 
 interface CodeBlockProps {
   language: string | null
-  code: string
+  rawCode: string
+  children: ReactNode
 }
 
-function CodeBlock({ language, code }: CodeBlockProps): React.JSX.Element {
+function CodeBlock({ language, rawCode, children }: CodeBlockProps): React.JSX.Element {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = (): void => {
-    void navigator.clipboard.writeText(code).then(() => {
+    void navigator.clipboard.writeText(rawCode).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1600)
     })
@@ -38,11 +44,18 @@ function CodeBlock({ language, code }: CodeBlockProps): React.JSX.Element {
           {copied ? '已复制' : '复制'}
         </button>
       </div>
-      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-code text-[var(--text-primary)]">
-        <code>{code}</code>
+      <pre className="m-0 overflow-x-auto bg-transparent px-3.5 py-3 font-mono text-code text-[var(--text-primary)]">
+        {children}
       </pre>
     </div>
   )
+}
+
+function extractText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) return extractText(node.props.children)
+  return ''
 }
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
@@ -50,27 +63,49 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 }: {
   content: string
 }): React.JSX.Element {
+  const normalized = useMemo(() => normalizeMathDelimiters(content), [content])
+
   return (
     <div className="care-prose">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [rehypeKatex, { strict: false }],
+          [rehypeHighlight, { detect: false, ignoreMissing: true }]
+        ]}
         components={{
-          code({ className, children, ...props }) {
-            const match = /language-([\w-]+)/.exec(className || '')
-            const text = String(children).replace(/\n$/, '')
-            const isBlock = Boolean(match) || text.includes('\n')
-            if (isBlock) {
-              return <CodeBlock language={match ? match[1] : null} code={text} />
-            }
+          a({ href, children, ...props }) {
             return (
-              <code className={className} {...props}>
+              <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
                 {children}
-              </code>
+              </a>
+            )
+          },
+          table({ children, ...props }) {
+            return (
+              <div className="my-3 overflow-hidden rounded-xl border border-[var(--border-hairline)]">
+                <div className="overflow-x-auto">
+                  <table {...props}>{children}</table>
+                </div>
+              </div>
+            )
+          },
+          pre({ children }) {
+            let language: string | null = null
+            if (isValidElement<{ className?: string; children?: ReactNode }>(children)) {
+              const match = /language-([\w-]+)/.exec(children.props.className || '')
+              language = match ? match[1] : null
+            }
+            const rawCode = extractText(children).replace(/\n$/, '')
+            return (
+              <CodeBlock language={language} rawCode={rawCode}>
+                {children}
+              </CodeBlock>
             )
           }
         }}
       >
-        {content}
+        {normalized}
       </ReactMarkdown>
     </div>
   )
