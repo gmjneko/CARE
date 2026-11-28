@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import * as Collapsible from '@radix-ui/react-collapsible'
 import {
   AlertCircle,
   Bell,
@@ -312,17 +313,21 @@ export function Sidebar(): React.JSX.Element {
                         </button>
                       </div>
 
-                      {!isCollapsed && dirThreads.length > 0 && (
-                        <div className="mt-0.5 space-y-0.5 pl-6">
-                          {dirThreads.map((t) => (
-                            <ThreadRow
-                              key={t.thread_id}
-                              thread={t}
-                              active={activePageId === 'chat' && activeThreadId === t.thread_id}
-                              onSelect={() => void openThread(t)}
-                            />
-                          ))}
-                        </div>
+                      {dirThreads.length > 0 && (
+                        <Collapsible.Root open={!isCollapsed}>
+                          <Collapsible.Content className="care-collapsible">
+                            <div className="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--border-card)] pl-2">
+                              {dirThreads.map((t) => (
+                                <ThreadRow
+                                  key={t.thread_id}
+                                  thread={t}
+                                  active={activePageId === 'chat' && activeThreadId === t.thread_id}
+                                  onSelect={() => void openThread(t)}
+                                />
+                              ))}
+                            </div>
+                          </Collapsible.Content>
+                        </Collapsible.Root>
                       )}
                     </div>
                   )
