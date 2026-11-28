@@ -142,7 +142,10 @@ export function ComposerCard({
           onKeyDown={handleKeyDown}
           disabled={!runtimeReady || submitting}
           placeholder={runtimeReady ? effectivePlaceholder : '正在连接本地 Agent Runtime...'}
-          className="max-h-[180px] min-h-[42px] w-full resize-none bg-transparent text-heading text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
+          className={cn(
+            'max-h-[180px] min-h-[42px] w-full resize-none bg-transparent text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60',
+            activeThreadId ? 'text-ui' : 'text-body'
+          )}
         />
       </div>
 
