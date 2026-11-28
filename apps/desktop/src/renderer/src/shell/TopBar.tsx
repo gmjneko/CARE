@@ -123,11 +123,11 @@ export function TopBar(): React.JSX.Element {
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
+                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]"
               >
                 <FolderOpen className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
                 <span>打开位置</span>
-                <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
               </button>
             </DropdownMenu.Trigger>
             <MenuContent align="end" className="min-w-[200px]">

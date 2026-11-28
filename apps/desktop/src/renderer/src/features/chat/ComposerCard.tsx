@@ -170,12 +170,12 @@ export function ComposerCard({
               <button
                 type="button"
                 title={activeThreadId ? '已有会话的工作流不可切换' : '选择工作流模式'}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-70"
+                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-70"
               >
                 <GitBranch className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
                 <span>{workflowLabel}</span>
                 {!activeThreadId && (
-                  <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                  <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
                 )}
               </button>
             </DropdownMenu.Trigger>
@@ -216,14 +216,14 @@ export function ComposerCard({
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)]"
               >
                 <Sparkles className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.65} />
                 <span>
                   {THINKING_OPTIONS.find((o) => o.value === selectedThinkingLevel)?.label ??
                     '默认推理'}
                 </span>
-                <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
               </button>
             </DropdownMenu.Trigger>
             <MenuContent align="start" className="min-w-[144px]">
@@ -255,11 +255,11 @@ export function ComposerCard({
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-8 max-w-[240px] items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
+                className="group inline-flex h-8 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]"
               >
                 <Cpu className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" strokeWidth={1.65} />
                 <span className="truncate font-medium">{effectiveProfileLabel}</span>
-                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+                <ChevronDown className="care-chevron h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
               </button>
             </DropdownMenu.Trigger>
             <MenuContent align="end" className="min-w-[220px]">
