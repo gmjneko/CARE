@@ -46,6 +46,12 @@ export type ProjectedTurnItem =
     }
   | {
       id: string
+      kind: 'stage'
+      nodeId: string
+      role: string
+    }
+  | {
+      id: string
       kind: 'notice'
       noticeKind: 'compaction' | 'retry' | 'resumed'
       text: string
@@ -92,6 +98,31 @@ interface OpenAssistantStep {
 
 const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'glob', 'list_dir', 'search'])
 const COMMAND_TOOLS = new Set(['bash', 'shell', 'exec', 'terminal', 'run_command'])
+
+export function formatWorkflowLabel(workflowId: string): string {
+  switch (workflowId) {
+    case 'plan_and_execute':
+      return '规划执行'
+    case 'single_agent':
+      return '单 Agent'
+    default:
+      return workflowId
+  }
+}
+
+export function formatStageLabel(nodeId: string, role?: string | null): string {
+  const key = (role || nodeId).toLowerCase()
+  switch (key) {
+    case 'planner':
+      return '规划阶段'
+    case 'executor':
+      return '执行阶段'
+    case 'reviewer':
+      return '评审阶段'
+    default:
+      return role || nodeId
+  }
+}
 
 export function classifyTool(toolName: string): ToolCategory {
   const lower = toolName.toLowerCase()
@@ -242,8 +273,17 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       }
 
       case 'node.started': {
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
         turn.nodeId = p.node_id
+        if (ev.workflow_id !== 'single_agent') {
+          turn.items.push({
+            id: `${ev.run_id}:stage:${ev.seq}`,
+            kind: 'stage',
+            nodeId: p.node_id,
+            role: p.role
+          })
+        }
         nodesMap.set(p.node_id, {
           nodeId: p.node_id,
           role: p.role,

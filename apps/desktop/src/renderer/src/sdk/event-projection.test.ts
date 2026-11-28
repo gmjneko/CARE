@@ -216,14 +216,19 @@ describe('event-projection & ContributionRegistry', () => {
     expect(timeline.isRunning).toBe(false)
     expect(timeline.turns).toHaveLength(1)
     expect(timeline.turns[0].userText).toBe('Plan feature X')
-    expect(timeline.turns[0].items.map((i) => i.kind)).toEqual(['thinking', 'tool_group', 'text'])
-    const toolGroup = timeline.turns[0].items[1]
+    expect(timeline.turns[0].items.map((i) => i.kind)).toEqual([
+      'stage',
+      'thinking',
+      'tool_group',
+      'text'
+    ])
+    const toolGroup = timeline.turns[0].items[2]
     expect(toolGroup.kind === 'tool_group' && toolGroup.counts).toEqual({
       actions: 0,
       reads: 1,
       commands: 1
     })
-    const finalText = timeline.turns[0].items[2]
+    const finalText = timeline.turns[0].items[3]
     expect(finalText.kind === 'text' && finalText.text).toBe('Draft plan ready.')
     expect(timeline.turns[0].status).toBe('interrupted')
     expect(timeline.nodes).toEqual([

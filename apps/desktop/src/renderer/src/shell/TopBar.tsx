@@ -6,9 +6,11 @@ import {
   Laptop,
   PanelLeft,
   PanelRight,
-  Terminal
+  Terminal,
+  Workflow
 } from 'lucide-react'
 import type { ExternalAppKind } from '@shared/ipc-contracts'
+import { formatWorkflowLabel } from '@renderer/sdk/event-projection'
 import { cn } from '@renderer/ui/cn'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
@@ -51,11 +53,13 @@ export function TopBar(): React.JSX.Element {
 
   const activeThreadId = useSessionStore((s) => s.activeThreadId)
   const activeWorkspaceDir = useSessionStore((s) => s.activeWorkspaceDir)
+  const activeWorkflowId = useSessionStore((s) => s.activeWorkflowId)
   const threads = useSessionStore((s) => s.threads)
 
   const activeThread = threads.find((t) => t.thread_id === activeThreadId) ?? null
   const activePage = pageRegistry.get(activePageId)
   const workspaceDir = activeWorkspaceDir || selectedWorkspaceDir
+  const workflowId = activeWorkflowId || activeThread?.workflow_id || null
   const isMac = window.careDesktop?.platform === 'darwin'
   const showChatHeader = activePageId === 'chat' && Boolean(activeThreadId)
 
@@ -67,8 +71,8 @@ export function TopBar(): React.JSX.Element {
   return (
     <header
       className={cn(
-        'app-drag flex h-11 shrink-0 items-center justify-between border-b border-transparent px-3.5 select-none',
-        !sidebarOpen && isMac ? 'pl-[82px]' : 'pl-3.5',
+        'app-drag flex h-[52px] shrink-0 items-center justify-between border-b border-transparent px-4 select-none',
+        !sidebarOpen && isMac ? 'pl-[84px]' : 'pl-4',
         showChatHeader && 'border-[var(--border-hairline)]/70'
       )}
     >
@@ -95,6 +99,12 @@ export function TopBar(): React.JSX.Element {
               <Laptop className="h-3 w-3" strokeWidth={1.7} />
               本地
             </span>
+            {workflowId && workflowId !== 'single_agent' && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-caption text-[var(--text-secondary)]">
+                <Workflow className="h-3 w-3" strokeWidth={1.7} />
+                {formatWorkflowLabel(workflowId)}
+              </span>
+            )}
           </div>
         ) : activePageId !== 'chat' && activePage ? (
           <div className="flex items-center gap-2 text-ui font-medium text-[var(--text-primary)]">

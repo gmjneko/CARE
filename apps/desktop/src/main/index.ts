@@ -18,7 +18,7 @@ function createWindow(): void {
     backgroundColor: '#f8f8fa',
     autoHideMenuBar: true,
     titleBarStyle: isMac ? 'hiddenInset' : 'default',
-    ...(isMac ? { trafficLightPosition: { x: 14, y: 15 } } : {}),
+    ...(isMac ? { trafficLightPosition: { x: 16, y: 19 } } : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

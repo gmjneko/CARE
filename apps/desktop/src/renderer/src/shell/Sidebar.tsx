@@ -119,8 +119,8 @@ export function Sidebar(): React.JSX.Element {
       {/* Top utility bar: traffic lights + sidebar toggle + search icon */}
       <div
         className={cn(
-          'app-drag flex h-11 shrink-0 items-center gap-1 px-3',
-          isMac ? 'pl-[76px]' : 'pl-3'
+          'app-drag flex h-[52px] shrink-0 items-center gap-1 px-3',
+          isMac ? 'pl-[78px]' : 'pl-3'
         )}
       >
         <div className="app-no-drag flex items-center gap-1">

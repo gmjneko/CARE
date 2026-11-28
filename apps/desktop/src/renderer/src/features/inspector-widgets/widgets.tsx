@@ -11,7 +11,11 @@ import {
   RefreshCw
 } from 'lucide-react'
 import type { GitWorkspaceSummary } from '@shared/ipc-contracts'
-import { projectEventsToTimeline } from '@renderer/sdk/event-projection'
+import {
+  formatStageLabel,
+  projectEventsToTimeline,
+  type ProjectedWorkflowNode
+} from '@renderer/sdk/event-projection'
 import type { InspectorWidgetProps } from '@renderer/shell/contracts'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { cn } from '@renderer/ui/cn'
@@ -230,6 +234,21 @@ export function EnvironmentWidget({
   )
 }
 
+function formatNodeStatus(status: ProjectedWorkflowNode['status']): string {
+  switch (status) {
+    case 'running':
+      return '执行中'
+    case 'completed':
+      return '已完成'
+    case 'interrupted':
+      return '待确认'
+    case 'failed':
+      return '失败'
+    case 'aborted':
+      return '已中止'
+  }
+}
+
 export function TaskListWidget({ workflowId }: InspectorWidgetProps): React.JSX.Element {
   const events = useSessionStore((s) => s.events)
   const timeline = useMemo(() => projectEventsToTimeline(events), [events])
@@ -259,9 +278,11 @@ export function TaskListWidget({ workflowId }: InspectorWidgetProps): React.JSX.
                   )}
                 />
               )}
-              <span>{node.nodeId}</span>
+              <span>{formatStageLabel(node.nodeId, node.role)}</span>
             </span>
-            <span className="text-caption text-[var(--text-muted)]">{node.status}</span>
+            <span className="text-caption text-[var(--text-muted)]">
+              {formatNodeStatus(node.status)}
+            </span>
           </div>
           {node.summary && (
             <p className="mt-1 line-clamp-2 text-caption text-[var(--text-secondary)]">
