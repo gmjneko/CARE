@@ -135,9 +135,22 @@
 | 阻塞型审批/提问卡（`interaction.request`） | 热交互调 `POST /runs/{run_id}/interactions`；冷挂起恢复调 `POST /workflows/{wf}/threads/{tid}/resume`（带 `interaction_response`） | 卡片渲染完全由 `InteractionRequestEvent` 驱动，热/冷态由 `ThreadState.active_run_id` 自动分流。 |
 | 输入框模型选择器 & 设置弹窗 | `GET /settings`、`PUT /settings`、`GET /workflows`、`GET /adapters` | 设置页修改模型 Profile 时遵循 `api_key` 三态协议（未改动省略保留、输入新值轮换、点清除传 `null`），前端永远不接触明文已存密钥。 |
 
-### 3.3 视觉 Design Tokens（CSS Variables 规范）
+### 3.3 视觉 Design Tokens（颜色 + 六级字号体系）
 
-所有样式严格基于语义化 CSS 变量，禁止在业务组件中写死色值，便于后续一键扩展暗色模式：
+所有样式严格基于语义化 CSS 变量与 Tailwind v4 `@theme` Token，**禁止在业务组件中写死色值或零散像素字号**（如 `text-[11px]`、`text-xs`）：
+
+#### 六级语义字号规范（全应用最小字号底线为 `12px`）
+
+| Token / 工具类 | 字号 / 行高 | 唯一职责范围 |
+| :--- | :---: | :--- |
+| `text-caption` | `12px / 16px` | 辅助元信息：侧栏分组头（`项目`/`最近`）、路径副标题、耗时/Token/Git 统计徽章、免责声明 |
+| `text-ui` | `13.5px / 20px` | 全应用标准控件与列表：顶栏、侧栏按钮与会话列表、输入框底栏选择器、下拉菜单、右侧抽屉、表单控件 |
+| `text-body` | `14.5px / 24px` | 核心阅读与输入正文：输入框正文、用户消息气泡、助手 Markdown 正文 |
+| `text-code` | `13px / 21px` | 等宽代码与日志：代码块、Diff 行、文件预览、工具入参/输出、Sidecar 日志 |
+| `text-heading` | `16px / 24px` | 页面与弹窗主标题（设置弹窗、Skill/MCP 页主标题、Markdown H2） |
+| `text-display` | `24px / 32px` | 空态欢迎页主标语 |
+
+#### 语义颜色变量
 
 ```css
 :root {

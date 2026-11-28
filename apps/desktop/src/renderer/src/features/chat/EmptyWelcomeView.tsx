@@ -46,23 +46,23 @@ export function EmptyWelcomeView(): React.JSX.Element {
       <div className="w-full max-w-[660px]">
         {/* Minimal brand emblem + calm headline (Screenshot 3) */}
         <div className="mb-7 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] text-base font-semibold tracking-tight text-[var(--text-primary)] shadow-[var(--shadow-floating)]">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] text-heading font-semibold tracking-tight text-[var(--text-primary)] shadow-[var(--shadow-floating)]">
             CARE
           </div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-[var(--text-primary)]">
+          <h1 className="text-display font-semibold tracking-tight text-[var(--text-primary)]">
             和 CARE 一起探索无限可能
           </h1>
         </div>
 
         {/* Runtime or validation error banner */}
         {(runtimeError || sessionError) && (
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2 text-xs text-[var(--status-danger)]">
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2 text-ui text-[var(--status-danger)]">
             <span>{sessionError || runtimeError}</span>
             {runtimeError && (
               <button
                 type="button"
                 onClick={() => void restartSidecar()}
-                className="shrink-0 rounded-md border border-[#e8b4b4] bg-white px-2 py-0.5 font-medium hover:bg-[#fff0f0]"
+                className="shrink-0 rounded-md border border-[#e8b4b4] bg-white px-2.5 py-0.5 text-caption font-medium hover:bg-[#fff0f0]"
               >
                 重试连接
               </button>
@@ -74,28 +74,25 @@ export function EmptyWelcomeView(): React.JSX.Element {
         <ComposerCard value={draft} onValueChange={setDraft} />
 
         {/* Attached recessed project selector pill right beneath composer (Screenshot 3) */}
-        <div className="mx-3 -mt-1 flex items-center justify-between rounded-b-2xl border border-t-0 border-[var(--border-hairline)] bg-[var(--bg-subtle)]/80 px-3.5 py-2 text-xs text-[var(--text-secondary)]">
+        <div className="mx-3 -mt-1 flex items-center justify-between rounded-b-2xl border border-t-0 border-[var(--border-hairline)] bg-[var(--bg-subtle)]/80 px-3.5 py-2.5 text-ui text-[var(--text-secondary)]">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
                 className="inline-flex max-w-[420px] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               >
-                <Folder
-                  className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-                  strokeWidth={1.7}
-                />
+                <Folder className="h-4 w-4 shrink-0 text-[var(--text-muted)]" strokeWidth={1.7} />
                 <span className="truncate font-medium">
                   {selectedWorkspaceDir ? baseName(selectedWorkspaceDir) : '选择本地项目目录'}
                 </span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 align="start"
                 sideOffset={6}
-                className="z-50 min-w-[260px] max-w-[380px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1 shadow-[var(--shadow-floating)]"
+                className="z-50 min-w-[260px] max-w-[380px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {savedWorkspaces.map((dir) => (
                   <DropdownMenu.Item
@@ -106,10 +103,10 @@ export function EmptyWelcomeView(): React.JSX.Element {
                     }}
                     className="cursor-pointer rounded-lg px-2.5 py-1.5 outline-none hover:bg-[var(--bg-hover)]"
                   >
-                    <div className="truncate text-xs font-medium text-[var(--text-primary)]">
+                    <div className="truncate text-ui font-medium text-[var(--text-primary)]">
                       {baseName(dir)}
                     </div>
-                    <div className="truncate text-[11px] text-[var(--text-muted)]">{dir}</div>
+                    <div className="truncate text-caption text-[var(--text-muted)]">{dir}</div>
                   </DropdownMenu.Item>
                 ))}
                 {savedWorkspaces.length > 0 && (
@@ -117,9 +114,9 @@ export function EmptyWelcomeView(): React.JSX.Element {
                 )}
                 <DropdownMenu.Item
                   onSelect={() => void handlePickDir()}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
                 >
-                  <FolderPlus className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+                  <FolderPlus className="h-4 w-4 text-[var(--text-secondary)]" />
                   <span>浏览并添加本地目录...</span>
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
@@ -127,14 +124,14 @@ export function EmptyWelcomeView(): React.JSX.Element {
           </DropdownMenu.Root>
 
           {selectedWorkspaceDir && (
-            <span className="hidden truncate pl-3 text-[11px] text-[var(--text-muted)] sm:inline">
+            <span className="hidden truncate pl-3 text-caption text-[var(--text-muted)] sm:inline">
               {selectedWorkspaceDir}
             </span>
           )}
         </div>
 
         {/* Subtle suggestion links underneath (Screenshot 3) */}
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-5 text-xs text-[var(--text-muted)]">
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-5 text-ui text-[var(--text-muted)]">
           {QUICK_PROMPTS.map((item, idx) => (
             <button
               key={item.label}

@@ -34,7 +34,7 @@ export function ToolGroupSummary({
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="my-2">
-      <Collapsible.Trigger className="group inline-flex items-center gap-1.5 rounded-lg py-1 text-[12.5px] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]">
+      <Collapsible.Trigger className="group inline-flex items-center gap-1.5 rounded-lg py-1 text-ui text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]">
         {hasRunning ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]" />
         ) : hasError ? (
@@ -73,7 +73,7 @@ function DefaultToolCard({ call }: { call: ProjectedToolCall }): React.JSX.Eleme
     .join(', ')
 
   return (
-    <div className="overflow-hidden rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/40 text-xs">
+    <div className="overflow-hidden rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/40 text-ui">
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
@@ -87,15 +87,17 @@ function DefaultToolCard({ call }: { call: ProjectedToolCall }): React.JSX.Eleme
           ) : (
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--status-success)]" />
           )}
-          <Terminal className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
-          <span className="font-mono font-medium text-[var(--text-primary)]">{call.toolName}</span>
+          <Terminal className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+          <span className="font-mono text-code font-medium text-[var(--text-primary)]">
+            {call.toolName}
+          </span>
           {argPreview && (
-            <span className="truncate font-mono text-[11px] text-[var(--text-muted)]">
+            <span className="truncate font-mono text-caption text-[var(--text-muted)]">
               {argPreview}
             </span>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-[11px] text-[var(--text-muted)]">
+        <div className="flex shrink-0 items-center gap-2 text-caption text-[var(--text-muted)]">
           {call.durationMs !== null && <span>{(call.durationMs / 1000).toFixed(2)}s</span>}
           <ChevronRight
             className={cn('h-3.5 w-3.5 transition-transform', expanded && 'rotate-90')}
@@ -106,14 +108,14 @@ function DefaultToolCard({ call }: { call: ProjectedToolCall }): React.JSX.Eleme
       {expanded && (
         <div className="space-y-2 border-t border-[var(--border-hairline)] bg-[var(--bg-surface)] px-3 py-2.5">
           {Object.keys(call.arguments).length > 0 && (
-            <pre className="overflow-x-auto rounded-lg bg-[var(--bg-subtle)] p-2 font-mono text-[11.5px] text-[var(--text-secondary)]">
+            <pre className="overflow-x-auto rounded-lg bg-[var(--bg-subtle)] p-2 font-mono text-code text-[var(--text-secondary)]">
               {JSON.stringify(call.arguments, null, 2)}
             </pre>
           )}
           {call.output && (
             <pre
               className={cn(
-                'max-h-[240px] overflow-auto rounded-lg p-2 font-mono text-[11.5px] whitespace-pre-wrap',
+                'max-h-[240px] overflow-auto rounded-lg p-2 font-mono text-code whitespace-pre-wrap',
                 call.status === 'error'
                   ? 'bg-[#fff5f5] text-[var(--status-danger)]'
                   : 'bg-[var(--bg-subtle)]/70 text-[var(--text-primary)]'

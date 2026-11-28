@@ -45,7 +45,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
       {/* Right-aligned soft warm-gray user message bubble (Screenshots 1 & 2) */}
       {turn.userText && (
         <div className="flex justify-end">
-          <div className="max-w-[78%] rounded-2xl bg-[var(--bg-subtle)] px-4 py-2.5 text-[14px] leading-relaxed text-[var(--text-primary)] whitespace-pre-wrap">
+          <div className="max-w-[78%] rounded-2xl bg-[var(--bg-subtle)] px-4 py-2.5 text-body text-[var(--text-primary)] whitespace-pre-wrap">
             {turn.userText}
           </div>
         </div>
@@ -55,7 +55,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
       <div className="space-y-2">
         {/* Completed duration header (Screenshot 1: 已完成 3m 49s >) */}
         {isCompleted && turn.durationMs !== null && (
-          <div className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
+          <div className="inline-flex items-center gap-1 text-caption text-[var(--text-muted)]">
             <span>已完成 {formatDuration(turn.durationMs)}</span>
           </div>
         )}
@@ -63,7 +63,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
         {/* Collapsible thinking block (Screenshot 2: 已思考 1s) */}
         {turn.thinkingText && (
           <Collapsible.Root open={thinkingOpen} onOpenChange={setThinkingOpen}>
-            <Collapsible.Trigger className="inline-flex items-center gap-1.5 rounded-lg py-0.5 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
+            <Collapsible.Trigger className="inline-flex items-center gap-1.5 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
               <Brain className="h-3.5 w-3.5" strokeWidth={1.6} />
               <span>
                 {turn.thinkingStreaming
@@ -71,10 +71,10 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
                   : `已思考 ${turn.thinkingDurationMs !== null ? formatDuration(turn.thinkingDurationMs) : ''}`}
               </span>
               <ChevronRight
-                className={cn('h-3 w-3 transition-transform', thinkingOpen && 'rotate-90')}
+                className={cn('h-3.5 w-3.5 transition-transform', thinkingOpen && 'rotate-90')}
               />
             </Collapsible.Trigger>
-            <Collapsible.Content className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">
+            <Collapsible.Content className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
               {turn.thinkingText}
             </Collapsible.Content>
           </Collapsible.Root>
@@ -86,7 +86,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
             {turn.notices.map((notice) => (
               <span
                 key={notice.id}
-                className="rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-[11px] text-[var(--text-muted)]"
+                className="rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-caption text-[var(--text-muted)]"
               >
                 {notice.text}
               </span>
@@ -102,7 +102,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
 
         {/* Active pulsing progress indicator (Screenshot 2 bottom working indicator) */}
         {isRunning && (
-          <div className="flex items-center gap-2 border-t border-[var(--border-hairline)] pt-3 text-xs text-[var(--text-muted)]">
+          <div className="flex items-center gap-2 border-t border-[var(--border-hairline)] pt-3 text-caption text-[var(--text-muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             <span>CARE 正在执行</span>
             <LiveElapsed startedAt={turn.startedAt} />
@@ -111,7 +111,7 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
 
         {/* Failure / RuntimeError block */}
         {(turn.failure || turn.runtimeError) && (
-          <div className="flex items-start gap-2 rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2.5 text-xs text-[var(--status-danger)]">
+          <div className="flex items-start gap-2 rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2.5 text-ui text-[var(--status-danger)]">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
               <div className="font-medium">
@@ -150,7 +150,7 @@ function WorkflowStageBar({
         ]
 
   return (
-    <div className="flex items-center gap-2 border-b border-[var(--border-hairline)] bg-[var(--bg-subtle)]/40 px-6 py-2 text-xs">
+    <div className="flex items-center gap-2 border-b border-[var(--border-hairline)] bg-[var(--bg-subtle)]/40 px-6 py-2 text-caption">
       <span className="font-medium text-[var(--text-muted)]">{workflowId}</span>
       <span className="text-[var(--border-card)]">|</span>
       <div className="flex items-center gap-2 overflow-x-auto">
@@ -215,7 +215,7 @@ export function ConversationView(): React.JSX.Element {
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-[760px] space-y-8">
           {loadingSession ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-xs text-[var(--text-muted)]">
+            <div className="flex items-center justify-center gap-2 py-16 text-ui text-[var(--text-muted)]">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>正在加载历史会话...</span>
             </div>
@@ -230,7 +230,7 @@ export function ConversationView(): React.JSX.Element {
           />
 
           {error && (
-            <div className="rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2.5 text-xs text-[var(--status-danger)]">
+            <div className="rounded-xl border border-[#f2c6c6] bg-[#fff5f5] px-3.5 py-2.5 text-ui text-[var(--status-danger)]">
               {error}
             </div>
           )}
@@ -247,7 +247,7 @@ export function ConversationView(): React.JSX.Element {
             isAwaitingInput={isAwaitingInput}
             latestUsage={timeline.latestUsage}
           />
-          <div className="mt-1.5 text-center text-[11px] text-[var(--text-muted)]">
+          <div className="mt-1.5 text-center text-caption text-[var(--text-muted)]">
             内容由 AI 生成，请注意核实
           </div>
         </div>

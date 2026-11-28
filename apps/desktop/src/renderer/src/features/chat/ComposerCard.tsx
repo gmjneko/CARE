@@ -142,12 +142,12 @@ export function ComposerCard({
           onKeyDown={handleKeyDown}
           disabled={!runtimeReady || submitting}
           placeholder={runtimeReady ? effectivePlaceholder : '正在连接本地 Agent Runtime...'}
-          className="max-h-[180px] min-h-[28px] w-full resize-none bg-transparent text-[14px] leading-relaxed text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
+          className="max-h-[180px] min-h-[28px] w-full resize-none bg-transparent text-body text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
         />
       </div>
 
       {/* Bottom control bar inside floating composer */}
-      <div className="flex items-center justify-between gap-2 px-3 pb-2.5 pt-1">
+      <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
         <div className="flex min-w-0 items-center gap-1">
           {/* Workflow selector (locked once a thread starts) */}
           <DropdownMenu.Root>
@@ -155,18 +155,20 @@ export function ComposerCard({
               <button
                 type="button"
                 title={activeThreadId ? '已有会话的工作流不可切换' : '选择工作流模式'}
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-70"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-70"
               >
-                <GitBranch className="h-3.5 w-3.5" strokeWidth={1.7} />
+                <GitBranch className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
                 <span>{workflowLabel}</span>
-                {!activeThreadId && <ChevronDown className="h-3 w-3 text-[var(--text-muted)]" />}
+                {!activeThreadId && (
+                  <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                )}
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 align="start"
                 sideOffset={6}
-                className="z-50 min-w-[220px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1 shadow-[var(--shadow-floating)]"
+                className="z-50 min-w-[240px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {(workflows.length > 0
                   ? workflows
@@ -183,8 +185,8 @@ export function ComposerCard({
                       selectedWorkflowId === wf.name && 'bg-[var(--bg-subtle)]'
                     )}
                   >
-                    <div className="text-xs font-medium text-[var(--text-primary)]">{wf.name}</div>
-                    <div className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                    <div className="text-ui font-medium text-[var(--text-primary)]">{wf.name}</div>
+                    <div className="mt-0.5 text-caption text-[var(--text-muted)]">
                       {wf.description}
                     </div>
                   </DropdownMenu.Item>
@@ -198,28 +200,28 @@ export function ComposerCard({
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               >
-                <Sparkles className="h-3.5 w-3.5" strokeWidth={1.65} />
+                <Sparkles className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.65} />
                 <span>
                   {THINKING_OPTIONS.find((o) => o.value === selectedThinkingLevel)?.label ??
                     '默认推理'}
                 </span>
-                <ChevronDown className="h-3 w-3 text-[var(--text-muted)]" />
+                <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 align="start"
                 sideOffset={6}
-                className="z-50 min-w-[130px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1 shadow-[var(--shadow-floating)]"
+                className="z-50 min-w-[140px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {THINKING_OPTIONS.map((opt) => (
                   <DropdownMenu.Item
                     key={String(opt.value)}
                     onSelect={() => setSelectedThinkingLevel(opt.value)}
                     className={cn(
-                      'cursor-pointer rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
+                      'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
                       selectedThinkingLevel === opt.value && 'bg-[var(--bg-subtle)] font-medium'
                     )}
                   >
@@ -236,7 +238,7 @@ export function ComposerCard({
           {latestUsage && (latestUsage.total_tokens ?? 0) > 0 && (
             <span
               title={`输入 ${latestUsage.input_tokens ?? 0} · 输出 ${latestUsage.output_tokens ?? 0} · 缓存命中 ${latestUsage.cached_input_tokens ?? 0}`}
-              className="hidden items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] sm:inline-flex"
+              className="hidden items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-caption text-[var(--text-muted)] sm:inline-flex"
             >
               {formatTokens(latestUsage.total_tokens ?? 0)} tok
             </span>
@@ -247,23 +249,23 @@ export function ComposerCard({
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-7 max-w-[190px] items-center gap-1 rounded-lg px-2 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="inline-flex h-8 max-w-[230px] items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               >
-                <Cpu className="h-3.5 w-3.5 shrink-0" strokeWidth={1.65} />
+                <Cpu className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" strokeWidth={1.65} />
                 <span className="truncate">{effectiveProfileLabel}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-[var(--text-muted)]" />
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-50 min-w-[200px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1 shadow-[var(--shadow-floating)]"
+                className="z-50 min-w-[220px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 <DropdownMenu.Item
                   onSelect={() => setSelectedProfile(null)}
                   className={cn(
-                    'cursor-pointer rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
+                    'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
                     selectedProfile === null && 'bg-[var(--bg-subtle)] font-medium'
                   )}
                 >
@@ -277,19 +279,19 @@ export function ComposerCard({
                       key={name}
                       onSelect={() => setSelectedProfile(name)}
                       className={cn(
-                        'cursor-pointer rounded-lg px-2.5 py-1.5 text-xs outline-none hover:bg-[var(--bg-hover)]',
+                        'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui outline-none hover:bg-[var(--bg-hover)]',
                         selectedProfile === name && 'bg-[var(--bg-subtle)] font-medium'
                       )}
                     >
                       <div className="text-[var(--text-primary)]">{name}</div>
-                      <div className="text-[11px] text-[var(--text-muted)]">{prof.model}</div>
+                      <div className="text-caption text-[var(--text-muted)]">{prof.model}</div>
                     </DropdownMenu.Item>
                   )
                 })}
                 <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-hairline)]" />
                 <DropdownMenu.Item
                   onSelect={() => setSettingsOpen(true)}
-                  className="cursor-pointer rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-secondary)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  className="cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-secondary)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 >
                   管理模型配置...
                 </DropdownMenu.Item>
@@ -305,7 +307,7 @@ export function ComposerCard({
                   type="button"
                   onClick={() => void handleSend('steer')}
                   title="立即插话纠偏 (⌘/Ctrl+Enter)"
-                  className="inline-flex h-7 items-center rounded-full bg-[var(--bg-subtle)] px-2.5 text-[11.5px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-active)]"
+                  className="inline-flex h-8 items-center rounded-full bg-[var(--bg-subtle)] px-3 text-ui font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-active)]"
                 >
                   插话
                 </button>
@@ -314,9 +316,9 @@ export function ComposerCard({
                   type="button"
                   onClick={() => void suspendActiveRun()}
                   title="挂起并保留执行现场"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 >
-                  <Pause className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  <Pause className="h-4 w-4" strokeWidth={1.8} />
                 </button>
               )}
               <button

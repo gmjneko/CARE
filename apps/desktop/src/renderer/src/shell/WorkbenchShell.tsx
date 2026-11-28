@@ -33,7 +33,7 @@ export function WorkbenchShell({ overlays }: WorkbenchShellProps): React.JSX.Ele
             {ActivePageComponent ? (
               <ActivePageComponent />
             ) : (
-              <div className="flex flex-1 items-center justify-center text-sm text-[var(--text-muted)]">
+              <div className="flex flex-1 items-center justify-center text-ui text-[var(--text-muted)]">
                 未找到已注册页面：{activePageId}
               </div>
             )}

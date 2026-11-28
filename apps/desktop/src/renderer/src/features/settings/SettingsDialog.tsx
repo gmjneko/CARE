@@ -175,10 +175,10 @@ function SettingsDialogBody({
     <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[82vh] w-[680px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
       <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-5 py-3.5">
         <div className="flex items-center gap-4">
-          <Dialog.Title className="text-[14px] font-semibold text-[var(--text-primary)]">
+          <Dialog.Title className="text-heading font-semibold text-[var(--text-primary)]">
             工作台设置
           </Dialog.Title>
-          <div className="flex items-center gap-1 rounded-lg bg-[var(--bg-subtle)] p-0.5 text-xs">
+          <div className="flex items-center gap-1 rounded-lg bg-[var(--bg-subtle)] p-0.5 text-ui">
             <button
               type="button"
               onClick={() => setTab('models')}
@@ -212,13 +212,13 @@ function SettingsDialogBody({
         {tab === 'models' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <div className="text-xs text-[var(--text-secondary)]">
+              <div className="text-caption text-[var(--text-secondary)]">
                 已保存的 API Key 仅存在本机 `~/.care/settings.json`，接口绝不回传明文。
               </div>
               <button
                 type="button"
                 onClick={handleAddProfile}
-                className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1 text-ui font-medium text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
               >
                 <Plus className="h-3.5 w-3.5" />
                 新增 Profile
@@ -226,7 +226,7 @@ function SettingsDialogBody({
             </div>
 
             {profiles.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[var(--border-card)] py-8 text-center text-xs text-[var(--text-muted)]">
+              <div className="rounded-xl border border-dashed border-[var(--border-card)] py-8 text-center text-ui text-[var(--text-muted)]">
                 暂无自定义模型配置（将沿用底层 `pi` 的默认模型）
               </div>
             ) : (
@@ -237,7 +237,7 @@ function SettingsDialogBody({
                     className="space-y-2.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/40 p-3.5"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <label className="inline-flex items-center gap-2 text-xs font-medium text-[var(--text-primary)]">
+                      <label className="inline-flex items-center gap-2 text-ui font-medium text-[var(--text-primary)]">
                         <input
                           type="radio"
                           name="active_profile"
@@ -249,7 +249,7 @@ function SettingsDialogBody({
                       <button
                         type="button"
                         onClick={() => removeProfile(idx)}
-                        className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)] hover:text-[var(--status-danger)]"
+                        className="inline-flex items-center gap-1 text-caption text-[var(--text-muted)] hover:text-[var(--status-danger)]"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                         删除
@@ -266,7 +266,7 @@ function SettingsDialogBody({
                             updateProfile(idx, { name: e.target.value })
                             if (activeProfile === oldName) setActiveProfile(e.target.value)
                           }}
-                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                         />
                       </Field>
                       <Field label="Model ID">
@@ -275,7 +275,7 @@ function SettingsDialogBody({
                           placeholder="如 deepseek-chat / claude-sonnet-4-5"
                           value={prof.model}
                           onChange={(e) => updateProfile(idx, { model: e.target.value })}
-                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                         />
                       </Field>
                       <Field label="Base URL（可选）">
@@ -284,7 +284,7 @@ function SettingsDialogBody({
                           placeholder="https://api.example.com/v1"
                           value={prof.baseUrl}
                           onChange={(e) => updateProfile(idx, { baseUrl: e.target.value })}
-                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                         />
                       </Field>
                       <Field label="API 协议">
@@ -293,7 +293,7 @@ function SettingsDialogBody({
                           onChange={(e) =>
                             updateProfile(idx, { apiProtocol: e.target.value as ApiProtocol })
                           }
-                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                         >
                           {API_PROTOCOLS.map((p) => (
                             <option key={p} value={p}>
@@ -308,7 +308,7 @@ function SettingsDialogBody({
                           placeholder="可选，如 openai / anthropic"
                           value={prof.provider}
                           onChange={(e) => updateProfile(idx, { provider: e.target.value })}
-                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                          className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                         />
                       </Field>
                       <Field
@@ -331,7 +331,7 @@ function SettingsDialogBody({
                                 apiKeyAction: e.target.value ? 'set' : 'keep'
                               })
                             }
-                            className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs focus:outline-none"
+                            className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-ui focus:outline-none"
                           />
                           {prof.hasApiKey && (
                             <button
@@ -342,7 +342,7 @@ function SettingsDialogBody({
                                   apiKeyAction: prof.apiKeyAction === 'clear' ? 'keep' : 'clear'
                                 })
                               }
-                              className="shrink-0 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+                              className="shrink-0 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 text-caption text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
                             >
                               {prof.apiKeyAction === 'clear' ? '撤销清除' : '清除'}
                             </button>
@@ -362,19 +362,19 @@ function SettingsDialogBody({
                   placeholder="留空自动解析 PATH 或 ~/.pi/agent/bin/pi"
                   value={piBin}
                   onChange={(e) => setPiBin(e.target.value)}
-                  className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 font-mono text-xs focus:outline-none"
+                  className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1.5 font-mono text-code focus:outline-none"
                 />
               </Field>
             </div>
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 p-3.5 text-xs">
+            <div className="flex items-center justify-between rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 p-3.5 text-ui">
               <div className="space-y-1">
                 <div className="font-medium text-[var(--text-primary)]">
                   状态：{connection?.status ?? 'unknown'}（{connection?.mode ?? 'managed'}）
                 </div>
-                <div className="font-mono text-[11.5px] text-[var(--text-secondary)]">
+                <div className="font-mono text-code text-[var(--text-secondary)]">
                   {connection?.baseUrl || '未连接'}
                 </div>
               </div>
@@ -389,10 +389,10 @@ function SettingsDialogBody({
             </div>
 
             <div>
-              <div className="mb-1.5 text-xs font-medium text-[var(--text-secondary)]">
+              <div className="mb-1.5 text-ui font-medium text-[var(--text-secondary)]">
                 Sidecar 诊断日志（最近 500 行）
               </div>
-              <pre className="max-h-[300px] overflow-auto rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/60 p-3 font-mono text-[11px] leading-relaxed text-[var(--text-secondary)]">
+              <pre className="max-h-[300px] overflow-auto rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/60 p-3 font-mono text-code text-[var(--text-secondary)]">
                 {logs.length > 0 ? logs.join('\n') : '暂无日志输出'}
               </pre>
             </div>
@@ -402,7 +402,7 @@ function SettingsDialogBody({
 
       {tab === 'models' && (
         <div className="flex items-center justify-between border-t border-[var(--border-hairline)] px-5 py-3">
-          <div className="text-xs">
+          <div className="text-ui">
             {feedback && (
               <span
                 className={
@@ -419,7 +419,7 @@ function SettingsDialogBody({
             type="button"
             disabled={saving}
             onClick={() => void handleSave()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-4 text-xs font-medium text-[var(--accent-primary-fg)] hover:opacity-90 disabled:opacity-50"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-4 text-ui font-medium text-[var(--accent-primary-fg)] hover:opacity-90 disabled:opacity-50"
           >
             <Check className="h-3.5 w-3.5" />
             <span>{saving ? '保存中...' : '保存配置'}</span>
@@ -439,7 +439,7 @@ function Field({
 }): React.JSX.Element {
   return (
     <div className="space-y-1">
-      <div className="text-[11px] font-medium text-[var(--text-secondary)]">{label}</div>
+      <div className="text-caption font-medium text-[var(--text-secondary)]">{label}</div>
       {children}
     </div>
   )

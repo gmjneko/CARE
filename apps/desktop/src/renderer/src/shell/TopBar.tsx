@@ -68,17 +68,17 @@ export function TopBar(): React.JSX.Element {
 
         {showChatHeader ? (
           <div className="flex min-w-0 items-center gap-2">
-            <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" strokeWidth={1.7} />
-            <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+            <Folder className="h-4 w-4 shrink-0 text-[var(--text-muted)]" strokeWidth={1.7} />
+            <span className="truncate text-ui font-medium text-[var(--text-primary)]">
               {activeThread?.title || '新任务'}
             </span>
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-caption text-[var(--text-secondary)]">
               <Laptop className="h-3 w-3" strokeWidth={1.7} />
               本地
             </span>
           </div>
         ) : activePageId !== 'chat' && activePage ? (
-          <div className="flex items-center gap-2 text-[13px] font-medium text-[var(--text-primary)]">
+          <div className="flex items-center gap-2 text-ui font-medium text-[var(--text-primary)]">
             <activePage.icon className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
             <span>{activePage.title}</span>
           </div>
@@ -92,32 +92,29 @@ export function TopBar(): React.JSX.Element {
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-2.5 text-xs text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
               >
-                <FolderOpen
-                  className="h-3.5 w-3.5 text-[var(--text-secondary)]"
-                  strokeWidth={1.7}
-                />
+                <FolderOpen className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
                 <span>打开位置</span>
-                <ChevronDown className="h-3 w-3 text-[var(--text-muted)]" />
+                <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-50 min-w-[180px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1 shadow-[var(--shadow-floating)]"
+                className="z-50 min-w-[190px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {EXTERNAL_APPS.map((item) => (
                   <DropdownMenu.Item
                     key={item.id}
                     onSelect={() => handleOpenExternal(item.id)}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
                   >
                     {item.id === 'terminal' ? (
-                      <Terminal className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+                      <Terminal className="h-4 w-4 text-[var(--text-secondary)]" />
                     ) : (
-                      <FolderOpen className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+                      <FolderOpen className="h-4 w-4 text-[var(--text-secondary)]" />
                     )}
                     {item.label}
                   </DropdownMenu.Item>

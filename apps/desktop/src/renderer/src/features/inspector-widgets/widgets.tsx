@@ -48,7 +48,7 @@ function DiffDetailView({
 
   if (summary.files.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-xs text-[var(--text-muted)]">
+      <div className="flex h-full items-center justify-center p-6 text-ui text-[var(--text-muted)]">
         当前工作区没有未提交的变更
       </div>
     )
@@ -66,19 +66,19 @@ function DiffDetailView({
               type="button"
               onClick={() => setSelectedPath(file.path)}
               className={cn(
-                'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors',
+                'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-ui transition-colors',
                 selectedPath === file.path
                   ? 'bg-[var(--bg-active)] font-medium text-[var(--text-primary)]'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
               )}
             >
               <span className="flex min-w-0 items-center gap-2">
-                <span className="w-4 shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
+                <span className="w-4 shrink-0 font-mono text-caption text-[var(--text-muted)]">
                   {file.status}
                 </span>
-                <span className="truncate font-mono">{file.path}</span>
+                <span className="truncate font-mono text-code">{file.path}</span>
               </span>
-              <span className="flex shrink-0 items-center gap-1.5 font-mono text-[11px]">
+              <span className="flex shrink-0 items-center gap-1.5 font-mono text-caption">
                 {file.additions > 0 && (
                   <span className="text-[var(--status-success)]">+{file.additions}</span>
                 )}
@@ -91,9 +91,9 @@ function DiffDetailView({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-[var(--bg-surface)] p-3 font-mono text-[12px] leading-relaxed">
+      <div className="flex-1 overflow-auto bg-[var(--bg-surface)] p-3 font-mono text-code">
         {loading ? (
-          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+          <div className="flex items-center gap-2 text-ui text-[var(--text-muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             <span>正在加载变更内容...</span>
           </div>
@@ -175,7 +175,7 @@ export function EnvironmentWidget({
   }
 
   return (
-    <div className="space-y-1.5 text-[12.5px] text-[var(--text-secondary)]">
+    <div className="space-y-1.5 text-ui text-[var(--text-secondary)]">
       <button
         type="button"
         disabled={!summary?.isGitRepo}
@@ -183,16 +183,16 @@ export function EnvironmentWidget({
         className="flex w-full items-center justify-between rounded-lg px-1.5 py-1 transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default disabled:hover:bg-transparent"
       >
         <span className="inline-flex items-center gap-2 text-[var(--text-primary)]">
-          <FileDiff className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.7} />
+          <FileDiff className="h-4 w-4 text-[var(--text-muted)]" strokeWidth={1.7} />
           <span>变更</span>
         </span>
-        <span className="inline-flex items-center gap-1.5 font-mono text-[11.5px]">
+        <span className="inline-flex items-center gap-1.5 font-mono text-caption">
           {summary?.isGitRepo ? (
             summary.files.length > 0 ? (
               <>
                 <span className="text-[var(--status-success)]">+{summary.totalAdditions}</span>
                 <span className="text-[var(--status-danger)]">-{summary.totalDeletions}</span>
-                <ChevronRight className="h-3 w-3 text-[var(--text-muted)]" />
+                <ChevronRight className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               </>
             ) : (
               <span className="text-[var(--text-muted)]">无变更</span>
@@ -205,20 +205,17 @@ export function EnvironmentWidget({
 
       <div className="flex items-center justify-between px-1.5 py-1">
         <span className="inline-flex items-center gap-2 text-[var(--text-primary)]">
-          <Laptop className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.7} />
+          <Laptop className="h-4 w-4 text-[var(--text-muted)]" strokeWidth={1.7} />
           <span>本地</span>
         </span>
-        <span className="text-[11px] text-[var(--text-muted)]">Sidecar</span>
+        <span className="text-caption text-[var(--text-muted)]">Sidecar</span>
       </div>
 
       {summary?.isGitRepo && (
         <div className="flex items-center justify-between px-1.5 py-1">
           <span className="inline-flex min-w-0 items-center gap-2 text-[var(--text-primary)]">
-            <GitBranch
-              className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-              strokeWidth={1.7}
-            />
-            <span className="truncate font-mono text-xs">{summary.branch || 'HEAD'}</span>
+            <GitBranch className="h-4 w-4 shrink-0 text-[var(--text-muted)]" strokeWidth={1.7} />
+            <span className="truncate font-mono text-code">{summary.branch || 'HEAD'}</span>
           </span>
           <button
             type="button"
@@ -226,7 +223,7 @@ export function EnvironmentWidget({
             title="刷新 Git 状态"
             className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           >
-            <RefreshCw className={cn('h-3 w-3', refreshing && 'animate-spin')} />
+            <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
           </button>
         </div>
       )}
@@ -239,21 +236,21 @@ export function TaskListWidget(): React.JSX.Element {
   const timeline = useMemo(() => projectEventsToTimeline(events), [events])
 
   if (timeline.nodes.length === 0) {
-    return <div className="px-1.5 py-1 text-xs text-[var(--text-muted)]">暂无任务</div>
+    return <div className="px-1.5 py-1 text-ui text-[var(--text-muted)]">暂无任务</div>
   }
 
   return (
     <div className="space-y-1.5">
       {timeline.nodes.map((node) => (
-        <div key={node.nodeId} className="rounded-lg bg-[var(--bg-subtle)]/60 px-2.5 py-2 text-xs">
+        <div key={node.nodeId} className="rounded-lg bg-[var(--bg-subtle)]/60 px-2.5 py-2 text-ui">
           <div className="flex items-center justify-between gap-2">
             <span className="inline-flex items-center gap-1.5 font-medium text-[var(--text-primary)]">
               {node.status === 'running' ? (
-                <Loader2 className="h-3 w-3 animate-spin text-[var(--text-muted)]" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]" />
               ) : (
                 <CheckCircle2
                   className={cn(
-                    'h-3 w-3',
+                    'h-3.5 w-3.5',
                     node.status === 'completed'
                       ? 'text-[var(--status-success)]'
                       : 'text-[var(--status-warning)]'
@@ -262,10 +259,10 @@ export function TaskListWidget(): React.JSX.Element {
               )}
               <span>{node.nodeId}</span>
             </span>
-            <span className="text-[11px] text-[var(--text-muted)]">{node.status}</span>
+            <span className="text-caption text-[var(--text-muted)]">{node.status}</span>
           </div>
           {node.summary && (
-            <p className="mt-1 line-clamp-2 text-[11px] text-[var(--text-secondary)]">
+            <p className="mt-1 line-clamp-2 text-caption text-[var(--text-secondary)]">
               {node.summary}
             </p>
           )}
@@ -277,8 +274,8 @@ export function TaskListWidget(): React.JSX.Element {
 
 export function ArtifactsWidget(): React.JSX.Element {
   return (
-    <div className="flex items-center gap-2 px-1.5 py-1 text-xs text-[var(--text-muted)]">
-      <Package className="h-3.5 w-3.5" strokeWidth={1.6} />
+    <div className="flex items-center gap-2 px-1.5 py-1 text-ui text-[var(--text-muted)]">
+      <Package className="h-4 w-4" strokeWidth={1.6} />
       <span>暂无产物</span>
     </div>
   )
@@ -323,7 +320,7 @@ function FilePreviewDetail({
 
   if (!fileState || fileState.key !== currentKey) {
     return (
-      <div className="flex items-center gap-2 p-4 text-xs text-[var(--text-muted)]">
+      <div className="flex items-center gap-2 p-4 text-ui text-[var(--text-muted)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         <span>正在读取文件...</span>
       </div>
@@ -333,11 +330,11 @@ function FilePreviewDetail({
   return (
     <div className="p-3">
       {fileState.truncated && (
-        <div className="mb-2 rounded-lg bg-[#fffaf0] px-2.5 py-1 text-[11px] text-[var(--status-warning)]">
+        <div className="mb-2 rounded-lg bg-[#fffaf0] px-2.5 py-1 text-caption text-[var(--status-warning)]">
           文件超过 256 KiB，已截断预览
         </div>
       )}
-      <pre className="overflow-x-auto font-mono text-[12px] leading-relaxed text-[var(--text-primary)]">
+      <pre className="overflow-x-auto font-mono text-code text-[var(--text-primary)]">
         <code>{fileState.content}</code>
       </pre>
     </div>
@@ -371,13 +368,13 @@ export function ReferencesWidget({
   }, [workspaceDir])
 
   if (!workspaceDir) {
-    return <div className="px-1.5 py-1 text-xs text-[var(--text-muted)]">未绑定项目目录</div>
+    return <div className="px-1.5 py-1 text-ui text-[var(--text-muted)]">未绑定项目目录</div>
   }
 
   const entries = entriesState.dir === workspaceDir ? entriesState.items : []
 
   return (
-    <div className="space-y-1 text-xs">
+    <div className="space-y-1 text-ui">
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
@@ -392,7 +389,7 @@ export function ReferencesWidget({
           />
           <span>项目文件</span>
         </span>
-        <span className="text-[11px] text-[var(--text-muted)]">{entries.length}</span>
+        <span className="text-caption text-[var(--text-muted)]">{entries.length}</span>
       </button>
 
       {expanded && (
@@ -416,7 +413,7 @@ export function ReferencesWidget({
                   )
                 })
               }}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-code text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default"
             >
               {entry.isDirectory ? (
                 <Folder

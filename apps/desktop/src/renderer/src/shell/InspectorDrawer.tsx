@@ -58,18 +58,18 @@ export function InspectorDrawer(): React.JSX.Element | null {
                 <button
                   type="button"
                   onClick={closeInspectorDetail}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   <span>返回概览</span>
                 </button>
                 <span className="h-3.5 w-px bg-[var(--border-hairline)]" />
                 <div className="min-w-0">
-                  <div className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+                  <div className="truncate text-ui font-medium text-[var(--text-primary)]">
                     {inspectorDetail.title}
                   </div>
                   {inspectorDetail.subtitle && (
-                    <div className="truncate text-[11px] text-[var(--text-muted)]">
+                    <div className="truncate text-caption text-[var(--text-muted)]">
                       {inspectorDetail.subtitle}
                     </div>
                   )}
@@ -106,7 +106,7 @@ export function InspectorDrawer(): React.JSX.Element | null {
                   className="py-2.5 first:pt-1"
                 >
                   <Collapsible.Trigger className="flex w-full items-center justify-between py-1 text-left">
-                    <span className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--text-primary)]">
+                    <span className="inline-flex items-center gap-1.5 text-ui font-semibold text-[var(--text-primary)]">
                       {widget.title}
                       <ChevronDown
                         className={cn(
@@ -116,7 +116,7 @@ export function InspectorDrawer(): React.JSX.Element | null {
                       />
                     </span>
                     {badge !== null && badge !== undefined && (
-                      <span className="rounded-md bg-[var(--bg-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                      <span className="rounded-md bg-[var(--bg-subtle)] px-1.5 py-0.5 text-caption font-medium text-[var(--text-secondary)]">
                         {badge}
                       </span>
                     )}

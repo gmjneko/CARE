@@ -175,7 +175,7 @@ export function Sidebar(): React.JSX.Element {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="搜索任务或项目..."
               autoFocus
-              className="w-full bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
+              className="w-full bg-transparent text-ui text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
             />
             {searchQuery && (
               <button
@@ -210,7 +210,7 @@ export function Sidebar(): React.JSX.Element {
                 }
               }}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-[13.5px] font-medium transition-colors',
+                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-ui font-medium transition-colors',
                 isSelected
                   ? 'bg-[var(--bg-active)] text-[var(--text-primary)]'
                   : 'text-[var(--text-primary)]/90 hover:bg-[var(--bg-hover)]'
@@ -231,7 +231,7 @@ export function Sidebar(): React.JSX.Element {
         {/* Projects section */}
         <Collapsible.Root open={projectsExpanded} onOpenChange={setProjectsExpanded}>
           <div className="flex items-center justify-between px-2 py-1.5">
-            <Collapsible.Trigger className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+            <Collapsible.Trigger className="inline-flex items-center gap-1 text-caption font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
               <span>项目</span>
               <ChevronDown
                 className={cn('h-3 w-3 transition-transform', !projectsExpanded && '-rotate-90')}
@@ -252,9 +252,9 @@ export function Sidebar(): React.JSX.Element {
               <button
                 type="button"
                 onClick={() => void handlePickProject()}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-ui text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
               >
-                <FolderPlus className="h-3.5 w-3.5" />
+                <FolderPlus className="h-4 w-4" />
                 <span>添加第一个项目目录...</span>
               </button>
             ) : (
@@ -265,7 +265,7 @@ export function Sidebar(): React.JSX.Element {
                   <div key={dir}>
                     <div
                       className={cn(
-                        'group flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[13px] transition-colors',
+                        'group flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-ui transition-colors',
                         isSelectedDir
                           ? 'bg-[var(--bg-hover)] font-medium text-[var(--text-primary)]'
                           : 'text-[var(--text-primary)]/90 hover:bg-[var(--bg-hover)]'
@@ -322,7 +322,7 @@ export function Sidebar(): React.JSX.Element {
         {filteredThreads.length > 0 && (
           <Collapsible.Root open={recentExpanded} onOpenChange={setRecentExpanded} className="mt-4">
             <div className="flex items-center px-2 py-1.5">
-              <Collapsible.Trigger className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+              <Collapsible.Trigger className="inline-flex items-center gap-1 text-caption font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
                 <span>最近</span>
                 <ChevronDown
                   className={cn('h-3 w-3 transition-transform', !recentExpanded && '-rotate-90')}
@@ -351,7 +351,7 @@ export function Sidebar(): React.JSX.Element {
           className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)]"
         >
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-primary)] text-xs font-semibold text-[var(--accent-primary-fg)]">
+            <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent-primary)] text-caption font-semibold text-[var(--accent-primary-fg)]">
               C
               <span
                 className={cn(
@@ -361,10 +361,10 @@ export function Sidebar(): React.JSX.Element {
               />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-[12.5px] font-medium text-[var(--text-primary)]">
+              <div className="truncate text-ui font-medium text-[var(--text-primary)]">
                 CARE 工作台
               </div>
-              <div className="truncate text-[11px] text-[var(--text-muted)]">
+              <div className="truncate text-caption text-[var(--text-muted)]">
                 {connection?.status === 'ready' || connection?.status === 'attached'
                   ? '个人空间 · 本地就绪'
                   : connection?.status === 'error'
@@ -394,7 +394,7 @@ function ThreadRow({
       type="button"
       onClick={onSelect}
       className={cn(
-        'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors',
+        'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-ui transition-colors',
         active
           ? 'bg-[var(--bg-active)] font-medium text-[var(--text-primary)]'
           : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'

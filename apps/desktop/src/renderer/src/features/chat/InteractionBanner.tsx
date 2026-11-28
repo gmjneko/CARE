@@ -99,10 +99,10 @@ export function InteractionBanner({
       <div className="my-4 rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-[13px] font-semibold text-[var(--text-primary)]">
+            <div className="text-ui font-semibold text-[var(--text-primary)]">
               {isPlanner ? '规划阶段等待确认' : `节点「${primary.node_id}」等待继续或收口`}
             </div>
-            <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+            <div className="mt-0.5 text-caption text-[var(--text-secondary)]">
               {isPlanner
                 ? '你可以直接在下方输入框提出修改意见继续打磨计划，或确认并进入执行阶段。'
                 : '可以继续追问微调，或点击完成结束本轮工作流。'}
@@ -113,7 +113,7 @@ export function InteractionBanner({
               type="button"
               disabled={submitting}
               onClick={() => void discardActiveThread()}
-              className="inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-50"
             >
               放弃本轮
             </button>
@@ -121,9 +121,9 @@ export function InteractionBanner({
               type="button"
               disabled={submitting}
               onClick={() => void completeAwaitingNode()}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 text-xs font-medium text-[var(--accent-primary-fg)] transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 text-ui font-medium text-[var(--accent-primary-fg)] transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              <Play className="h-3 w-3 fill-current" />
+              <Play className="h-3.5 w-3.5 fill-current" />
               <span>{isPlanner ? '确认计划并开始执行' : '完成当前阶段'}</span>
             </button>
           </div>
@@ -139,10 +139,10 @@ export function InteractionBanner({
         <div className="flex items-start gap-2.5">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
           <div>
-            <div className="text-[13px] font-semibold text-[var(--text-primary)]">
+            <div className="text-ui font-semibold text-[var(--text-primary)]">
               任务在节点「{primary.node_id}」暂停（{primary.kind}）
             </div>
-            <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+            <div className="mt-0.5 text-caption text-[var(--text-secondary)]">
               {primary.failure?.message || '已保留断点与会话现场，可一键恢复继续执行或放弃本轮。'}
             </div>
           </div>
@@ -152,7 +152,7 @@ export function InteractionBanner({
             type="button"
             disabled={submitting}
             onClick={() => void discardActiveThread()}
-            className="inline-flex h-8 items-center rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+            className="inline-flex h-8 items-center rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-ui font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
           >
             放弃并收口
           </button>
@@ -160,7 +160,7 @@ export function InteractionBanner({
             type="button"
             disabled={submitting}
             onClick={() => void resumeWithPrompt('')}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 text-xs font-medium text-[var(--accent-primary-fg)] hover:opacity-90"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent-primary)] px-3.5 text-ui font-medium text-[var(--accent-primary-fg)] hover:opacity-90"
           >
             <RotateCcw className="h-3.5 w-3.5" />
             <span>恢复继续</span>
@@ -198,27 +198,25 @@ function InteractionRequestCard({
         <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-[var(--text-primary)]">
+            <span className="text-ui font-semibold text-[var(--text-primary)]">
               {request.title || (isUserInput ? '需要你的输入' : '操作审批请求')}
             </span>
             {nodeId && (
-              <span className="rounded-md bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-muted)]">
+              <span className="rounded-md bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-caption text-[var(--text-muted)]">
                 {nodeId}
               </span>
             )}
           </div>
           {request.message && (
-            <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">
-              {request.message}
-            </p>
+            <p className="mt-1 text-ui text-[var(--text-secondary)]">{request.message}</p>
           )}
           {request.tool_name && (
             <div className="mt-2 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-2.5">
-              <div className="font-mono text-xs font-medium text-[var(--text-primary)]">
+              <div className="font-mono text-code font-medium text-[var(--text-primary)]">
                 {request.tool_name}
               </div>
               {request.arguments && (
-                <pre className="mt-1.5 overflow-x-auto font-mono text-[11.5px] text-[var(--text-secondary)]">
+                <pre className="mt-1.5 overflow-x-auto font-mono text-code text-[var(--text-secondary)]">
                   {JSON.stringify(request.arguments, null, 2)}
                 </pre>
               )}
@@ -235,7 +233,7 @@ function InteractionRequestCard({
                       type="button"
                       disabled={submitting}
                       onClick={() => onRespond('approve', opt)}
-                      className="rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
+                      className="rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-ui font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
                     >
                       {opt}
                     </button>
@@ -248,13 +246,13 @@ function InteractionRequestCard({
                     value={answerText}
                     onChange={(e) => setAnswerText(e.target.value)}
                     placeholder="输入你的回复..."
-                    className="flex-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none"
+                    className="flex-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-ui text-[var(--text-primary)] focus:outline-none"
                   />
                   <button
                     type="button"
                     disabled={submitting || !answerText.trim()}
                     onClick={() => onRespond('approve', answerText.trim())}
-                    className="rounded-lg bg-[var(--accent-primary)] px-3.5 py-1.5 text-xs font-medium text-[var(--accent-primary-fg)] disabled:opacity-50"
+                    className="rounded-lg bg-[var(--accent-primary)] px-3.5 py-1.5 text-ui font-medium text-[var(--accent-primary-fg)] disabled:opacity-50"
                   >
                     提交
                   </button>
@@ -268,14 +266,14 @@ function InteractionRequestCard({
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="可选：填写审批备注或拒绝原因..."
-                className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none"
+                className="w-full rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 py-1.5 text-ui text-[var(--text-primary)] focus:outline-none"
               />
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   disabled={submitting}
                   onClick={() => onRespond('approve', undefined, feedback.trim() || undefined)}
-                  className="inline-flex h-8 items-center gap-1 rounded-lg bg-[var(--accent-primary)] px-3.5 text-xs font-medium text-[var(--accent-primary-fg)] hover:opacity-90"
+                  className="inline-flex h-8 items-center gap-1 rounded-lg bg-[var(--accent-primary)] px-3.5 text-ui font-medium text-[var(--accent-primary-fg)] hover:opacity-90"
                 >
                   <Check className="h-3.5 w-3.5" />
                   <span>批准执行</span>
@@ -284,7 +282,7 @@ function InteractionRequestCard({
                   type="button"
                   disabled={submitting}
                   onClick={() => onRespond('deny', undefined, feedback.trim() || undefined)}
-                  className="inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--status-danger)] hover:bg-[#fff5f5]"
+                  className="inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-3 text-ui font-medium text-[var(--status-danger)] hover:bg-[#fff5f5]"
                 >
                   <X className="h-3.5 w-3.5" />
                   <span>拒绝</span>

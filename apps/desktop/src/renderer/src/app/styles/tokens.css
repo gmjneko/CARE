@@ -1,5 +1,21 @@
 @import 'tailwindcss';
 
+@theme {
+  /* CARE Desktop 6-level semantic typography scale (floor = 12px) */
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-ui: 13.5px;
+  --text-ui--line-height: 20px;
+  --text-body: 14.5px;
+  --text-body--line-height: 24px;
+  --text-code: 13px;
+  --text-code--line-height: 21px;
+  --text-heading: 16px;
+  --text-heading--line-height: 24px;
+  --text-display: 24px;
+  --text-display--line-height: 32px;
+}
+
 :root {
   /* Warm minimal light palette aligned with CARE Desktop design */
   --bg-sidebar: #f7f7f5;
@@ -42,8 +58,8 @@ body,
   font-family:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', 'Segoe UI',
     sans-serif;
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: var(--text-ui);
+  line-height: var(--text-ui--line-height);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -78,8 +94,8 @@ body,
 /* Clean Markdown typography inside assistant messages */
 .care-prose {
   color: var(--text-primary);
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
   word-break: break-word;
 }
 
@@ -95,11 +111,11 @@ body,
 }
 
 .care-prose h1 {
-  font-size: 1.28em;
+  font-size: 1.25em;
 }
 
 .care-prose h2 {
-  font-size: 1.12em;
+  font-size: var(--text-heading);
 }
 
 .care-prose h3 {
@@ -130,7 +146,7 @@ body,
 
 .care-prose code {
   font-family: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.88em;
+  font-size: var(--text-code);
   background-color: var(--bg-subtle);
   padding: 0.12em 0.38em;
   border-radius: 5px;
@@ -146,8 +162,8 @@ body,
 .care-prose pre code {
   background: transparent;
   padding: 0;
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
 }
 
 .care-prose blockquote {
@@ -161,7 +177,7 @@ body,
   width: 100%;
   border-collapse: collapse;
   margin: 0.8em 0;
-  font-size: 13px;
+  font-size: var(--text-ui);
 }
 
 .care-prose th,

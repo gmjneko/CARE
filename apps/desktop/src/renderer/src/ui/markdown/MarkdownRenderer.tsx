@@ -20,7 +20,7 @@ function CodeBlock({ language, code }: CodeBlockProps): React.JSX.Element {
 
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/60">
-      <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2 text-xs text-[var(--text-secondary)]">
+      <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2 text-caption text-[var(--text-secondary)]">
         <span className="inline-flex items-center gap-1.5 font-mono">
           <Code2 className="h-3.5 w-3.5 text-[var(--text-muted)]" />
           {language || 'text'}
@@ -28,7 +28,7 @@ function CodeBlock({ language, code }: CodeBlockProps): React.JSX.Element {
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-caption text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         >
           {copied ? (
             <Check className="h-3.5 w-3.5 text-[var(--status-success)]" />
@@ -38,7 +38,7 @@ function CodeBlock({ language, code }: CodeBlockProps): React.JSX.Element {
           {copied ? '已复制' : '复制'}
         </button>
       </div>
-      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-[var(--text-primary)]">
+      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-code text-[var(--text-primary)]">
         <code>{code}</code>
       </pre>
     </div>

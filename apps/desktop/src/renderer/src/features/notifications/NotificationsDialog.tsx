@@ -17,7 +17,7 @@ export function NotificationsDialog(): React.JSX.Element {
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/15" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[460px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
           <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-4 py-3">
-            <Dialog.Title className="inline-flex items-center gap-2 text-[13.5px] font-semibold text-[var(--text-primary)]">
+            <Dialog.Title className="inline-flex items-center gap-2 text-heading font-semibold text-[var(--text-primary)]">
               <Bell className="h-4 w-4 text-[var(--text-secondary)]" />
               <span>待处理提醒</span>
             </Dialog.Title>
@@ -27,7 +27,7 @@ export function NotificationsDialog(): React.JSX.Element {
           </div>
           <div className="max-h-[60vh] overflow-y-auto p-3">
             {pending.length === 0 ? (
-              <div className="py-10 text-center text-xs text-[var(--text-muted)]">
+              <div className="py-10 text-center text-ui text-[var(--text-muted)]">
                 暂无等待审批、确认或恢复的任务
               </div>
             ) : (
@@ -48,10 +48,10 @@ export function NotificationsDialog(): React.JSX.Element {
                       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium text-[var(--text-primary)]">
+                      <div className="truncate text-ui font-medium text-[var(--text-primary)]">
                         {thread.title}
                       </div>
-                      <div className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      <div className="mt-0.5 text-caption text-[var(--text-muted)]">
                         {thread.workflow_id} ·{' '}
                         {thread.status === 'crashed'
                           ? '异常中断，可恢复或放弃'
