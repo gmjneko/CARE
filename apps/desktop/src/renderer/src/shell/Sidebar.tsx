@@ -6,6 +6,7 @@ import {
   Circle,
   Cloud,
   Folder,
+  FolderOpen,
   FolderPlus,
   Laptop,
   Loader2,
@@ -282,15 +283,17 @@ export function Sidebar(): React.JSX.Element {
               ) : (
                 groupedByWorkspace.map(([dir, dirThreads]) => {
                   const isCollapsed = Boolean(collapsedDirs[dir])
+                  const isExpanded = !isCollapsed && dirThreads.length > 0
                   const isSelectedDir = selectedWorkspaceDir === dir && activeThreadId === null
+                  const FolderIcon = isExpanded ? FolderOpen : Folder
                   return (
                     <div key={dir}>
                       <div
                         className={cn(
-                          'flex items-center gap-2 rounded-lg px-2 py-1.5 text-ui transition-colors',
+                          'flex items-center gap-2 rounded-lg px-2 py-1.5 text-ui font-medium transition-colors',
                           isSelectedDir
                             ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+                            : 'text-[var(--text-primary)]/85 hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
                         )}
                       >
                         <button
@@ -305,9 +308,9 @@ export function Sidebar(): React.JSX.Element {
                           title={dir}
                           className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         >
-                          <Folder
-                            className="h-4 w-4 shrink-0 text-[var(--text-muted)]"
-                            strokeWidth={1.65}
+                          <FolderIcon
+                            className="h-4 w-4 shrink-0 text-[var(--text-secondary)]"
+                            strokeWidth={1.75}
                           />
                           <span className="truncate">{baseName(dir)}</span>
                         </button>
