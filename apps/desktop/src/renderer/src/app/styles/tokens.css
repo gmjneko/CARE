@@ -148,6 +148,354 @@ body,
   }
 }
 
+/* KoWork-inspired blur-to-clear motion system across disclosures, menus, dialogs, and pages */
+:root {
+  --care-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --care-blur: 4px;
+}
+
+@keyframes care-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes care-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes care-blur-in {
+  from {
+    filter: blur(var(--care-blur));
+  }
+  to {
+    filter: blur(0);
+  }
+}
+
+@keyframes care-blur-out {
+  from {
+    filter: blur(0);
+  }
+  to {
+    filter: blur(var(--care-blur));
+  }
+}
+
+@keyframes care-section-blur {
+  from {
+    filter: blur(6px);
+  }
+  to {
+    filter: blur(0);
+  }
+}
+
+@keyframes care-scale-in-down {
+  from {
+    transform: translateY(-6px) scale(0.94);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes care-scale-out-down {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(-6px) scale(0.94);
+  }
+}
+
+@keyframes care-scale-in-up {
+  from {
+    transform: translateY(6px) scale(0.94);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes care-scale-out-up {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(6px) scale(0.94);
+  }
+}
+
+@keyframes care-scale-in-right {
+  from {
+    transform: translateX(-6px) scale(0.94);
+  }
+  to {
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes care-scale-out-right {
+  from {
+    transform: translateX(0) scale(1);
+  }
+  to {
+    transform: translateX(-6px) scale(0.94);
+  }
+}
+
+@keyframes care-scale-in-left {
+  from {
+    transform: translateX(6px) scale(0.94);
+  }
+  to {
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes care-scale-out-left {
+  from {
+    transform: translateX(0) scale(1);
+  }
+  to {
+    transform: translateX(6px) scale(0.94);
+  }
+}
+
+@keyframes care-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes care-dialog-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes care-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+    filter: blur(var(--care-blur));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes care-disclosure-height-in {
+  from {
+    height: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    transform: translateY(0);
+  }
+}
+
+@keyframes care-disclosure-height-out {
+  from {
+    height: var(--radix-collapsible-content-height);
+    transform: translateY(0);
+  }
+  to {
+    height: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.care-menu {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+  will-change: opacity, filter, transform;
+}
+
+.care-menu[data-state='open'] {
+  animation:
+    care-fade-in 200ms var(--care-ease) both,
+    care-blur-in 380ms var(--care-ease) both,
+    care-scale-in-down 280ms var(--care-ease) both;
+}
+
+.care-menu[data-state='open'][data-side='top'] {
+  animation:
+    care-fade-in 200ms var(--care-ease) both,
+    care-blur-in 380ms var(--care-ease) both,
+    care-scale-in-up 280ms var(--care-ease) both;
+}
+
+.care-menu[data-state='open'][data-side='right'] {
+  animation:
+    care-fade-in 200ms var(--care-ease) both,
+    care-blur-in 380ms var(--care-ease) both,
+    care-scale-in-right 280ms var(--care-ease) both;
+}
+
+.care-menu[data-state='open'][data-side='left'] {
+  animation:
+    care-fade-in 200ms var(--care-ease) both,
+    care-blur-in 380ms var(--care-ease) both,
+    care-scale-in-left 280ms var(--care-ease) both;
+}
+
+.care-menu[data-state='closed'] {
+  animation:
+    care-fade-out 180ms var(--care-ease) both,
+    care-blur-out 220ms var(--care-ease) both,
+    care-scale-out-down 220ms var(--care-ease) both;
+}
+
+.care-menu[data-state='closed'][data-side='top'] {
+  animation:
+    care-fade-out 180ms var(--care-ease) both,
+    care-blur-out 220ms var(--care-ease) both,
+    care-scale-out-up 220ms var(--care-ease) both;
+}
+
+.care-menu[data-state='closed'][data-side='right'] {
+  animation:
+    care-fade-out 180ms var(--care-ease) both,
+    care-blur-out 220ms var(--care-ease) both,
+    care-scale-out-right 220ms var(--care-ease) both;
+}
+
+.care-menu[data-state='closed'][data-side='left'] {
+  animation:
+    care-fade-out 180ms var(--care-ease) both,
+    care-blur-out 220ms var(--care-ease) both,
+    care-scale-out-left 220ms var(--care-ease) both;
+}
+
+.care-overlay[data-state='open'] {
+  animation: care-fade-in 180ms var(--care-ease) both;
+}
+
+.care-overlay[data-state='closed'] {
+  animation: care-fade-out 160ms var(--care-ease) both;
+}
+
+.care-dialog {
+  will-change: opacity, filter, transform;
+}
+
+.care-dialog[data-state='open'] {
+  animation:
+    care-dialog-in 220ms var(--care-ease) both,
+    care-blur-in 340ms var(--care-ease) both;
+}
+
+.care-dialog[data-state='closed'] {
+  animation:
+    care-dialog-out 180ms var(--care-ease) both,
+    care-blur-out 220ms var(--care-ease) both;
+}
+
+.care-collapsible {
+  overflow: hidden;
+  will-change: height, opacity, filter, transform;
+}
+
+.care-collapsible[data-state='open'] {
+  animation:
+    care-disclosure-height-in 420ms var(--care-ease) both,
+    care-fade-in 300ms var(--care-ease) both,
+    care-blur-in 360ms var(--care-ease) both;
+}
+
+.care-collapsible[data-state='closed'] {
+  animation:
+    care-disclosure-height-out 340ms var(--care-ease) both,
+    care-fade-out 240ms var(--care-ease) both,
+    care-blur-out 280ms var(--care-ease) both;
+}
+
+/* Continuous split-pane width track (left sidebar, floating card slot, right docked panel) */
+.care-width-track {
+  transition: width 320ms var(--care-ease);
+  will-change: width;
+}
+
+/* Nimble spring-like motion for floating overview card anchored near top-right trigger */
+.care-floating-card {
+  will-change: transform, opacity;
+}
+
+.care-floating-card-open {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    transform 360ms cubic-bezier(0.34, 1.28, 0.64, 1),
+    opacity 220ms var(--care-ease);
+}
+
+.care-floating-card-closed {
+  opacity: 0;
+  transform: translate3d(18px, -10px, 0) scale(0.92);
+  transition:
+    transform 240ms var(--care-ease),
+    opacity 180ms var(--care-ease);
+}
+
+.care-page-enter {
+  animation:
+    care-fade-in 200ms var(--care-ease) both,
+    care-blur-in 380ms var(--care-ease) both;
+}
+
+.care-section-blur {
+  animation: care-section-blur 240ms var(--care-ease) both;
+}
+
+.care-fade-up {
+  animation: care-fade-up 300ms var(--care-ease) both;
+}
+
+.care-chevron {
+  transition: transform 300ms var(--care-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .care-menu,
+  .care-overlay,
+  .care-dialog,
+  .care-collapsible,
+  .care-page-enter,
+  .care-section-blur,
+  .care-fade-up {
+    animation: none !important;
+  }
+
+  .care-width-track,
+  .care-floating-card-open,
+  .care-floating-card-closed,
+  .care-chevron {
+    transition: none !important;
+  }
+}
+
 /* Clean Markdown typography inside assistant messages */
 .care-prose {
   color: var(--text-primary);

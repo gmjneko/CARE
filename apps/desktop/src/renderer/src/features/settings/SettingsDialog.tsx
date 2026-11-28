@@ -53,8 +53,8 @@ export function SettingsDialog(): React.JSX.Element {
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20 backdrop-blur-[1px]" />
-        {open && <SettingsDialogBody initialSettings={settings} />}
+        <Dialog.Overlay className="care-overlay fixed inset-0 z-50 bg-black/20 backdrop-blur-[1px]" />
+        <SettingsDialogBody initialSettings={settings} />
       </Dialog.Portal>
     </Dialog.Root>
   )
@@ -172,7 +172,7 @@ function SettingsDialogBody({
   }
 
   return (
-    <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[82vh] w-[680px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
+    <Dialog.Content className="care-dialog fixed left-1/2 top-1/2 z-50 flex max-h-[82vh] w-[680px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
       <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-5 py-3.5">
         <div className="flex items-center gap-4">
           <Dialog.Title className="text-heading font-semibold text-[var(--text-primary)]">
@@ -208,7 +208,7 @@ function SettingsDialogBody({
         </Dialog.Close>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-4">
+      <div key={tab} className="care-section-blur flex-1 overflow-y-auto px-5 py-4">
         {tab === 'models' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">

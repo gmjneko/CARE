@@ -8,10 +8,10 @@ import type { WorkbenchContext } from './contracts'
 import { getVisibleInspectorWidgets } from './registries'
 
 /**
- * Right-hand inspector supporting two distinct visual states controlled by TopBar's two icons:
- * - `'floating'`: compact content-hugging floating white card (~264px) stacking registered widgets
- * - `'panel'`: full-height docked right side panel (~520px) for detailed inspection (Git Diff,
- *   file previews, or expanded widget view)
+ * Right-hand inspector with continuous layout-squeezing transitions:
+ * - `'floating'`: nimble spring-popped floating card (~264px) whose layout track smoothly
+ *   expands/collapses so the main conversation area squeezes continuously.
+ * - `'panel'`: crisp, continuous sliding docked right side panel (~480px) with no fade/blur.
  */
 export function InspectorDrawer(): React.JSX.Element | null {
   const inspectorMode = useWorkbenchStore((s) => s.inspectorMode)
@@ -38,9 +38,12 @@ export function InspectorDrawer(): React.JSX.Element | null {
 
   const widgets = useMemo(() => getVisibleInspectorWidgets(ctx), [ctx])
 
-  if (inspectorMode === 'closed' || !activeThreadId) {
+  if (!activeThreadId) {
     return null
   }
+
+  const isFloating = inspectorMode === 'floating'
+  const isPanel = inspectorMode === 'panel'
 
   const renderWidgetStack = (): React.JSX.Element => (
     <div className="flex-1 divide-y divide-[var(--border-hairline)] overflow-y-auto px-3.5 py-2">
@@ -64,7 +67,7 @@ export function InspectorDrawer(): React.JSX.Element | null {
                 {widget.title}
                 <ChevronDown
                   className={cn(
-                    'h-3.5 w-3.5 text-[var(--text-muted)] transition-transform',
+                    'care-chevron h-3.5 w-3.5 text-[var(--text-muted)]',
                     !isOpen && '-rotate-90'
                   )}
                 />
@@ -75,14 +78,16 @@ export function InspectorDrawer(): React.JSX.Element | null {
                 </span>
               )}
             </Collapsible.Trigger>
-            <Collapsible.Content className="pt-2">
-              <WidgetComponent
-                threadId={activeThreadId}
-                workspaceDir={activeWorkspaceDir}
-                workflowId={activeWorkflowId}
-                openDetail={openInspectorDetail}
-                closeDetail={closeInspectorDetail}
-              />
+            <Collapsible.Content className="care-collapsible">
+              <div className="pt-2">
+                <WidgetComponent
+                  threadId={activeThreadId}
+                  workspaceDir={activeWorkspaceDir}
+                  workflowId={activeWorkflowId}
+                  openDetail={openInspectorDetail}
+                  closeDetail={closeInspectorDetail}
+                />
+              </div>
             </Collapsible.Content>
           </Collapsible.Root>
         )
@@ -90,73 +95,95 @@ export function InspectorDrawer(): React.JSX.Element | null {
     </div>
   )
 
-  // Mode 1: Full-height docked right side panel (PanelRight icon)
-  if (inspectorMode === 'panel') {
-    return (
-      <aside className="flex h-full w-[480px] max-w-[52vw] shrink-0 flex-col border-l border-[var(--border-hairline)] bg-[var(--bg-surface)]">
-        <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2.5">
-          <div className="flex min-w-0 items-center gap-2">
-            {inspectorDetail ? (
-              <>
-                <button
-                  type="button"
-                  onClick={closeInspectorDetail}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  <span>返回概览</span>
-                </button>
-                <span className="h-3.5 w-px bg-[var(--border-hairline)]" />
-                <div className="min-w-0">
-                  <div className="truncate text-ui font-medium text-[var(--text-primary)]">
-                    {inspectorDetail.title}
-                  </div>
-                  {inspectorDetail.subtitle && (
-                    <div className="truncate text-caption text-[var(--text-muted)]">
-                      {inspectorDetail.subtitle}
+  return (
+    <>
+      {/* Track 1: Floating overview card — continuous width squeeze + springy nimble card reveal */}
+      <div
+        aria-hidden={!isFloating}
+        className={cn(
+          'care-width-track flex h-full shrink-0 items-start justify-end',
+          isFloating ? 'w-[288px] overflow-visible' : 'pointer-events-none w-0 overflow-hidden'
+        )}
+      >
+        <aside
+          className={cn(
+            'care-floating-card my-3 mr-3.5 flex max-h-[calc(100%-24px)] w-[264px] shrink-0 origin-top-right flex-col',
+            isFloating ? 'care-floating-card-open' : 'care-floating-card-closed'
+          )}
+        >
+          <div className="flex max-h-full flex-col overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
+            {renderWidgetStack()}
+          </div>
+        </aside>
+      </div>
+
+      {/* Track 2: Docked right side panel — crisp continuous push-in/out with no fade or blur */}
+      <div
+        aria-hidden={!isPanel}
+        className={cn(
+          'care-width-track h-full shrink-0 overflow-hidden',
+          isPanel ? 'w-[480px] max-w-[52vw]' : 'pointer-events-none w-0'
+        )}
+      >
+        <aside className="flex h-full w-[480px] max-w-[52vw] flex-col border-l border-[var(--border-hairline)] bg-[var(--bg-surface)]">
+          <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              {inspectorDetail ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={closeInspectorDetail}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span>返回概览</span>
+                  </button>
+                  <span className="h-3.5 w-px bg-[var(--border-hairline)]" />
+                  <div className="min-w-0">
+                    <div className="truncate text-ui font-medium text-[var(--text-primary)]">
+                      {inspectorDetail.title}
                     </div>
-                  )}
-                </div>
-              </>
+                    {inspectorDetail.subtitle && (
+                      <div className="truncate text-caption text-[var(--text-muted)]">
+                        {inspectorDetail.subtitle}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <span className="text-ui font-semibold text-[var(--text-primary)]">工作区详情</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setInspectorMode('closed')}
+              title="收起右侧边栏"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div
+            key={inspectorDetail?.id ?? 'empty'}
+            className="care-section-blur flex min-h-0 flex-1 flex-col overflow-hidden"
+          >
+            {inspectorDetail ? (
+              <div className="flex-1 overflow-y-auto">{inspectorDetail.render()}</div>
             ) : (
-              <span className="text-ui font-semibold text-[var(--text-primary)]">工作区详情</span>
+              <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+                <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 text-[var(--text-muted)]">
+                  <PanelRight className="h-5 w-5" strokeWidth={1.6} />
+                </div>
+                <div className="text-ui font-medium text-[var(--text-primary)]">右侧扩展工作区</div>
+                <p className="mt-1.5 max-w-[260px] text-caption text-[var(--text-muted)]">
+                  点击悬浮卡中的代码变更或项目文件将在此展开预览；后续也将承接终端与产物预览插件。
+                </p>
+              </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setInspectorMode('closed')}
-            title="收起右侧边栏"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {inspectorDetail ? (
-            <div className="flex-1 overflow-y-auto">{inspectorDetail.render()}</div>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-              <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 text-[var(--text-muted)]">
-                <PanelRight className="h-5 w-5" strokeWidth={1.6} />
-              </div>
-              <div className="text-ui font-medium text-[var(--text-primary)]">右侧扩展工作区</div>
-              <p className="mt-1.5 max-w-[260px] text-caption text-[var(--text-muted)]">
-                点击悬浮卡中的代码变更或项目文件将在此展开预览；后续也将承接终端与产物预览插件。
-              </p>
-            </div>
-          )}
-        </div>
-      </aside>
-    )
-  }
-
-  // Mode 2: Compact content-hugging floating overview card (FloatingCard icon)
-  return (
-    <aside className="my-3 mr-3.5 flex max-h-[calc(100%-24px)] w-[264px] shrink-0 self-start flex-col">
-      <div className="flex max-h-full flex-col overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)]/95 shadow-[var(--shadow-floating)] backdrop-blur-md">
-        {renderWidgetStack()}
+        </aside>
       </div>
-    </aside>
+    </>
   )
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
+import { cn } from '@renderer/ui/cn'
 import { InspectorDrawer } from './InspectorDrawer'
 import { pageRegistry } from './registries'
 import { Sidebar } from './Sidebar'
@@ -23,13 +24,23 @@ export function WorkbenchShell({ overlays }: WorkbenchShellProps): React.JSX.Ele
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-sidebar)] text-[var(--text-primary)]">
-      {sidebarOpen && <Sidebar />}
+      <div
+        className={cn(
+          'care-width-track h-full shrink-0 overflow-hidden',
+          sidebarOpen ? 'w-[248px]' : 'pointer-events-none w-0'
+        )}
+      >
+        <Sidebar />
+      </div>
 
       {/* Main white canvas */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-canvas)]">
         <TopBar />
         <div className="relative flex min-h-0 flex-1 overflow-hidden">
-          <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <main
+            key={activePageId}
+            className="care-page-enter flex min-w-0 flex-1 flex-col overflow-hidden"
+          >
             {ActivePageComponent ? (
               <ActivePageComponent />
             ) : (

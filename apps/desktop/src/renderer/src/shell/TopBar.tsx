@@ -132,7 +132,7 @@ export function TopBar(): React.JSX.Element {
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-50 min-w-[190px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
+                className="care-menu z-50 min-w-[190px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {EXTERNAL_APPS.map((item) => (
                   <DropdownMenu.Item
@@ -160,7 +160,7 @@ export function TopBar(): React.JSX.Element {
               onClick={toggleFloatingInspector}
               title={inspectorMode === 'floating' ? '隐藏悬浮概览卡' : '显示悬浮概览卡'}
               className={cn(
-                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-all active:scale-95',
                 inspectorMode === 'floating'
                   ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
@@ -173,7 +173,7 @@ export function TopBar(): React.JSX.Element {
               onClick={toggleRightPanel}
               title={inspectorMode === 'panel' ? '收起右侧详情边栏' : '展开右侧详情边栏'}
               className={cn(
-                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-all active:scale-95',
                 inspectorMode === 'panel'
                   ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'

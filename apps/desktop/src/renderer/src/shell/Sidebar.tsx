@@ -150,7 +150,7 @@ export function Sidebar(): React.JSX.Element {
 
       {/* Inline search input when active */}
       {searchOpen && (
-        <div className="px-3 pb-2">
+        <div className="care-fade-up px-3 pb-2">
           <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-card)] bg-[var(--bg-surface)] px-2.5 py-1">
             <Search className="h-3.5 w-3.5 text-[var(--text-muted)]" />
             <input
@@ -206,14 +206,21 @@ export function Sidebar(): React.JSX.Element {
 
       {/* Dual-mode Local | Cloud segmented toggle (CARE core identity) */}
       <div className="px-3 pb-3 pt-1">
-        <div className="inline-flex items-center rounded-full bg-[var(--bg-hover)] p-0.5">
+        <div className="relative inline-grid grid-cols-2 rounded-full bg-[var(--bg-hover)] p-0.5">
+          <span
+            aria-hidden="true"
+            className={cn(
+              'pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-full bg-[var(--bg-surface)] shadow-2xs transition-transform duration-200 ease-out',
+              hostTab === 'cloud' ? 'translate-x-full' : 'translate-x-0'
+            )}
+          />
           <button
             type="button"
             onClick={() => setHostTab('local')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-caption font-medium transition-all',
+              'relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-caption font-medium transition-colors duration-150',
               hostTab === 'local'
-                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                ? 'text-[var(--text-primary)]'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             )}
           >
@@ -224,9 +231,9 @@ export function Sidebar(): React.JSX.Element {
             type="button"
             onClick={() => setHostTab('cloud')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-caption font-medium transition-all',
+              'relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-caption font-medium transition-colors duration-150',
               hostTab === 'cloud'
-                ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-2xs'
+                ? 'text-[var(--text-primary)]'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             )}
           >
@@ -239,7 +246,7 @@ export function Sidebar(): React.JSX.Element {
       {/* Scrollable Projects & Recent sessions list */}
       <div className="flex-1 overflow-y-auto px-2.5 pb-3">
         {hostTab === 'cloud' ? (
-          <div className="mx-1 rounded-xl border border-dashed border-[var(--border-card)] bg-[var(--bg-surface)]/70 p-4 text-center">
+          <div className="care-fade-up mx-1 rounded-xl border border-dashed border-[var(--border-card)] bg-[var(--bg-surface)]/70 p-4 text-center">
             <Cloud className="mx-auto h-5 w-5 text-[var(--text-muted)]" strokeWidth={1.6} />
             <div className="mt-2 text-ui font-medium text-[var(--text-primary)]">云端托管模式</div>
             <p className="mt-1 text-caption text-[var(--text-muted)]">

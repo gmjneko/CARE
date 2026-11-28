@@ -117,7 +117,7 @@ export function EmptyWelcomeView(): React.JSX.Element {
                 <DropdownMenu.Content
                   align="start"
                   sideOffset={6}
-                  className="z-50 min-w-[260px] max-w-[380px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
+                  className="care-menu z-50 min-w-[260px] max-w-[380px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
                 >
                   {savedWorkspaces.map((dir) => (
                     <DropdownMenu.Item

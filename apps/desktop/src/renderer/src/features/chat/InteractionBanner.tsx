@@ -96,7 +96,7 @@ export function InteractionBanner({
   if (primary.kind === 'awaiting_input') {
     const isPlanner = primary.node_id === 'planner'
     return (
-      <div className="my-4 rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 p-4">
+      <div className="care-fade-up my-4 rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-ui font-semibold text-[var(--text-primary)]">
@@ -134,7 +134,7 @@ export function InteractionBanner({
 
   // 4. Crashed / suspended / failed / aborted resumable checkpoint
   return (
-    <div className="my-4 rounded-2xl border border-[#eed9b7] bg-[#fffaf0] p-4">
+    <div className="care-fade-up my-4 rounded-2xl border border-[#eed9b7] bg-[#fffaf0] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-start gap-2.5">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
@@ -193,7 +193,7 @@ function InteractionRequestCard({
   const isUserInput = request.kind === 'user_input'
 
   return (
-    <div className="my-4 rounded-2xl border border-[#e8d5b5] bg-[#fffcf5] p-4 shadow-xs">
+    <div className="care-fade-up my-4 rounded-2xl border border-[#e8d5b5] bg-[#fffcf5] p-4 shadow-xs">
       <div className="flex items-start gap-2.5">
         <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-warning)]" />
         <div className="min-w-0 flex-1">

@@ -82,10 +82,12 @@ function ThinkingBlock({
               ? `已思考 ${formatDuration(item.durationMs)}`
               : '已思考'}
         </span>
-        <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-90')} />
+        <ChevronRight className={cn('care-chevron h-3.5 w-3.5', open && 'rotate-90')} />
       </Collapsible.Trigger>
-      <Collapsible.Content className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
-        {item.text}
+      <Collapsible.Content className="care-collapsible">
+        <div className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
+          {item.text}
+        </div>
       </Collapsible.Content>
     </Collapsible.Root>
   )
@@ -169,11 +171,13 @@ function StageSegmentView({
               <Collapsible.Trigger className="inline-flex items-center gap-1 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
                 <span>{collapsedLabel}</span>
                 <ChevronRight
-                  className={cn('h-3.5 w-3.5 transition-transform', processOpen && 'rotate-90')}
+                  className={cn('care-chevron h-3.5 w-3.5', processOpen && 'rotate-90')}
                 />
               </Collapsible.Trigger>
-              <Collapsible.Content className="pt-3">
-                <TurnItemList items={processItems} />
+              <Collapsible.Content className="care-collapsible">
+                <div className="pt-3">
+                  <TurnItemList items={processItems} />
+                </div>
               </Collapsible.Content>
             </Collapsible.Root>
           )}

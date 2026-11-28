@@ -14,8 +14,8 @@ export function NotificationsDialog(): React.JSX.Element {
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/15" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[460px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
+        <Dialog.Overlay className="care-overlay fixed inset-0 z-50 bg-black/15" />
+        <Dialog.Content className="care-dialog fixed left-1/2 top-1/2 z-50 w-[460px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-floating)]">
           <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-4 py-3">
             <Dialog.Title className="inline-flex items-center gap-2 text-heading font-semibold text-[var(--text-primary)]">
               <Bell className="h-4 w-4 text-[var(--text-secondary)]" />

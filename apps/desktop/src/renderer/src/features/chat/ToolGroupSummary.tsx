@@ -111,22 +111,21 @@ export function ToolGroupSummary({
         {groupIcon}
         <span>{buildSummaryLabel(counts, hasRunning)}</span>
         <ChevronRight
-          className={cn(
-            'h-3.5 w-3.5 text-[var(--text-muted)] transition-transform',
-            open && 'rotate-90'
-          )}
+          className={cn('care-chevron h-3.5 w-3.5 text-[var(--text-muted)]', open && 'rotate-90')}
         />
       </Collapsible.Trigger>
 
-      <Collapsible.Content className="ml-1.5 mt-1.5 space-y-1.5 border-l border-[var(--border-hairline)] pl-3">
-        {toolCalls.map((call) => {
-          const custom = customRenderers.find((r) => r.matches(call))
-          if (custom) {
-            const CustomComponent = custom.Component
-            return <CustomComponent key={call.toolCallId} toolCall={call} />
-          }
-          return <DefaultToolRow key={call.toolCallId} call={call} />
-        })}
+      <Collapsible.Content className="care-collapsible">
+        <div className="ml-1.5 mt-1.5 space-y-1.5 border-l border-[var(--border-hairline)] pl-3">
+          {toolCalls.map((call) => {
+            const custom = customRenderers.find((r) => r.matches(call))
+            if (custom) {
+              const CustomComponent = custom.Component
+              return <CustomComponent key={call.toolCallId} toolCall={call} />
+            }
+            return <DefaultToolRow key={call.toolCallId} call={call} />
+          })}
+        </div>
       </Collapsible.Content>
     </Collapsible.Root>
   )
@@ -137,23 +136,19 @@ function DefaultToolRow({ call }: { call: ProjectedToolCall }): React.JSX.Elemen
   const preview = formatCallPreview(call)
 
   return (
-    <div className="text-ui">
-      <button
-        type="button"
-        onClick={() => setExpanded((prev) => !prev)}
-        className="flex w-full items-center justify-between gap-2 rounded-lg px-1.5 py-1 text-left text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)]/70 hover:text-[var(--text-secondary)]"
-      >
+    <Collapsible.Root open={expanded} onOpenChange={setExpanded} className="text-ui">
+      <Collapsible.Trigger className="flex w-full items-center justify-between gap-2 rounded-lg px-1.5 py-1 text-left text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)]/70 hover:text-[var(--text-secondary)]">
         <div className="flex min-w-0 items-center gap-2">
           <ToolCategoryIcon category={call.category} status={call.status} />
           <span className="truncate font-mono text-code">{preview}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 text-caption text-[var(--text-muted)]">
           {call.durationMs !== null && <span>{(call.durationMs / 1000).toFixed(2)}s</span>}
-          <ChevronRight className={cn('h-3 w-3 transition-transform', expanded && 'rotate-90')} />
+          <ChevronRight className={cn('care-chevron h-3 w-3', expanded && 'rotate-90')} />
         </div>
-      </button>
+      </Collapsible.Trigger>
 
-      {expanded && (
+      <Collapsible.Content className="care-collapsible">
         <div className="mt-1.5 space-y-2 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-3 py-2.5">
           {Object.keys(call.arguments).length > 0 && (
             <pre className="overflow-x-auto rounded-lg bg-[var(--bg-subtle)] p-2 font-mono text-code text-[var(--text-secondary)]">
@@ -173,7 +168,7 @@ function DefaultToolRow({ call }: { call: ProjectedToolCall }): React.JSX.Elemen
             </pre>
           )}
         </div>
-      )}
-    </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   )
 }

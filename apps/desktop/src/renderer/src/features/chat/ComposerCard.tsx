@@ -173,7 +173,7 @@ export function ComposerCard({
               <DropdownMenu.Content
                 align="start"
                 sideOffset={6}
-                className="z-50 min-w-[240px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
+                className="care-menu z-50 min-w-[240px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {(workflows.length > 0
                   ? workflows
@@ -219,7 +219,7 @@ export function ComposerCard({
               <DropdownMenu.Content
                 align="start"
                 sideOffset={6}
-                className="z-50 min-w-[140px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
+                className="care-menu z-50 min-w-[140px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 {THINKING_OPTIONS.map((opt) => (
                   <DropdownMenu.Item
@@ -265,7 +265,7 @@ export function ComposerCard({
               <DropdownMenu.Content
                 align="end"
                 sideOffset={6}
-                className="z-50 min-w-[220px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
+                className="care-menu z-50 min-w-[220px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
               >
                 <DropdownMenu.Item
                   onSelect={() => setSelectedProfile(null)}
@@ -330,7 +330,7 @@ export function ComposerCard({
                 type="button"
                 onClick={() => void abortActiveRun()}
                 title="中止当前执行"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-fg)] transition-opacity hover:opacity-85"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-fg)] transition-all hover:opacity-85 active:scale-95"
               >
                 <Square className="h-3 w-3 fill-current" />
               </button>
@@ -341,7 +341,7 @@ export function ComposerCard({
               onClick={() => void handleSend('normal')}
               disabled={!runtimeReady || submitting || !text.trim()}
               title="发送 (Enter)"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-fg)] transition-opacity hover:opacity-85 disabled:bg-[#d7d7d2] disabled:text-white"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-fg)] transition-all hover:opacity-85 active:scale-95 disabled:bg-[#d7d7d2] disabled:text-white disabled:active:scale-100"
             >
               <ArrowUp className="h-4 w-4" strokeWidth={2} />
             </button>
