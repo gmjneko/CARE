@@ -24,11 +24,32 @@ export interface ToolSummaryCounts {
   commands: number
 }
 
-export interface ProjectedSystemNotice {
-  id: string
-  kind: 'compaction' | 'retry' | 'resumed'
-  text: string
-}
+export type ProjectedTurnItem =
+  | {
+      id: string
+      kind: 'thinking'
+      text: string
+      streaming: boolean
+      durationMs: number | null
+    }
+  | {
+      id: string
+      kind: 'text'
+      text: string
+      streaming: boolean
+    }
+  | {
+      id: string
+      kind: 'tool_group'
+      toolCalls: ProjectedToolCall[]
+      counts: ToolSummaryCounts
+    }
+  | {
+      id: string
+      kind: 'notice'
+      noticeKind: 'compaction' | 'retry' | 'resumed'
+      text: string
+    }
 
 export interface ProjectedTurn {
   id: string
@@ -36,13 +57,7 @@ export interface ProjectedTurn {
   nodeId: string | null
   workflowId: string
   userText: string | null
-  thinkingText: string
-  thinkingStreaming: boolean
-  thinkingDurationMs: number | null
-  assistantText: string
-  toolCalls: ProjectedToolCall[]
-  toolCounts: ToolSummaryCounts
-  notices: ProjectedSystemNotice[]
+  items: ProjectedTurnItem[]
   status: 'running' | 'completed' | 'interrupted' | 'failed' | 'aborted'
   startedAt: string
   completedAt: string | null
@@ -67,6 +82,12 @@ export interface ProjectedTimeline {
   workflowInterrupts: PendingInterrupt[]
   latestUsage: TokenUsage | null
   isRunning: boolean
+}
+
+interface OpenAssistantStep {
+  thinkingItem: Extract<ProjectedTurnItem, { kind: 'thinking' }> | null
+  thinkingStartedAtMs: number | null
+  textItem: Extract<ProjectedTurnItem, { kind: 'text' }> | null
 }
 
 const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'glob', 'list_dir', 'search'])
@@ -107,19 +128,20 @@ export function mergeCanonicalEvents(
 }
 
 /**
- * Pure deterministic projection turning persisted + live RuntimeEvents into UI Timeline turns,
- * workflow node progress, tool aggregate counters, and pending interactions.
+ * Pure deterministic projection turning persisted + live RuntimeEvents into chronological
+ * turn items (interleaving thinking, model text, tool groups, and notices), workflow node
+ * progress, and pending interactions.
  */
 export function projectEventsToTimeline(events: readonly RuntimeEvent[]): ProjectedTimeline {
   const turns: ProjectedTurn[] = []
   const turnByRun = new Map<string, ProjectedTurn>()
   const toolIndex = new Map<string, ProjectedToolCall>()
+  const openSteps = new Map<string, OpenAssistantStep>()
   const nodesMap = new Map<string, ProjectedWorkflowNode>()
   const liveInteractions: Array<{ nodeId: string | null; request: InteractionRequestEvent }> = []
   let workflowInterrupts: PendingInterrupt[] = []
   let latestUsage: TokenUsage | null = null
   let isRunning = false
-  const thinkingStartTs = new Map<string, number>()
 
   const getOrCreateTurn = (
     ev: RuntimeEvent,
@@ -142,13 +164,7 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       nodeId: ev.node_id ?? null,
       workflowId: ev.workflow_id,
       userText: initialUserText,
-      thinkingText: '',
-      thinkingStreaming: false,
-      thinkingDurationMs: null,
-      assistantText: '',
-      toolCalls: [],
-      toolCounts: { actions: 0, reads: 0, commands: 0 },
-      notices: [],
+      items: [],
       status: 'running',
       startedAt: eventTs,
       completedAt: null,
@@ -160,6 +176,42 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
     turnByRun.set(ev.run_id, created)
     turns.push(created)
     return created
+  }
+
+  const getOrCreateStep = (runId: string): OpenAssistantStep => {
+    let step = openSteps.get(runId)
+    if (!step) {
+      step = { thinkingItem: null, thinkingStartedAtMs: null, textItem: null }
+      openSteps.set(runId, step)
+    }
+    return step
+  }
+
+  const closeOpenStep = (runId: string, eventTs: string): void => {
+    const step = openSteps.get(runId)
+    if (!step) return
+    if (step.thinkingItem && step.thinkingItem.streaming) {
+      step.thinkingItem.streaming = false
+      if (step.thinkingItem.durationMs === null && step.thinkingStartedAtMs !== null) {
+        step.thinkingItem.durationMs = Math.max(0, Date.parse(eventTs) - step.thinkingStartedAtMs)
+      }
+    }
+    if (step.textItem) {
+      step.textItem.streaming = false
+    }
+    openSteps.delete(runId)
+  }
+
+  const ensureFallbackText = (
+    turn: ProjectedTurn,
+    fallback: string | undefined,
+    id: string
+  ): void => {
+    if (!fallback) return
+    const hasText = turn.items.some((item) => item.kind === 'text' && item.text.length > 0)
+    if (!hasText) {
+      turn.items.push({ id, kind: 'text', text: fallback, streaming: false })
+    }
   }
 
   for (const ev of events) {
@@ -178,10 +230,12 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
         isRunning = true
         workflowInterrupts = []
         liveInteractions.length = 0
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.notices.push({
-          id: `${ev.run_id}:${ev.seq}`,
-          kind: 'resumed',
+        turn.items.push({
+          id: `${ev.run_id}:notice:${ev.seq}`,
+          kind: 'notice',
+          noticeKind: 'resumed',
           text: `已从 ${p.resumed_from} 恢复继续执行`
         })
         break
@@ -201,6 +255,7 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       }
 
       case 'node.completed': {
+        closeOpenStep(ev.run_id, eventTs)
         const prev = nodesMap.get(p.node_id)
         nodesMap.set(p.node_id, {
           nodeId: p.node_id,
@@ -222,24 +277,48 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
 
       case 'thinking.delta': {
         const turn = getOrCreateTurn(ev, eventTs)
-        if (!thinkingStartTs.has(ev.run_id)) {
-          thinkingStartTs.set(ev.run_id, Date.parse(eventTs))
+        const step = getOrCreateStep(ev.run_id)
+        if (!step.thinkingItem) {
+          const item: Extract<ProjectedTurnItem, { kind: 'thinking' }> = {
+            id: `${ev.run_id}:think:${ev.seq}`,
+            kind: 'thinking',
+            text: p.delta,
+            streaming: true,
+            durationMs: null
+          }
+          step.thinkingItem = item
+          step.thinkingStartedAtMs = Date.parse(eventTs)
+          turn.items.push(item)
+        } else {
+          step.thinkingItem.text += p.delta
         }
-        turn.thinkingStreaming = true
-        turn.thinkingText += p.delta
         break
       }
 
       case 'text.delta': {
         const turn = getOrCreateTurn(ev, eventTs)
-        if (turn.thinkingStreaming) {
-          turn.thinkingStreaming = false
-          const started = thinkingStartTs.get(ev.run_id)
-          if (started !== undefined) {
-            turn.thinkingDurationMs = Math.max(0, Date.parse(eventTs) - started)
+        const step = getOrCreateStep(ev.run_id)
+        if (step.thinkingItem && step.thinkingItem.streaming) {
+          step.thinkingItem.streaming = false
+          if (step.thinkingStartedAtMs !== null) {
+            step.thinkingItem.durationMs = Math.max(
+              0,
+              Date.parse(eventTs) - step.thinkingStartedAtMs
+            )
           }
         }
-        turn.assistantText += p.delta
+        if (!step.textItem) {
+          const item: Extract<ProjectedTurnItem, { kind: 'text' }> = {
+            id: `${ev.run_id}:text:${ev.seq}`,
+            kind: 'text',
+            text: p.delta,
+            streaming: true
+          }
+          step.textItem = item
+          turn.items.push(item)
+        } else {
+          step.textItem.text += p.delta
+        }
         break
       }
 
@@ -250,17 +329,44 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
             turn.userText = p.text
           }
         } else {
-          turn.thinkingStreaming = false
-          if (p.thinking) {
-            turn.thinkingText = p.thinking
-            const started = thinkingStartTs.get(ev.run_id)
-            if (started !== undefined && turn.thinkingDurationMs === null) {
-              turn.thinkingDurationMs = Math.max(0, Date.parse(eventTs) - started)
+          const step = openSteps.get(ev.run_id)
+          if (step?.thinkingItem) {
+            step.thinkingItem.streaming = false
+            if (step.thinkingItem.durationMs === null && step.thinkingStartedAtMs !== null) {
+              step.thinkingItem.durationMs = Math.max(
+                0,
+                Date.parse(eventTs) - step.thinkingStartedAtMs
+              )
             }
+            if (p.thinking) {
+              step.thinkingItem.text = p.thinking
+            }
+          } else if (p.thinking) {
+            turn.items.push({
+              id: `${ev.run_id}:think:${ev.seq}`,
+              kind: 'thinking',
+              text: p.thinking,
+              streaming: false,
+              durationMs: null
+            })
           }
-          if (p.text) {
-            turn.assistantText = p.text
+
+          if (step?.textItem) {
+            step.textItem.streaming = false
+            if (p.text) {
+              step.textItem.text = p.text
+            }
+          } else if (p.text) {
+            turn.items.push({
+              id: `${ev.run_id}:text:${ev.seq}`,
+              kind: 'text',
+              text: p.text,
+              streaming: false
+            })
           }
+
+          openSteps.delete(ev.run_id)
+
           if (p.usage) {
             turn.usage = p.usage
             latestUsage = p.usage
@@ -271,9 +377,7 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
 
       case 'tool.started': {
         const turn = getOrCreateTurn(ev, eventTs)
-        if (turn.thinkingStreaming) {
-          turn.thinkingStreaming = false
-        }
+        closeOpenStep(ev.run_id, eventTs)
         const category = classifyTool(p.tool_name)
         const key = `${ev.run_id}:${p.tool_call_id}`
         if (!toolIndex.has(key)) {
@@ -287,10 +391,25 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
             durationMs: null
           }
           toolIndex.set(key, item)
-          turn.toolCalls.push(item)
-          if (category === 'read') turn.toolCounts.reads += 1
-          else if (category === 'command') turn.toolCounts.commands += 1
-          else turn.toolCounts.actions += 1
+
+          const last = turn.items[turn.items.length - 1]
+          if (last && last.kind === 'tool_group') {
+            last.toolCalls.push(item)
+            if (category === 'read') last.counts.reads += 1
+            else if (category === 'command') last.counts.commands += 1
+            else last.counts.actions += 1
+          } else {
+            turn.items.push({
+              id: `${ev.run_id}:tools:${ev.seq}`,
+              kind: 'tool_group',
+              toolCalls: [item],
+              counts: {
+                actions: category === 'action' ? 1 : 0,
+                reads: category === 'read' ? 1 : 0,
+                commands: category === 'command' ? 1 : 0
+              }
+            })
+          }
         }
         break
       }
@@ -316,10 +435,12 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       }
 
       case 'compaction': {
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.notices.push({
-          id: `${ev.run_id}:${ev.seq}`,
-          kind: 'compaction',
+        turn.items.push({
+          id: `${ev.run_id}:notice:${ev.seq}`,
+          kind: 'notice',
+          noticeKind: 'compaction',
           text:
             p.phase === 'started'
               ? '正在压缩对话上下文...'
@@ -329,10 +450,12 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       }
 
       case 'retry': {
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.notices.push({
-          id: `${ev.run_id}:${ev.seq}`,
-          kind: 'retry',
+        turn.items.push({
+          id: `${ev.run_id}:notice:${ev.seq}`,
+          kind: 'notice',
+          noticeKind: 'retry',
           text:
             p.phase === 'started'
               ? `正在自动重试（第 ${p.attempt ?? 1} 次）...`
@@ -358,11 +481,9 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       }
 
       case 'turn.completed': {
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.thinkingStreaming = false
-        if (p.final_text && !turn.assistantText) {
-          turn.assistantText = p.final_text
-        }
+        ensureFallbackText(turn, p.final_text, `${ev.run_id}:turn_final:${ev.seq}`)
         if (p.usage) {
           turn.usage = p.usage
           latestUsage = p.usage
@@ -377,18 +498,15 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
         isRunning = false
         liveInteractions.length = 0
         workflowInterrupts = [...(p.interrupts ?? [])]
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.thinkingStreaming = false
         turn.status = 'interrupted'
         turn.completedAt = eventTs
         turn.durationMs = Math.max(0, Date.parse(eventTs) - Date.parse(turn.startedAt))
-        // If awaiting_input carries a summary and assistantText wasn't populated, surface it
         for (const intr of workflowInterrupts) {
           const summary =
             typeof intr.payload?.summary === 'string' ? intr.payload.summary : undefined
-          if (summary && !turn.assistantText) {
-            turn.assistantText = summary
-          }
+          ensureFallbackText(turn, summary, `${ev.run_id}:intr_summary:${ev.seq}`)
           if (intr.node_id && nodesMap.has(intr.node_id)) {
             const node = nodesMap.get(intr.node_id)!
             node.status = 'interrupted'
@@ -401,14 +519,12 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
         isRunning = false
         liveInteractions.length = 0
         workflowInterrupts = []
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.thinkingStreaming = false
         turn.status = p.status
         turn.completedAt = eventTs
         turn.durationMs = Math.max(0, Date.parse(eventTs) - Date.parse(turn.startedAt))
-        if (p.final_output && !turn.assistantText) {
-          turn.assistantText = p.final_output
-        }
+        ensureFallbackText(turn, p.final_output, `${ev.run_id}:wf_final:${ev.seq}`)
         if (p.failure) {
           turn.failure = p.failure
         }
@@ -418,8 +534,8 @@ export function projectEventsToTimeline(events: readonly RuntimeEvent[]): Projec
       case 'runtime.error': {
         isRunning = false
         liveInteractions.length = 0
+        closeOpenStep(ev.run_id, eventTs)
         const turn = getOrCreateTurn(ev, eventTs)
-        turn.thinkingStreaming = false
         turn.status = 'failed'
         turn.completedAt = eventTs
         turn.durationMs = Math.max(0, Date.parse(eventTs) - Date.parse(turn.startedAt))

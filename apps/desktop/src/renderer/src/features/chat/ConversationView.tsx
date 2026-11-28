@@ -4,6 +4,7 @@ import { AlertCircle, Brain, CheckCircle2, ChevronRight, CircleDot, Loader2 } fr
 import {
   projectEventsToTimeline,
   type ProjectedTurn,
+  type ProjectedTurnItem,
   type ProjectedWorkflowNode
 } from '@renderer/sdk/event-projection'
 import { useSessionStore } from '@renderer/stores/session-store'
@@ -16,10 +17,10 @@ import { ToolGroupSummary } from './ToolGroupSummary'
 function formatDuration(ms: number | null): string {
   if (ms === null || ms < 0) return ''
   const secs = Math.max(1, Math.round(ms / 1000))
-  if (secs < 60) return `${secs}s`
+  if (secs < 60) return `${secs}秒`
   const mins = Math.floor(secs / 60)
   const rem = secs % 60
-  return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`
+  return rem > 0 ? `${mins}分 ${rem}秒` : `${mins}分`
 }
 
 function LiveElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
@@ -35,14 +36,75 @@ function LiveElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
   return <span>{formatDuration(elapsed)}</span>
 }
 
+function ThinkingBlock({
+  item
+}: {
+  item: Extract<ProjectedTurnItem, { kind: 'thinking' }>
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Trigger className="inline-flex items-center gap-1.5 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
+        <Brain className="h-3.5 w-3.5" strokeWidth={1.6} />
+        <span>
+          {item.streaming
+            ? '正在思考...'
+            : item.durationMs !== null
+              ? `已思考 ${formatDuration(item.durationMs)}`
+              : '已思考'}
+        </span>
+        <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-90')} />
+      </Collapsible.Trigger>
+      <Collapsible.Content className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
+        {item.text}
+      </Collapsible.Content>
+    </Collapsible.Root>
+  )
+}
+
+function TurnItemList({ items }: { items: ProjectedTurnItem[] }): React.JSX.Element {
+  return (
+    <div className="space-y-3">
+      {items.map((item) => {
+        switch (item.kind) {
+          case 'thinking':
+            return <ThinkingBlock key={item.id} item={item} />
+          case 'text':
+            return <MarkdownRenderer key={item.id} content={item.text} />
+          case 'tool_group':
+            return (
+              <ToolGroupSummary key={item.id} toolCalls={item.toolCalls} counts={item.counts} />
+            )
+          case 'notice':
+            return (
+              <div key={item.id} className="flex flex-wrap gap-1.5">
+                <span className="rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-caption text-[var(--text-muted)]">
+                  {item.text}
+                </span>
+              </div>
+            )
+        }
+      })}
+    </div>
+  )
+}
+
 const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): React.JSX.Element {
-  const [thinkingOpen, setThinkingOpen] = useState(false)
+  const [processOpen, setProcessOpen] = useState(false)
   const isRunning = turn.status === 'running'
-  const isCompleted = turn.status === 'completed'
+
+  const lastItem = turn.items[turn.items.length - 1]
+  const hasFinalReply = !isRunning && lastItem?.kind === 'text'
+  const processItems = hasFinalReply ? turn.items.slice(0, -1) : turn.items
+  const finalItem = hasFinalReply ? lastItem : null
+
+  const durationText = formatDuration(turn.durationMs)
+  const collapsedLabel = durationText ? `用时 ${durationText}` : '执行过程'
 
   return (
     <div className="space-y-4">
-      {/* Right-aligned soft warm-gray user message bubble (Screenshots 1 & 2) */}
+      {/* Right-aligned soft user message bubble */}
       {turn.userText && (
         <div className="flex justify-end">
           <div className="max-w-[78%] rounded-2xl bg-[var(--bg-subtle)] px-4 py-2.5 text-body text-[var(--text-primary)] whitespace-pre-wrap">
@@ -52,55 +114,34 @@ const TurnItem = memo(function TurnItem({ turn }: { turn: ProjectedTurn }): Reac
       )}
 
       {/* Assistant turn output */}
-      <div className="space-y-2">
-        {/* Completed duration header (Screenshot 1: 已完成 3m 49s >) */}
-        {isCompleted && turn.durationMs !== null && (
-          <div className="inline-flex items-center gap-1 text-caption text-[var(--text-muted)]">
-            <span>已完成 {formatDuration(turn.durationMs)}</span>
-          </div>
-        )}
-
-        {/* Collapsible thinking block (Screenshot 2: 已思考 1s) */}
-        {turn.thinkingText && (
-          <Collapsible.Root open={thinkingOpen} onOpenChange={setThinkingOpen}>
-            <Collapsible.Trigger className="inline-flex items-center gap-1.5 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
-              <Brain className="h-3.5 w-3.5" strokeWidth={1.6} />
-              <span>
-                {turn.thinkingStreaming
-                  ? '正在思考...'
-                  : `已思考 ${turn.thinkingDurationMs !== null ? formatDuration(turn.thinkingDurationMs) : ''}`}
-              </span>
-              <ChevronRight
-                className={cn('h-3.5 w-3.5 transition-transform', thinkingOpen && 'rotate-90')}
-              />
-            </Collapsible.Trigger>
-            <Collapsible.Content className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
-              {turn.thinkingText}
-            </Collapsible.Content>
-          </Collapsible.Root>
-        )}
-
-        {/* System notices (compaction / retry / resumed) */}
-        {turn.notices.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {turn.notices.map((notice) => (
-              <span
-                key={notice.id}
-                className="rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-caption text-[var(--text-muted)]"
+      <div className="space-y-3">
+        {isRunning || !finalItem ? (
+          turn.items.length > 0 && <TurnItemList items={turn.items} />
+        ) : (
+          <>
+            {processItems.length > 0 && (
+              <Collapsible.Root
+                open={processOpen}
+                onOpenChange={setProcessOpen}
+                className="border-b border-[var(--border-hairline)] pb-3"
               >
-                {notice.text}
-              </span>
-            ))}
-          </div>
+                <Collapsible.Trigger className="inline-flex items-center gap-1 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
+                  <span>{collapsedLabel}</span>
+                  <ChevronRight
+                    className={cn('h-3.5 w-3.5 transition-transform', processOpen && 'rotate-90')}
+                  />
+                </Collapsible.Trigger>
+                <Collapsible.Content className="pt-3">
+                  <TurnItemList items={processItems} />
+                </Collapsible.Content>
+              </Collapsible.Root>
+            )}
+
+            <MarkdownRenderer content={finalItem.text} />
+          </>
         )}
 
-        {/* Aggregated tool activity row (Screenshot 2) */}
-        <ToolGroupSummary toolCalls={turn.toolCalls} counts={turn.toolCounts} />
-
-        {/* Main assistant Markdown response */}
-        {turn.assistantText && <MarkdownRenderer content={turn.assistantText} />}
-
-        {/* Active pulsing progress indicator (Screenshot 2 bottom working indicator) */}
+        {/* Active pulsing progress indicator */}
         {isRunning && (
           <div className="flex items-center gap-2 border-t border-[var(--border-hairline)] pt-3 text-caption text-[var(--text-muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -239,7 +280,7 @@ export function ConversationView(): React.JSX.Element {
         </div>
       </div>
 
-      {/* Floating bottom composer (Screenshots 1 & 2) */}
+      {/* Floating bottom composer */}
       <div className="shrink-0 px-6 pb-3 pt-1">
         <div className="mx-auto max-w-[760px]">
           <ComposerCard
