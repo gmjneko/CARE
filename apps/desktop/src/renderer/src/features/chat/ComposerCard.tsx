@@ -244,15 +244,15 @@ export function ComposerCard({
             </span>
           )}
 
-          {/* Model Profile selector */}
+          {/* Model Profile selector — bold model name + subtle tag matching reference */}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="inline-flex h-8 max-w-[230px] items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="inline-flex h-8 max-w-[240px] items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)]"
               >
                 <Cpu className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" strokeWidth={1.65} />
-                <span className="truncate">{effectiveProfileLabel}</span>
+                <span className="truncate font-medium">{effectiveProfileLabel}</span>
                 <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>

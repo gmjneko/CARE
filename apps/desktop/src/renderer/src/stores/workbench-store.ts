@@ -32,10 +32,12 @@ function persistWorkspaces(dirs: string[]): void {
   }
 }
 
+export type InspectorMode = 'closed' | 'floating' | 'panel'
+
 interface WorkbenchStoreState {
   activePageId: string
   sidebarOpen: boolean
-  inspectorOpen: boolean
+  inspectorMode: InspectorMode
   inspectorDetail: InspectorDetailDescriptor | null
   settingsOpen: boolean
   notificationsOpen: boolean
@@ -50,8 +52,9 @@ interface WorkbenchStoreState {
 
   setActivePage: (pageId: string) => void
   toggleSidebar: () => void
-  toggleInspector: () => void
-  setInspectorOpen: (open: boolean) => void
+  toggleFloatingInspector: () => void
+  toggleRightPanel: () => void
+  setInspectorMode: (mode: InspectorMode) => void
   openInspectorDetail: (detail: InspectorDetailDescriptor) => void
   closeInspectorDetail: () => void
   setSettingsOpen: (open: boolean) => void
@@ -69,7 +72,7 @@ interface WorkbenchStoreState {
 export const useWorkbenchStore = create<WorkbenchStoreState>((set, get) => ({
   activePageId: 'chat',
   sidebarOpen: true,
-  inspectorOpen: true,
+  inspectorMode: 'floating',
   inspectorDetail: null,
   settingsOpen: false,
   notificationsOpen: false,
@@ -84,18 +87,22 @@ export const useWorkbenchStore = create<WorkbenchStoreState>((set, get) => ({
 
   setActivePage: (pageId) => set({ activePageId: pageId, inspectorDetail: null }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  toggleInspector: () =>
+  toggleFloatingInspector: () =>
     set((s) => ({
-      inspectorOpen: !s.inspectorOpen,
-      inspectorDetail: s.inspectorOpen ? null : s.inspectorDetail
+      inspectorMode: s.inspectorMode === 'floating' ? 'closed' : 'floating',
+      inspectorDetail: null
     })),
-  setInspectorOpen: (open) =>
+  toggleRightPanel: () =>
     set((s) => ({
-      inspectorOpen: open,
-      inspectorDetail: open ? s.inspectorDetail : null
+      inspectorMode: s.inspectorMode === 'panel' ? 'closed' : 'panel'
     })),
-  openInspectorDetail: (detail) => set({ inspectorOpen: true, inspectorDetail: detail }),
-  closeInspectorDetail: () => set({ inspectorDetail: null }),
+  setInspectorMode: (mode) =>
+    set((s) => ({
+      inspectorMode: mode,
+      inspectorDetail: mode === 'panel' ? s.inspectorDetail : null
+    })),
+  openInspectorDetail: (detail) => set({ inspectorMode: 'panel', inspectorDetail: detail }),
+  closeInspectorDetail: () => set({ inspectorMode: 'floating', inspectorDetail: null }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setNotificationsOpen: (open) => set({ notificationsOpen: open }),
   setSearchOpen: (open) =>

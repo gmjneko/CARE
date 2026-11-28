@@ -28,7 +28,7 @@ export function WorkbenchShell({ overlays }: WorkbenchShellProps): React.JSX.Ele
       {/* Main white canvas */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-canvas)]">
         <TopBar />
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
             {ActivePageComponent ? (
               <ActivePageComponent />

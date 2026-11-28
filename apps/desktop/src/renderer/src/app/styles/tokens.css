@@ -12,33 +12,34 @@
   --text-code--line-height: 21px;
   --text-heading: 16px;
   --text-heading--line-height: 24px;
-  --text-display: 24px;
-  --text-display--line-height: 32px;
+  --text-display: 25px;
+  --text-display--line-height: 34px;
 }
 
 :root {
-  /* Warm minimal light palette aligned with CARE Desktop design */
-  --bg-sidebar: #f7f7f5;
+  /* Crisp cool-neutral light desktop palette */
+  --bg-sidebar: #f8f8fa;
   --bg-canvas: #ffffff;
   --bg-surface: #ffffff;
-  --bg-subtle: #f3f3f0;
-  --bg-hover: #efefec;
-  --bg-active: #e9e9e5;
+  --bg-subtle: #f3f4f6;
+  --bg-hover: #efeff2;
+  --bg-active: #e8e9ee;
 
-  --border-hairline: #eaeae6;
-  --border-card: #e5e5e0;
-  --shadow-floating: 0 4px 20px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.04);
-  --shadow-composer: 0 6px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --border-hairline: #ededf0;
+  --border-card: #e5e6eb;
+  --shadow-floating: 0 8px 28px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-composer: 0 6px 24px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03);
 
-  --text-primary: #1c1c1a;
-  --text-secondary: #6b6b66;
-  --text-muted: #9b9b95;
+  --text-primary: #17171a;
+  --text-secondary: #686870;
+  --text-muted: #93949c;
 
-  --accent-primary: #1f1f1d;
+  --accent-primary: #18181b;
   --accent-primary-fg: #ffffff;
-  --status-success: #2f855a;
-  --status-danger: #c53030;
-  --status-warning: #b7791f;
+  --accent-brand: #0ea5e9;
+  --status-success: #16a34a;
+  --status-danger: #dc2626;
+  --status-warning: #d97706;
 }
 
 * {
@@ -83,12 +84,20 @@ body,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(28, 28, 26, 0.14);
+  background: rgba(23, 23, 26, 0.13);
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(28, 28, 26, 0.25);
+  background: rgba(23, 23, 26, 0.24);
+}
+
+/* Soft ambient halo behind welcome brand orb */
+.care-brand-orb {
+  background: radial-gradient(circle at 35% 30%, #38bdf8 0%, #0284c7 55%, #2563eb 100%);
+  box-shadow:
+    0 10px 28px rgba(14, 165, 233, 0.28),
+    0 0 0 8px rgba(56, 189, 248, 0.08);
 }
 
 /* Clean Markdown typography inside assistant messages */

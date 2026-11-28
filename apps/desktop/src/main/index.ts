@@ -15,7 +15,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#f7f7f5',
+    backgroundColor: '#f8f8fa',
     autoHideMenuBar: true,
     titleBarStyle: isMac ? 'hiddenInset' : 'default',
     ...(isMac ? { trafficLightPosition: { x: 14, y: 15 } } : {}),

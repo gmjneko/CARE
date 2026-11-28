@@ -231,11 +231,14 @@ export function EnvironmentWidget({
   )
 }
 
-export function TaskListWidget(): React.JSX.Element {
+export function TaskListWidget({ workflowId }: InspectorWidgetProps): React.JSX.Element {
   const events = useSessionStore((s) => s.events)
   const timeline = useMemo(() => projectEventsToTimeline(events), [events])
 
-  if (timeline.nodes.length === 0) {
+  // Single-agent chats have no multi-step plan/todo list yet; show nodes only for multi-stage plans.
+  const isPlanWorkflow =
+    (workflowId !== null && workflowId !== 'single_agent') || timeline.nodes.length > 1
+  if (!isPlanWorkflow || timeline.nodes.length === 0) {
     return <div className="px-1.5 py-1 text-ui text-[var(--text-muted)]">暂无任务</div>
   }
 

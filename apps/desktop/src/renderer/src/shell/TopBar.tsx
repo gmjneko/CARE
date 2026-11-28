@@ -22,11 +22,30 @@ const EXTERNAL_APPS: Array<{ id: ExternalAppKind; label: string }> = [
   { id: 'finder', label: '在访达中显示' }
 ]
 
+function FloatingCardIcon({ className }: { className?: string }): React.JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect x="3.25" y="2.25" width="11.5" height="13.5" rx="3" />
+      <line x1="6.5" y1="7" x2="11.5" y2="7" />
+      <line x1="6.5" y1="10.75" x2="9.75" y2="10.75" />
+    </svg>
+  )
+}
+
 export function TopBar(): React.JSX.Element {
   const sidebarOpen = useWorkbenchStore((s) => s.sidebarOpen)
   const toggleSidebar = useWorkbenchStore((s) => s.toggleSidebar)
-  const inspectorOpen = useWorkbenchStore((s) => s.inspectorOpen)
-  const toggleInspector = useWorkbenchStore((s) => s.toggleInspector)
+  const inspectorMode = useWorkbenchStore((s) => s.inspectorMode)
+  const toggleFloatingInspector = useWorkbenchStore((s) => s.toggleFloatingInspector)
+  const toggleRightPanel = useWorkbenchStore((s) => s.toggleRightPanel)
   const activePageId = useWorkbenchStore((s) => s.activePageId)
   const selectedWorkspaceDir = useWorkbenchStore((s) => s.selectedWorkspaceDir)
 
@@ -125,19 +144,34 @@ export function TopBar(): React.JSX.Element {
         )}
 
         {activePageId === 'chat' && Boolean(activeThreadId) && (
-          <button
-            type="button"
-            onClick={toggleInspector}
-            title={inspectorOpen ? '收起右侧环境面板' : '展开右侧环境面板'}
-            className={cn(
-              'inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
-              inspectorOpen
-                ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-            )}
-          >
-            <PanelRight className="h-4 w-4" strokeWidth={1.7} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleFloatingInspector}
+              title={inspectorMode === 'floating' ? '隐藏悬浮概览卡' : '显示悬浮概览卡'}
+              className={cn(
+                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+                inspectorMode === 'floating'
+                  ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+              )}
+            >
+              <FloatingCardIcon className="h-[17px] w-[17px]" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleRightPanel}
+              title={inspectorMode === 'panel' ? '收起右侧详情边栏' : '展开右侧详情边栏'}
+              className={cn(
+                'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+                inspectorMode === 'panel'
+                  ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+              )}
+            >
+              <PanelRight className="h-4 w-4" strokeWidth={1.7} />
+            </button>
+          </div>
         )}
       </div>
     </header>
