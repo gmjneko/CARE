@@ -4,6 +4,7 @@ import { ChevronDown, Folder, FolderPlus, GitBranch, Laptop } from 'lucide-react
 import { useRuntimeStore } from '@renderer/stores/runtime-store'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
+import { MenuContent, MenuItem, MenuSeparator } from '@renderer/ui/Menu'
 import { ComposerCard } from './ComposerCard'
 
 function baseName(dirPath: string): string {
@@ -108,39 +109,27 @@ export function EmptyWelcomeView(): React.JSX.Element {
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                 </button>
               </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  align="start"
-                  sideOffset={6}
-                  className="care-menu z-50 min-w-[260px] max-w-[380px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
-                >
-                  {savedWorkspaces.map((dir) => (
-                    <DropdownMenu.Item
-                      key={dir}
-                      onSelect={() => {
-                        setSelectedWorkspace(dir)
-                        clearError()
-                      }}
-                      className="cursor-pointer rounded-lg px-2.5 py-1.5 outline-none hover:bg-[var(--bg-hover)]"
-                    >
-                      <div className="truncate text-ui font-medium text-[var(--text-primary)]">
-                        {baseName(dir)}
-                      </div>
-                      <div className="truncate text-caption text-[var(--text-muted)]">{dir}</div>
-                    </DropdownMenu.Item>
-                  ))}
-                  {savedWorkspaces.length > 0 && (
-                    <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-hairline)]" />
-                  )}
-                  <DropdownMenu.Item
-                    onSelect={() => void handlePickDir()}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
-                  >
-                    <FolderPlus className="h-4 w-4 text-[var(--text-secondary)]" />
-                    <span>浏览并添加本地目录...</span>
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
+              <MenuContent align="start" className="min-w-[268px] max-w-[380px]">
+                {savedWorkspaces.map((dir) => (
+                  <MenuItem
+                    key={dir}
+                    icon={<Folder className="h-4 w-4" strokeWidth={1.65} />}
+                    label={baseName(dir)}
+                    description={dir}
+                    selected={selectedWorkspaceDir === dir}
+                    onSelect={() => {
+                      setSelectedWorkspace(dir)
+                      clearError()
+                    }}
+                  />
+                ))}
+                {savedWorkspaces.length > 0 && <MenuSeparator />}
+                <MenuItem
+                  icon={<FolderPlus className="h-4 w-4" strokeWidth={1.65} />}
+                  label="浏览并添加本地目录..."
+                  onSelect={() => void handlePickDir()}
+                />
+              </MenuContent>
             </DropdownMenu.Root>
 
             <span className="inline-flex items-center gap-1.5 text-[var(--text-secondary)]">

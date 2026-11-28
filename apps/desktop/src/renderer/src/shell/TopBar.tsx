@@ -1,6 +1,7 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   ChevronDown,
+  Code2,
   Folder,
   FolderOpen,
   Laptop,
@@ -12,6 +13,7 @@ import {
 import type { ExternalAppKind } from '@shared/ipc-contracts'
 import { formatWorkflowLabel } from '@renderer/sdk/event-projection'
 import { cn } from '@renderer/ui/cn'
+import { MenuContent, MenuItem } from '@renderer/ui/Menu'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
 import { pageRegistry } from './registries'
@@ -128,28 +130,24 @@ export function TopBar(): React.JSX.Element {
                 <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="end"
-                sideOffset={6}
-                className="care-menu z-50 min-w-[190px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
-              >
-                {EXTERNAL_APPS.map((item) => (
-                  <DropdownMenu.Item
-                    key={item.id}
-                    onSelect={() => handleOpenExternal(item.id)}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]"
-                  >
-                    {item.id === 'terminal' ? (
-                      <Terminal className="h-4 w-4 text-[var(--text-secondary)]" />
+            <MenuContent align="end" className="min-w-[200px]">
+              {EXTERNAL_APPS.map((item) => (
+                <MenuItem
+                  key={item.id}
+                  onSelect={() => handleOpenExternal(item.id)}
+                  icon={
+                    item.id === 'terminal' ? (
+                      <Terminal className="h-4 w-4" strokeWidth={1.65} />
+                    ) : item.id === 'finder' ? (
+                      <FolderOpen className="h-4 w-4" strokeWidth={1.65} />
                     ) : (
-                      <FolderOpen className="h-4 w-4 text-[var(--text-secondary)]" />
-                    )}
-                    {item.label}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
+                      <Code2 className="h-4 w-4" strokeWidth={1.65} />
+                    )
+                  }
+                  label={item.label}
+                />
+              ))}
+            </MenuContent>
           </DropdownMenu.Root>
         )}
 

@@ -1,11 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { ArrowUp, ChevronDown, Cpu, GitBranch, Pause, Sparkles, Square } from 'lucide-react'
+import {
+  ArrowUp,
+  Bot,
+  ChevronDown,
+  Cpu,
+  GitBranch,
+  Pause,
+  Settings2,
+  Sparkles,
+  Square,
+  Workflow
+} from 'lucide-react'
 import type { ThinkingLevel, TokenUsage } from '@renderer/sdk/runtime-types'
 import { useRuntimeStore } from '@renderer/stores/runtime-store'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
 import { cn } from '@renderer/ui/cn'
+import { MenuContent, MenuItem, MenuSeparator } from '@renderer/ui/Menu'
 
 const THINKING_OPTIONS: Array<{ value: ThinkingLevel | null; label: string }> = [
   { value: null, label: '默认推理' },
@@ -167,35 +179,36 @@ export function ComposerCard({
                 )}
               </button>
             </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="start"
-                sideOffset={6}
-                className="care-menu z-50 min-w-[240px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
-              >
-                {(workflows.length > 0
-                  ? workflows
-                  : [
-                      { name: 'single_agent', description: '通用单 Agent Vibe Coding 对话' },
-                      { name: 'plan_and_execute', description: '先交互规划，确认后自动派生执行' }
-                    ]
-                ).map((wf) => (
-                  <DropdownMenu.Item
-                    key={wf.name}
-                    onSelect={() => setSelectedWorkflow(wf.name)}
-                    className={cn(
-                      'cursor-pointer rounded-lg px-2.5 py-2 outline-none hover:bg-[var(--bg-hover)]',
-                      selectedWorkflowId === wf.name && 'bg-[var(--bg-subtle)]'
-                    )}
-                  >
-                    <div className="text-ui font-medium text-[var(--text-primary)]">{wf.name}</div>
-                    <div className="mt-0.5 text-caption text-[var(--text-muted)]">
-                      {wf.description}
-                    </div>
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
+            <MenuContent align="start" className="min-w-[260px]">
+              {(workflows.length > 0
+                ? workflows
+                : [
+                    { name: 'single_agent', description: '通用单 Agent Vibe Coding 对话' },
+                    { name: 'plan_and_execute', description: '先交互规划，确认后自动派生执行' }
+                  ]
+              ).map((wf) => (
+                <MenuItem
+                  key={wf.name}
+                  icon={
+                    wf.name === 'plan_and_execute' ? (
+                      <Workflow className="h-4 w-4" strokeWidth={1.65} />
+                    ) : (
+                      <Bot className="h-4 w-4" strokeWidth={1.65} />
+                    )
+                  }
+                  label={
+                    wf.name === 'plan_and_execute'
+                      ? 'Plan & Execute'
+                      : wf.name === 'single_agent'
+                        ? 'Single Agent'
+                        : wf.name
+                  }
+                  description={wf.description}
+                  selected={selectedWorkflowId === wf.name}
+                  onSelect={() => setSelectedWorkflow(wf.name)}
+                />
+              ))}
+            </MenuContent>
           </DropdownMenu.Root>
 
           {/* Thinking level selector */}
@@ -213,26 +226,16 @@ export function ComposerCard({
                 <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="start"
-                sideOffset={6}
-                className="care-menu z-50 min-w-[140px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
-              >
-                {THINKING_OPTIONS.map((opt) => (
-                  <DropdownMenu.Item
-                    key={String(opt.value)}
-                    onSelect={() => setSelectedThinkingLevel(opt.value)}
-                    className={cn(
-                      'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
-                      selectedThinkingLevel === opt.value && 'bg-[var(--bg-subtle)] font-medium'
-                    )}
-                  >
-                    {opt.label}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
+            <MenuContent align="start" className="min-w-[144px]">
+              {THINKING_OPTIONS.map((opt) => (
+                <MenuItem
+                  key={String(opt.value)}
+                  label={opt.label}
+                  selected={selectedThinkingLevel === opt.value}
+                  onSelect={() => setSelectedThinkingLevel(opt.value)}
+                />
+              ))}
+            </MenuContent>
           </DropdownMenu.Root>
         </div>
 
@@ -247,7 +250,7 @@ export function ComposerCard({
             </span>
           )}
 
-          {/* Model Profile selector — bold model name + subtle tag matching reference */}
+          {/* Model Profile selector */}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
@@ -259,47 +262,32 @@ export function ComposerCard({
                 <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
               </button>
             </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="end"
-                sideOffset={6}
-                className="care-menu z-50 min-w-[220px] rounded-xl border border-[var(--border-card)] bg-[var(--bg-surface)] p-1.5 shadow-[var(--shadow-floating)]"
-              >
-                <DropdownMenu.Item
-                  onSelect={() => setSelectedProfile(null)}
-                  className={cn(
-                    'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-primary)] outline-none hover:bg-[var(--bg-hover)]',
-                    selectedProfile === null && 'bg-[var(--bg-subtle)] font-medium'
-                  )}
-                >
-                  使用默认配置
-                  {settings?.active_profile ? `（${settings.active_profile}）` : ''}
-                </DropdownMenu.Item>
-                {profileNames.map((name) => {
-                  const prof = settings!.profiles[name]
-                  return (
-                    <DropdownMenu.Item
-                      key={name}
-                      onSelect={() => setSelectedProfile(name)}
-                      className={cn(
-                        'cursor-pointer rounded-lg px-2.5 py-1.5 text-ui outline-none hover:bg-[var(--bg-hover)]',
-                        selectedProfile === name && 'bg-[var(--bg-subtle)] font-medium'
-                      )}
-                    >
-                      <div className="text-[var(--text-primary)]">{name}</div>
-                      <div className="text-caption text-[var(--text-muted)]">{prof.model}</div>
-                    </DropdownMenu.Item>
-                  )
-                })}
-                <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-hairline)]" />
-                <DropdownMenu.Item
-                  onSelect={() => setSettingsOpen(true)}
-                  className="cursor-pointer rounded-lg px-2.5 py-1.5 text-ui text-[var(--text-secondary)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                >
-                  管理模型配置...
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
+            <MenuContent align="end" className="min-w-[220px]">
+              <MenuItem
+                label={`使用默认配置${settings?.active_profile ? `（${settings.active_profile}）` : ''}`}
+                selected={selectedProfile === null}
+                onSelect={() => setSelectedProfile(null)}
+              />
+              {profileNames.map((name) => {
+                const prof = settings!.profiles[name]
+                return (
+                  <MenuItem
+                    key={name}
+                    label={name}
+                    description={prof.model}
+                    selected={selectedProfile === name}
+                    onSelect={() => setSelectedProfile(name)}
+                  />
+                )
+              })}
+              <MenuSeparator />
+              <MenuItem
+                icon={<Settings2 className="h-4 w-4" strokeWidth={1.65} />}
+                label="管理模型配置..."
+                muted
+                onSelect={() => setSettingsOpen(true)}
+              />
+            </MenuContent>
           </DropdownMenu.Root>
 
           {/* Running controls: Suspend + Stop (Screenshot 2) OR Idle Send button */}
