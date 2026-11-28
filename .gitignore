@@ -129,6 +129,7 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+.pnpm-store/
 
 ### Python template
 # Byte-compiled / optimized / DLL files

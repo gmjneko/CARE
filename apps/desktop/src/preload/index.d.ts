@@ -1,8 +1,7 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
+import type { CareDesktopBridge } from '@shared/ipc-contracts'
 
 declare global {
   interface Window {
-    electron: ElectronAPI
-    api: unknown
+    careDesktop: CareDesktopBridge
   }
 }

@@ -1,0 +1,16 @@
+{
+  "name": "care-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @care/desktop dev",
+    "dev:runtime": "cd services/agent-runtime && uv run care-runtime --mode local --host 127.0.0.1 --port 8765",
+    "dev:desktop:attach": "CARE_RUNTIME_URL=http://127.0.0.1:8765 pnpm --filter @care/desktop dev",
+    "contracts:sync": "cd services/agent-runtime && uv run python scripts/export_contracts.py && cd ../.. && node contracts/codegen/generate-ts.mjs",
+    "lint": "pnpm --filter @care/desktop lint",
+    "typecheck": "pnpm --filter @care/desktop typecheck",
+    "test:desktop": "pnpm --filter @care/desktop test",
+    "test:runtime": "cd services/agent-runtime && uv run pytest -q",
+    "check": "pnpm lint && pnpm typecheck && cd services/agent-runtime && uv run ruff check src tests",
+    "build:desktop": "pnpm --filter @care/desktop build"
+  }
+}
