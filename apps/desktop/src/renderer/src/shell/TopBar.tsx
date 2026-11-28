@@ -2,7 +2,6 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   ChevronDown,
   Code2,
-  Folder,
   FolderOpen,
   Laptop,
   PanelLeft,
@@ -85,15 +84,14 @@ export function TopBar(): React.JSX.Element {
             type="button"
             onClick={toggleSidebar}
             title="展开侧边栏"
-            className="app-no-drag inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            className="app-no-drag inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           >
-            <PanelLeft className="h-4 w-4" strokeWidth={1.7} />
+            <PanelLeft className="h-[17px] w-[17px]" strokeWidth={1.65} />
           </button>
         )}
 
         {showChatHeader ? (
           <div className="flex min-w-0 items-center gap-2">
-            <Folder className="h-4 w-4 shrink-0 text-[var(--text-muted)]" strokeWidth={1.7} />
             <span className="truncate text-ui font-medium text-[var(--text-primary)]">
               {activeThread?.title || '新任务'}
             </span>

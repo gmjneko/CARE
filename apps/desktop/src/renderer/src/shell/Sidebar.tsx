@@ -121,8 +121,8 @@ export function Sidebar(): React.JSX.Element {
       {/* Top utility bar: traffic lights + sidebar toggle + search icon */}
       <div
         className={cn(
-          'app-drag flex h-[52px] shrink-0 items-center gap-1 px-3',
-          isMac ? 'pl-[78px]' : 'pl-3'
+          'app-drag flex h-[52px] shrink-0 items-center gap-1 pr-3',
+          isMac ? 'pl-[84px]' : 'pl-4'
         )}
       >
         <div className="app-no-drag flex items-center gap-1">
@@ -130,22 +130,22 @@ export function Sidebar(): React.JSX.Element {
             type="button"
             onClick={toggleSidebar}
             title="收起侧边栏"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           >
-            <PanelLeft className="h-4 w-4" strokeWidth={1.65} />
+            <PanelLeft className="h-[17px] w-[17px]" strokeWidth={1.65} />
           </button>
           <button
             type="button"
             onClick={() => setSearchOpen(!searchOpen)}
             title="搜索会话"
             className={cn(
-              'inline-flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
+              'inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
               searchOpen
                 ? 'bg-[var(--bg-active)] text-[var(--text-primary)]'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
             )}
           >
-            <Search className="h-4 w-4" strokeWidth={1.65} />
+            <Search className="h-[17px] w-[17px]" strokeWidth={1.65} />
           </button>
         </div>
       </div>
@@ -193,13 +193,16 @@ export function Sidebar(): React.JSX.Element {
                 }
               }}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-ui font-medium transition-colors',
+                'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-body font-medium transition-colors',
                 isSelected
                   ? 'bg-[var(--bg-active)] text-[var(--text-primary)]'
                   : 'text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
               )}
             >
-              <Icon className="h-4 w-4 shrink-0 text-[var(--text-primary)]/80" strokeWidth={1.7} />
+              <Icon
+                className="h-[17px] w-[17px] shrink-0 text-[var(--text-primary)]/80"
+                strokeWidth={1.7}
+              />
               <span className="truncate">{page.title}</span>
             </button>
           )
