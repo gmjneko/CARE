@@ -4,11 +4,9 @@ import {
   ArrowUp,
   Bot,
   ChevronDown,
-  Cpu,
   GitBranch,
   Pause,
   Settings2,
-  Sparkles,
   Square,
   Workflow
 } from 'lucide-react'
@@ -17,7 +15,15 @@ import { useRuntimeStore } from '@renderer/stores/runtime-store'
 import { useSessionStore } from '@renderer/stores/session-store'
 import { useWorkbenchStore } from '@renderer/stores/workbench-store'
 import { cn } from '@renderer/ui/cn'
-import { MenuContent, MenuItem, MenuSeparator } from '@renderer/ui/Menu'
+import {
+  MenuContent,
+  MenuItem,
+  MenuLabel,
+  MenuSeparator,
+  MenuSub,
+  MenuSubContent,
+  MenuSubTrigger
+} from '@renderer/ui/Menu'
 
 const THINKING_OPTIONS: Array<{ value: ThinkingLevel | null; label: string }> = [
   { value: null, label: '默认推理' },
@@ -84,8 +90,20 @@ export function ComposerCard({
   const profileNames = Object.keys(settings?.profiles ?? {})
   const effectiveProfileName = selectedProfile ?? settings?.active_profile ?? null
   const effectiveProfileLabel = effectiveProfileName
-    ? `${effectiveProfileName}${settings?.profiles[effectiveProfileName]?.model ? ` · ${settings.profiles[effectiveProfileName].model}` : ''}`
+    ? settings?.profiles[effectiveProfileName]?.model || effectiveProfileName
     : '默认模型'
+  const defaultProfileModel = settings?.active_profile
+    ? settings.profiles[settings.active_profile]?.model || settings.active_profile
+    : null
+  const selectedThinkingLabel =
+    selectedThinkingLevel !== null
+      ? (THINKING_OPTIONS.find((o) => o.value === selectedThinkingLevel)?.label ?? null)
+      : null
+
+  const selectModelWithThinking = (profile: string | null, level: ThinkingLevel | null): void => {
+    setSelectedProfile(profile)
+    setSelectedThinkingLevel(level)
+  }
 
   const currentWorkflow = workflows.find((w) => w.name === selectedWorkflowId)
   const workflowLabel =
@@ -170,12 +188,12 @@ export function ComposerCard({
               <button
                 type="button"
                 title={activeThreadId ? '已有会话的工作流不可切换' : '选择工作流模式'}
-                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-70"
+                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui font-normal text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)] disabled:cursor-default disabled:opacity-70"
               >
-                <GitBranch className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.7} />
+                <GitBranch className="h-4 w-4 text-[var(--text-primary)]" strokeWidth={1.7} />
                 <span>{workflowLabel}</span>
                 {!activeThreadId && (
-                  <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
+                  <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-primary)] group-data-[state=open]:rotate-180" />
                 )}
               </button>
             </DropdownMenu.Trigger>
@@ -210,33 +228,6 @@ export function ComposerCard({
               ))}
             </MenuContent>
           </DropdownMenu.Root>
-
-          {/* Thinking level selector */}
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button
-                type="button"
-                className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)]/80 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)]"
-              >
-                <Sparkles className="h-4 w-4 text-[var(--text-secondary)]" strokeWidth={1.65} />
-                <span>
-                  {THINKING_OPTIONS.find((o) => o.value === selectedThinkingLevel)?.label ??
-                    '默认推理'}
-                </span>
-                <ChevronDown className="care-chevron h-3.5 w-3.5 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
-              </button>
-            </DropdownMenu.Trigger>
-            <MenuContent align="start" className="min-w-[144px]">
-              {THINKING_OPTIONS.map((opt) => (
-                <MenuItem
-                  key={String(opt.value)}
-                  label={opt.label}
-                  selected={selectedThinkingLevel === opt.value}
-                  onSelect={() => setSelectedThinkingLevel(opt.value)}
-                />
-              ))}
-            </MenuContent>
-          </DropdownMenu.Root>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -250,34 +241,62 @@ export function ComposerCard({
             </span>
           )}
 
-          {/* Model Profile selector */}
+          {/* Model Profile selector with per-model thinking intensity submenu */}
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
-                className="group inline-flex h-8 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]"
+                className="group inline-flex h-8 max-w-[260px] cursor-pointer items-center gap-1.5 rounded-lg px-2.5 text-ui font-normal text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]"
               >
-                <Cpu className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" strokeWidth={1.65} />
-                <span className="truncate font-medium">{effectiveProfileLabel}</span>
-                <ChevronDown className="care-chevron h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] group-data-[state=open]:rotate-180" />
+                <span className="truncate">{effectiveProfileLabel}</span>
+                {selectedThinkingLabel && (
+                  <span className="shrink-0 text-[var(--text-secondary)]">
+                    · {selectedThinkingLabel}
+                  </span>
+                )}
+                <ChevronDown className="care-chevron h-3.5 w-3.5 shrink-0 text-[var(--text-primary)] group-data-[state=open]:rotate-180" />
               </button>
             </DropdownMenu.Trigger>
             <MenuContent align="end" className="min-w-[220px]">
-              <MenuItem
-                label={`使用默认配置${settings?.active_profile ? `（${settings.active_profile}）` : ''}`}
-                selected={selectedProfile === null}
-                onSelect={() => setSelectedProfile(null)}
-              />
+              <MenuSub>
+                <MenuSubTrigger
+                  label={`使用默认配置${defaultProfileModel ? `（${defaultProfileModel}）` : ''}`}
+                  selected={selectedProfile === null}
+                />
+                <MenuSubContent>
+                  <MenuLabel>推理强度</MenuLabel>
+                  {THINKING_OPTIONS.map((opt) => (
+                    <MenuItem
+                      key={String(opt.value)}
+                      label={opt.label}
+                      selected={selectedProfile === null && selectedThinkingLevel === opt.value}
+                      onSelect={() => selectModelWithThinking(null, opt.value)}
+                    />
+                  ))}
+                </MenuSubContent>
+              </MenuSub>
+
               {profileNames.map((name) => {
                 const prof = settings!.profiles[name]
                 return (
-                  <MenuItem
-                    key={name}
-                    label={name}
-                    description={prof.model}
-                    selected={selectedProfile === name}
-                    onSelect={() => setSelectedProfile(name)}
-                  />
+                  <MenuSub key={name}>
+                    <MenuSubTrigger
+                      label={name}
+                      description={prof.model}
+                      selected={selectedProfile === name}
+                    />
+                    <MenuSubContent>
+                      <MenuLabel>推理强度</MenuLabel>
+                      {THINKING_OPTIONS.map((opt) => (
+                        <MenuItem
+                          key={String(opt.value)}
+                          label={opt.label}
+                          selected={selectedProfile === name && selectedThinkingLevel === opt.value}
+                          onSelect={() => selectModelWithThinking(name, opt.value)}
+                        />
+                      ))}
+                    </MenuSubContent>
+                  </MenuSub>
                 )
               })}
               <MenuSeparator />
