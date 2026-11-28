@@ -97,7 +97,7 @@ export function EmptyWelcomeView(): React.JSX.Element {
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
-                  className="inline-flex max-w-[260px] items-center gap-1.5 rounded-lg px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  className="inline-flex max-w-[260px] cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-left transition-all hover:bg-black/[0.06] hover:text-[var(--text-primary)] active:scale-[0.98] data-[state=open]:bg-black/[0.08] data-[state=open]:text-[var(--text-primary)]"
                 >
                   <Folder
                     className="h-4 w-4 shrink-0 text-[var(--text-secondary)]"

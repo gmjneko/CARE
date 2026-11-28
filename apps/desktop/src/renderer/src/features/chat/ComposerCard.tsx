@@ -141,7 +141,7 @@ export function ComposerCard({
   return (
     <div
       className={cn(
-        'rounded-[20px] border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-composer)] transition-shadow focus-within:border-[#d5d5ce]',
+        'rounded-[20px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] shadow-[var(--shadow-composer)] transition-[border-color,box-shadow] focus-within:border-[var(--border-card)]',
         className
       )}
     >
