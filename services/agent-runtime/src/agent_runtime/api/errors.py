@@ -7,6 +7,7 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent_runtime.adapters import AdapterCapabilityError, AdapterError
@@ -52,6 +53,16 @@ def _error_response(
     )
 
 
+def format_validation_error(exc: RequestValidationError | ValidationError) -> str:
+    """Format Pydantic validation errors without raw input values so secrets are never echoed."""
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(segment) for segment in err.get("loc", ()))
+        msg = str(err.get("msg", "Invalid input"))
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    return "; ".join(parts) or "Request validation failed"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register redacted HTTP exception handlers mapping explicit domain errors to status codes."""
 
@@ -90,14 +101,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _handle_validation_error(
         _request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        # Strip raw `input` values from Pydantic errors so secrets like `api_key` are never echoed.
-        parts: list[str] = []
-        for err in exc.errors():
-            loc = ".".join(str(segment) for segment in err.get("loc", ()))
-            msg = str(err.get("msg", "Invalid input"))
-            parts.append(f"{loc}: {msg}" if loc else msg)
-        detail = "; ".join(parts) or "Request validation failed"
-        return _error_response(422, "validation_error", detail)
+        return _error_response(422, "validation_error", format_validation_error(exc))
 
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http_exception(
@@ -124,5 +128,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
 __all__ = [
     "UnauthorizedError",
+    "format_validation_error",
     "register_exception_handlers",
 ]

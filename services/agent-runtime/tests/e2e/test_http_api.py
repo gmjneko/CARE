@@ -175,7 +175,7 @@ async def test_auth_healthz_and_discovery() -> None:
         assert health.status_code == 200
         assert health.json() == {"status": "ok", "mode": "local", "version": "0.0.1"}
 
-        for path in ("/workflows", "/adapters", "/runs"):
+        for path in ("/workflows", "/adapters", "/runs", "/threads", "/settings"):
             missing = await anon.get(path)
             assert missing.status_code == 401
             assert missing.headers.get("www-authenticate") == "Bearer"
@@ -1248,3 +1248,407 @@ async def test_resume_inherits_and_persists_execution_config_across_restart(
         crep4 = await _collect_interrupted_summary(c2, "cloud-cfg-4")
         assert crep4["model"] == "cloud-m2"
         assert crep4["env_api_key_set"] is True
+
+
+async def test_thread_history_listing_replay_workspace_filter_and_crash_reconciliation(
+    tmp_path: Path,
+) -> None:
+    """E2E: GET /threads and GET /threads/{id}/events across multi-turn, restart, and crash."""
+    ws_a = tmp_path / "workspace-a"
+    ws_b = tmp_path / "workspace-b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    db_path = tmp_path / "history.sqlite"
+
+    async def _stream_all(client: httpx.AsyncClient, run_id: str) -> list[RuntimeEvent]:
+        events: list[RuntimeEvent] = []
+        async with client.stream("GET", f"/runs/{run_id}/events") as resp:
+            assert resp.status_code == 200
+            async for frame in _iter_sse_frames(resp):
+                if "comment" not in frame:
+                    events.append(RuntimeEvent.model_validate(frame["data"]))
+        return events
+
+    # 1. Run multi-turn single_agent in ws_a, paused plan_and_execute in ws_a, and thread in ws_b.
+    app1 = _make_app("standard", config=ServerConfig(checkpoint_db=db_path))
+    async with _running_client(app1) as client1:
+        r1 = await client1.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "First turn title\nwith extra details",
+                "workspace_dir": str(ws_a),
+                "run_id": "hist-run-1",
+                "thread_id": "hist-thread-1",
+            },
+        )
+        assert r1.status_code == 201
+        sse_turn1 = await _stream_all(client1, "hist-run-1")
+
+        r2 = await client1.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "Second turn follow-up",
+                "workspace_dir": str(ws_a),
+                "run_id": "hist-run-2",
+                "thread_id": "hist-thread-1",
+            },
+        )
+        assert r2.status_code == 201
+        sse_turn2 = await _stream_all(client1, "hist-run-2")
+
+        r3 = await client1.post(
+            "/runs",
+            json={
+                "workflow_id": "plan_and_execute",
+                "prompt": "Plan API schema",
+                "workspace_dir": str(ws_a),
+                "run_id": "hist-run-3",
+                "thread_id": "hist-thread-2",
+            },
+        )
+        assert r3.status_code == 201
+        await _wait_for_run_done(client1, "hist-run-3")
+
+        r4 = await client1.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "Workspace B task",
+                "workspace_dir": str(ws_b),
+                "run_id": "hist-run-4",
+                "thread_id": "hist-thread-3",
+            },
+        )
+        assert r4.status_code == 201
+        await _wait_for_run_done(client1, "hist-run-4")
+
+    # 2. Simulate full server restart over the same SQLite DB.
+    app2 = _make_app("standard", config=ServerConfig(checkpoint_db=db_path))
+    async with _running_client(app2) as client2:
+        all_resp = await client2.get("/threads")
+        assert all_resp.status_code == 200
+        threads = all_resp.json()
+        assert [t["thread_id"] for t in threads] == [
+            "hist-thread-3",
+            "hist-thread-2",
+            "hist-thread-1",
+        ]
+        by_id = {t["thread_id"]: t for t in threads}
+        assert by_id["hist-thread-1"]["title"] == "First turn title"
+        assert by_id["hist-thread-1"]["status"] == "completed"
+        assert by_id["hist-thread-1"]["last_run_id"] == "hist-run-2"
+        assert by_id["hist-thread-1"]["active_run_id"] is None
+        assert by_id["hist-thread-2"]["status"] == "interrupted"
+        assert by_id["hist-thread-2"]["workflow_id"] == "plan_and_execute"
+
+        ws_a_resp = await client2.get("/threads", params={"workspace_dir": str(ws_a)})
+        assert ws_a_resp.status_code == 200
+        assert [t["thread_id"] for t in ws_a_resp.json()] == ["hist-thread-2", "hist-thread-1"]
+
+        limited_resp = await client2.get("/threads", params={"limit": 1})
+        assert limited_resp.status_code == 200
+        assert [t["thread_id"] for t in limited_resp.json()] == ["hist-thread-3"]
+
+        # Durable event history matches non-ephemeral SSE events across Turn 1 + Turn 2.
+        events_resp = await client2.get("/threads/hist-thread-1/events")
+        assert events_resp.status_code == 200
+        persisted_events = [RuntimeEvent.model_validate(item) for item in events_resp.json()]
+        assert all(not ev.is_ephemeral for ev in persisted_events)
+        expected_durable = [ev for ev in (*sse_turn1, *sse_turn2) if not ev.is_ephemeral]
+        assert [
+            (ev.run_id, ev.seq, ev.node_id, ev.payload.type) for ev in persisted_events
+        ] == [
+            (ev.run_id, ev.seq, ev.node_id, ev.payload.type) for ev in expected_durable
+        ]
+        manifest = _write_manifest(tmp_path, "thread_history", persisted_events)
+        assert manifest["workflow_id"] == "single_agent"
+        assert manifest["event_count"] == len(expected_durable)
+
+        missing = await client2.get("/threads/does-not-exist/events")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "not_found"
+
+    # 3. Live active run reports status='running' + active_run_id on GET /threads.
+    app_live = _make_app("ui_question", config=ServerConfig(checkpoint_db=db_path))
+    async with _running_client(app_live) as client_live:
+        live_start = await client_live.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "Live thread listing check",
+                "workspace_dir": str(ws_a),
+                "run_id": "hist-live-run",
+                "thread_id": "hist-live-thread",
+            },
+        )
+        assert live_start.status_code == 201
+        async with client_live.stream("GET", "/runs/hist-live-run/events") as stream_resp:
+            async for frame in _iter_sse_frames(stream_resp):
+                if "comment" in frame:
+                    continue
+                ev = RuntimeEvent.model_validate(frame["data"])
+                if ev.payload.type == "interaction.request" and ev.payload.blocking:
+                    live_threads = {
+                        item["thread_id"]: item
+                        for item in (await client_live.get("/threads")).json()
+                    }
+                    assert live_threads["hist-live-thread"]["status"] == "running"
+                    assert live_threads["hist-live-thread"]["active_run_id"] == "hist-live-run"
+                    await client_live.post(
+                        "/runs/hist-live-run/interactions",
+                        json={
+                            "response": {
+                                "request_id": ev.payload.request_id,
+                                "decision": "approve",
+                                "value": "sqlite",
+                            }
+                        },
+                    )
+
+    # 4. Unhandled AdapterError mid-turn reconciles to status='crashed' in both GET /threads and
+    # GET /workflows/{wf}/threads/{tid}, records runtime.error, and discard() flips it to 'aborted'.
+    app_crash = _make_app("malformed_stdout", config=ServerConfig(checkpoint_db=db_path))
+    async with _running_client(app_crash) as client_crash:
+        crash_start = await client_crash.post(
+            "/runs",
+            json={
+                "workflow_id": "single_agent",
+                "prompt": "Crash mid turn",
+                "workspace_dir": str(ws_a),
+                "run_id": "hist-crash-run",
+                "thread_id": "hist-crash-thread",
+            },
+        )
+        assert crash_start.status_code == 201
+        crash_done = await _wait_for_run_done(client_crash, "hist-crash-run")
+        assert crash_done["status"] == "failed"
+
+        crashed_state = (
+            await client_crash.get("/workflows/single_agent/threads/hist-crash-thread")
+        ).json()
+        assert crashed_state["status"] == "crashed"
+
+        crashed_threads = {
+            item["thread_id"]: item for item in (await client_crash.get("/threads")).json()
+        }
+        assert crashed_threads["hist-crash-thread"]["status"] == "crashed"
+        assert crashed_threads["hist-crash-thread"]["active_run_id"] is None
+
+        crash_events = [
+            RuntimeEvent.model_validate(item)
+            for item in (await client_crash.get("/threads/hist-crash-thread/events")).json()
+        ]
+        assert crash_events[-1].payload.type == "runtime.error"
+        assert crash_events[-1].payload.code == "adapter_error"
+
+        discard_resp = await client_crash.post(
+            "/workflows/single_agent/threads/hist-crash-thread/discard"
+        )
+        assert discard_resp.status_code == 200
+        after_discard = {
+            item["thread_id"]: item for item in (await client_crash.get("/threads")).json()
+        }
+        assert after_discard["hist-crash-thread"]["status"] == "aborted"
+
+
+async def test_local_settings_api_redaction_key_preservation_and_cloud_guard(
+    tmp_path: Path,
+) -> None:
+    """E2E: GET/PUT /settings redacts secrets, preserves omitted keys, and blocks cloud mode."""
+    secret_1 = "sk-settings-initial-secret-11111111"
+    secret_2 = "sk-settings-rotated-secret-22222222"
+
+    app = _make_app("inspect_endpoint", config=ServerConfig(mode="local", checkpoint_db=":memory:"))
+    async with _running_client(app) as client:
+        # 1. Empty default settings on fresh CARE_HOME.
+        initial = await client.get("/settings")
+        assert initial.status_code == 200
+        assert initial.json() == {"active_profile": None, "profiles": {}, "adapter_bins": {}}
+
+        # 2. Save profiles via PUT /settings -> response is masked and never leaks api_key.
+        put1 = await client.put(
+            "/settings",
+            json={
+                "active_profile": "primary",
+                "profiles": {
+                    "primary": {
+                        "model": "gpt-4o",
+                        "base_url": "https://gateway.example.com/v1",
+                        "api_key": secret_1,
+                        "thinking_level": "low",
+                    },
+                    "ollama": {
+                        "model": "qwen2.5-coder:7b",
+                        "base_url": "http://localhost:11434/v1",
+                    },
+                },
+                "adapter_bins": {"pi": "/opt/homebrew/bin/pi"},
+            },
+        )
+        assert put1.status_code == 200
+        assert secret_1 not in put1.text
+        body1 = put1.json()
+        assert body1["active_profile"] == "primary"
+        assert body1["adapter_bins"] == {"pi": "/opt/homebrew/bin/pi"}
+        assert body1["profiles"]["primary"] == {
+            "model": "gpt-4o",
+            "provider": None,
+            "base_url": "https://gateway.example.com/v1",
+            "api_protocol": "openai-completions",
+            "thinking_level": "low",
+            "has_api_key": True,
+        }
+        assert body1["profiles"]["ollama"]["has_api_key"] is False
+
+        get1 = await client.get("/settings")
+        assert get1.status_code == 200
+        assert secret_1 not in get1.text
+        assert get1.json() == body1
+
+        async def _inspect_profile_run(run_id: str, profile: str) -> dict[str, Any]:
+            r = await client.post(
+                "/runs",
+                json={
+                    "workflow_id": "single_agent",
+                    "prompt": "Inspect endpoint",
+                    "workspace_dir": str(tmp_path),
+                    "run_id": run_id,
+                    "profile": profile,
+                },
+            )
+            assert r.status_code == 201
+            events: list[RuntimeEvent] = []
+            async with client.stream("GET", f"/runs/{run_id}/events") as resp:
+                async for frame in _iter_sse_frames(resp):
+                    if "comment" not in frame:
+                        events.append(RuntimeEvent.model_validate(frame["data"]))
+            last = events[-1].payload
+            assert last.type == "workflow.completed"
+            return json.loads(last.final_output)
+
+        rep1 = await _inspect_profile_run("set-run-1", "primary")
+        assert rep1["model"] == "gpt-4o"
+        assert rep1["thinking"] == "low"
+        assert rep1["env_api_key_set"] is True
+
+        # 3. Omitting api_key preserves the stored secret while updating thinking_level.
+        put2 = await client.put(
+            "/settings",
+            json={
+                "active_profile": "primary",
+                "profiles": {
+                    "primary": {
+                        "model": "gpt-4o",
+                        "base_url": "https://gateway.example.com/v1",
+                        "thinking_level": "high",
+                    },
+                },
+                "adapter_bins": {"pi": "/opt/homebrew/bin/pi"},
+            },
+        )
+        assert put2.status_code == 200
+        assert secret_1 not in put2.text
+        assert put2.json()["profiles"]["primary"]["has_api_key"] is True
+        assert put2.json()["profiles"]["primary"]["thinking_level"] == "high"
+        assert "ollama" not in put2.json()["profiles"]
+
+        rep2 = await _inspect_profile_run("set-run-2", "primary")
+        assert rep2["thinking"] == "high"
+        assert rep2["env_api_key_sha256"] == rep1["env_api_key_sha256"]
+
+        # 4. Omitting api_key while dropping base_url & provider rejects invalid merged profile
+        # without leaking the stored secret.
+        bad_merge = await client.put(
+            "/settings",
+            json={
+                "active_profile": "primary",
+                "profiles": {
+                    "primary": {"model": "gpt-4o"},
+                },
+            },
+        )
+        assert bad_merge.status_code == 400
+        assert bad_merge.json()["error"]["code"] == "bad_request"
+        assert secret_1 not in bad_merge.text
+
+        # 5. Rotating api_key updates the secret used by subsequent runs.
+        put3 = await client.put(
+            "/settings",
+            json={
+                "active_profile": "primary",
+                "profiles": {
+                    "primary": {
+                        "model": "gpt-4o",
+                        "base_url": "https://gateway.example.com/v1",
+                        "api_key": secret_2,
+                    },
+                },
+            },
+        )
+        assert put3.status_code == 200
+        assert secret_2 not in put3.text
+        assert put3.json()["profiles"]["primary"]["has_api_key"] is True
+
+        rep3 = await _inspect_profile_run("set-run-3", "primary")
+        assert rep3["env_api_key_set"] is True
+        assert rep3["env_api_key_sha256"] != rep1["env_api_key_sha256"]
+
+        # 6. Explicitly sending api_key=null clears the stored secret.
+        put4 = await client.put(
+            "/settings",
+            json={
+                "active_profile": "primary",
+                "profiles": {
+                    "primary": {
+                        "model": "gpt-4o",
+                        "base_url": "http://localhost:11434/v1",
+                        "api_key": None,
+                    },
+                },
+            },
+        )
+        assert put4.status_code == 200
+        assert put4.json()["profiles"]["primary"]["has_api_key"] is False
+
+        rep4 = await _inspect_profile_run("set-run-4", "primary")
+        assert rep4["env_api_key_set"] is False
+
+        # 7. Validation errors strip submitted secrets and return 422.
+        leaked_candidate = "sk-never-echo-me-99999999"
+        invalid = await client.put(
+            "/settings",
+            json={
+                "active_profile": "missing",
+                "profiles": {
+                    "primary": {
+                        "model": "gpt-4o",
+                        "base_url": "https://gateway.example.com/v1",
+                        "api_key": leaked_candidate,
+                    }
+                },
+            },
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["error"]["code"] == "validation_error"
+        assert leaked_candidate not in invalid.text
+
+    # 8. Cloud mode rejects both GET /settings and PUT /settings with 400.
+    cloud_headers = {"Authorization": "Bearer cloud-secret"}
+    cloud_app = _make_app(
+        "standard",
+        config=ServerConfig(
+            mode="cloud",
+            auth_token=SecretStr("cloud-secret"),
+            checkpoint_db=":memory:",
+        ),
+    )
+    async with _running_client(cloud_app, headers=cloud_headers) as cloud_client:
+        c_get = await cloud_client.get("/settings")
+        assert c_get.status_code == 400
+        assert c_get.json()["error"]["code"] == "bad_request"
+
+        c_put = await cloud_client.put("/settings", json={"profiles": {}})
+        assert c_put.status_code == 400
+        assert c_put.json()["error"]["code"] == "bad_request"

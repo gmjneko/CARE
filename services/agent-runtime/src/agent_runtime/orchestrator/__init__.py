@@ -27,6 +27,10 @@ from agent_runtime.orchestrator.persistence import (
     PersistenceBackend,
     SqliteInflightNodeStore,
     SqlitePersistenceBackend,
+    SqliteThreadHistoryStore,
+    ThreadHistoryStore,
+    ThreadStatus,
+    ThreadSummary,
 )
 from agent_runtime.orchestrator.recovery import ResumeInput, ThreadState
 from agent_runtime.orchestrator.registry import (
@@ -69,9 +73,13 @@ __all__ = [
     "RunOptions",
     "SqliteInflightNodeStore",
     "SqlitePersistenceBackend",
+    "SqliteThreadHistoryStore",
     "StateConflictError",
     "StreamPacket",
+    "ThreadHistoryStore",
     "ThreadState",
+    "ThreadStatus",
+    "ThreadSummary",
     "TurnCompletionCheck",
     "WorkflowBuilder",
     "WorkflowDefinition",

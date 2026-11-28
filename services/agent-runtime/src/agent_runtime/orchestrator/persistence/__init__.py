@@ -5,10 +5,14 @@ from agent_runtime.orchestrator.persistence.base import (
     InflightNodeRecord,
     InflightNodeStore,
     PersistenceBackend,
+    ThreadHistoryStore,
+    ThreadStatus,
+    ThreadSummary,
 )
 from agent_runtime.orchestrator.persistence.sqlite import (
     SqliteInflightNodeStore,
     SqlitePersistenceBackend,
+    SqliteThreadHistoryStore,
 )
 
 __all__ = [
@@ -18,4 +22,8 @@ __all__ = [
     "PersistenceBackend",
     "SqliteInflightNodeStore",
     "SqlitePersistenceBackend",
+    "SqliteThreadHistoryStore",
+    "ThreadHistoryStore",
+    "ThreadStatus",
+    "ThreadSummary",
 ]

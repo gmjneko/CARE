@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
@@ -83,6 +84,7 @@ def create_app(
     app.state.run_manager = manager
     app.state.workflow_registry = effective_workflows
     app.state.adapter_registry = effective_adapters
+    app.state.settings_lock = asyncio.Lock()
 
     if cfg.cors_origins:
         app.add_middleware(

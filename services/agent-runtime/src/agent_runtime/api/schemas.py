@@ -6,10 +6,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent_runtime.adapters import AgentCapabilities, ModelEndpoint, ThinkingLevel
+from agent_runtime.adapters import AgentCapabilities, ApiProtocol, ModelEndpoint, ThinkingLevel
 from agent_runtime.config import RuntimeMode
 from agent_runtime.orchestrator import InteractionMode, NodeRuntimeOverride, ResumeInput
 from agent_runtime.protocol import InteractionResponse
+from agent_runtime.settings import LocalSettings, ModelProfile
 
 
 class ErrorDetail(BaseModel):
@@ -129,12 +130,59 @@ class MessageControlRequest(BaseModel):
         return self
 
 
+class ModelProfileView(BaseModel):
+    """Redacted local model profile representation (never exposes plaintext api_key)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    provider: str | None = None
+    base_url: str | None = None
+    api_protocol: ApiProtocol = "openai-completions"
+    thinking_level: ThinkingLevel | None = None
+    has_api_key: bool = False
+
+    @classmethod
+    def from_profile(cls, profile: ModelProfile) -> ModelProfileView:
+        return cls(
+            model=profile.model,
+            provider=profile.provider,
+            base_url=profile.base_url,
+            api_protocol=profile.api_protocol,
+            thinking_level=profile.thinking_level,
+            has_api_key=profile.api_key is not None,
+        )
+
+
+class LocalSettingsResponse(BaseModel):
+    """Redacted local `~/.care/settings.json` view returned by `GET/PUT /settings`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    active_profile: str | None = None
+    profiles: dict[str, ModelProfileView] = Field(default_factory=dict)
+    adapter_bins: dict[str, str] = Field(default_factory=dict)
+
+    @classmethod
+    def from_settings(cls, settings: LocalSettings) -> LocalSettingsResponse:
+        return cls(
+            active_profile=settings.active_profile,
+            profiles={
+                name: ModelProfileView.from_profile(profile)
+                for name, profile in settings.profiles.items()
+            },
+            adapter_bins=dict(settings.adapter_bins),
+        )
+
+
 __all__ = [
     "AdapterInfo",
     "ErrorDetail",
     "ErrorResponse",
     "HealthResponse",
+    "LocalSettingsResponse",
     "MessageControlRequest",
+    "ModelProfileView",
     "RespondInteractionRequest",
     "ResumeThreadRequest",
     "StartRunRequest",

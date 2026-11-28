@@ -14,6 +14,7 @@ from langgraph.types import Command
 from pydantic import SecretStr
 
 from agent_runtime.adapters.base import ModelEndpoint, ThinkingLevel
+from agent_runtime.adapters.errors import AdapterError
 from agent_runtime.adapters.registry import AdapterRegistry
 from agent_runtime.errors import InvalidInputError, NotFoundError, StateConflictError
 from agent_runtime.orchestrator.live_runs import (
@@ -29,6 +30,8 @@ from agent_runtime.orchestrator.persistence import (
     InflightNodeStore,
     PersistenceBackend,
     SqlitePersistenceBackend,
+    ThreadHistoryStore,
+    ThreadSummary,
 )
 from agent_runtime.orchestrator.recovery import (
     ResumeInput,
@@ -46,6 +49,7 @@ from agent_runtime.orchestrator.state import (
 from agent_runtime.protocol.events import (
     InteractionResponse,
     PendingInterrupt,
+    RuntimeErrorEvent,
     RuntimeEvent,
     RuntimeEventPayload,
     WorkflowCompletedEvent,
@@ -111,6 +115,17 @@ def _extract_secrets(options: RunOptions) -> _ThreadEndpointSecrets:
         if override.endpoint is not None and override.endpoint.api_key is not None
     }
     return _ThreadEndpointSecrets(root_api_key=root_key, node_api_keys=node_keys)
+
+
+def _derive_thread_title(prompt: str, *, max_chars: int = 120) -> str:
+    """Derive a compact single-line thread title from the initial prompt."""
+    for raw_line in prompt.splitlines():
+        cleaned = " ".join(raw_line.split())
+        if cleaned:
+            if len(cleaned) > max_chars:
+                return cleaned[: max_chars - 1].rstrip() + "…"
+            return cleaned
+    return "Untitled"
 
 
 class WorkflowRunner:
@@ -226,12 +241,13 @@ class WorkflowRunner:
             # existing threads.
             has_outputs = inspected is not None and "node_outputs" in inspected.snapshot.values
             has_status = inspected is not None and "status" in inspected.snapshot.values
+            resolved_workspace = str(workspace.resolve())
             initial_state: dict[str, Any] = {
                 "run_id": effective_run_id,
                 "thread_id": effective_thread_id,
                 "workflow_id": workflow_name,
                 "prompt": prompt,
-                "workspace_dir": str(workspace.resolve()),
+                "workspace_dir": resolved_workspace,
                 "run_options": persisted_options,
                 "node_outputs": None if has_outputs else {},
                 "node_sessions": preserved_sessions,
@@ -252,6 +268,8 @@ class WorkflowRunner:
             async for event in self._stream_execution(
                 compiled=compiled,
                 workflow_name=workflow_name,
+                workspace_dir=resolved_workspace,
+                thread_title=_derive_thread_title(prompt),
                 exec_ctx=exec_ctx,
                 graph_input=initial_state,
                 opening_event=WorkflowStartedEvent(prompt=prompt),
@@ -343,6 +361,8 @@ class WorkflowRunner:
             async for event in self._stream_execution(
                 compiled=compiled,
                 workflow_name=workflow_name,
+                workspace_dir=str(inspected.snapshot.values.get("workspace_dir", "")),
+                thread_title=_derive_thread_title(str(inspected.snapshot.values.get("prompt", ""))),
                 exec_ctx=exec_ctx,
                 graph_input=graph_input,
                 opening_event=WorkflowResumedEvent(resumed_from=plan.reason),
@@ -423,6 +443,10 @@ class WorkflowRunner:
                 thread_id,
                 expected_workflow_id=workflow_name,
                 cleanup=True,
+            )
+            await self._require_history_store().update_thread_status(
+                thread_id,
+                status=closed.state.status,
             )
             return closed.state
 
@@ -512,6 +536,54 @@ class WorkflowRunner:
             expected_workflow_id=workflow_name,
         )
         return inspected.state
+
+    async def list_threads(
+        self,
+        *,
+        workspace_dir: str | None = None,
+        limit: int = 50,
+    ) -> tuple[ThreadSummary, ...]:
+        """List persisted threads ordered by recency, reconciled against live runs."""
+        if limit < 1:
+            raise InvalidInputError("'limit' must be at least 1")
+        normalized_workspace: str | None = None
+        if workspace_dir is not None:
+            stripped = workspace_dir.strip()
+            if not stripped:
+                raise InvalidInputError("'workspace_dir' must be non-empty when provided")
+            normalized_workspace = str(Path(stripped).expanduser().resolve())
+
+        rows = await self._require_history_store().list_threads(
+            workspace_dir=normalized_workspace,
+            limit=limit,
+        )
+        reconciled: list[ThreadSummary] = []
+        for row in rows:
+            active = self._live_runs.get_active_run(row.thread_id)
+            if active is not None:
+                reconciled.append(
+                    row.model_copy(
+                        update={
+                            "status": "running",
+                            "active_run_id": active.run_id,
+                            "last_run_id": active.run_id,
+                        }
+                    )
+                )
+            elif row.status == "running":
+                reconciled.append(
+                    row.model_copy(update={"status": "crashed", "active_run_id": None})
+                )
+            else:
+                reconciled.append(row.model_copy(update={"active_run_id": None}))
+        return tuple(reconciled)
+
+    async def get_thread_events(self, thread_id: str) -> tuple[RuntimeEvent, ...]:
+        """Return durable RuntimeEvents persisted across all runs of `thread_id`."""
+        history_store = self._require_history_store()
+        if await history_store.get_thread(thread_id) is None:
+            raise NotFoundError(f"Unknown thread_id '{thread_id}'")
+        return tuple(await history_store.list_events(thread_id))
 
     def _resolve_resume_options(
         self,
@@ -626,6 +698,8 @@ class WorkflowRunner:
         *,
         compiled: Any,
         workflow_name: str,
+        workspace_dir: str,
+        thread_title: str,
         exec_ctx: ExecutionContext,
         graph_input: Any,
         opening_event: WorkflowStartedEvent | WorkflowResumedEvent,
@@ -636,6 +710,7 @@ class WorkflowRunner:
     ) -> AsyncIterator[RuntimeEvent]:
         seq = 0
         pending_replies = dict(staged_replies) if staged_replies else {}
+        history_store = self._require_history_store()
 
         def _wrap(payload: RuntimeEventPayload, *, node_id: str | None = None) -> RuntimeEvent:
             nonlocal seq
@@ -649,6 +724,11 @@ class WorkflowRunner:
                 payload=payload,
             )
 
+        async def _record(event: RuntimeEvent) -> RuntimeEvent:
+            if not event.is_ephemeral:
+                await history_store.append_event(event)
+            return event
+
         self._live_runs.configure_run(
             exec_ctx.run_id,
             interaction_handler=interaction_handler,
@@ -656,7 +736,15 @@ class WorkflowRunner:
         )
 
         try:
-            yield _wrap(opening_event)
+            await history_store.upsert_thread(
+                exec_ctx.thread_id,
+                workflow_id=workflow_name,
+                workspace_dir=workspace_dir,
+                title=thread_title,
+                status="running",
+                last_run_id=exec_ctx.run_id,
+            )
+            yield await _record(_wrap(opening_event))
             while True:
                 async for chunk in compiled.astream(
                     graph_input,
@@ -669,7 +757,7 @@ class WorkflowRunner:
                 ):
                     packet = chunk["data"]
                     if isinstance(packet, StreamPacket):
-                        yield _wrap(packet.event, node_id=packet.node_id)
+                        yield await _record(_wrap(packet.event, node_id=packet.node_id))
 
                 inspected = await inspect_thread(
                     compiled,
@@ -707,10 +795,13 @@ class WorkflowRunner:
 
             if state.status == "interrupted":
                 event_node_id = state.interrupts[0].node_id if len(state.interrupts) == 1 else None
-                yield _wrap(
+                interrupted_event = _wrap(
                     WorkflowInterruptedEvent(interrupts=state.interrupts),
                     node_id=event_node_id,
                 )
+                await history_store.append_event(interrupted_event)
+                await history_store.update_thread_status(exec_ctx.thread_id, status="interrupted")
+                yield interrupted_event
             elif state.status in ("failed", "aborted", "completed"):
                 if not state.resumable:
                     self._thread_secrets.pop(exec_ctx.thread_id, None)
@@ -718,15 +809,28 @@ class WorkflowRunner:
                     (item.failure for item in state.interrupts if item.failure is not None),
                     snapshot.values.get("failure"),
                 )
-                yield _wrap(
+                completed_event = _wrap(
                     WorkflowCompletedEvent(
                         status=state.status,
                         final_output=snapshot.values.get("latest_output", ""),
                         failure=first_failure,
                     )
                 )
+                await history_store.append_event(completed_event)
+                await history_store.update_thread_status(exec_ctx.thread_id, status=state.status)
+                yield completed_event
             else:
                 raise RuntimeError(f"Graph stopped with pending nodes {state.next_nodes}")
+        except AdapterError as exc:
+            await history_store.append_event(
+                _wrap(RuntimeErrorEvent.from_raw(code="adapter_error", message=str(exc)))
+            )
+            raise
+        except Exception:
+            await history_store.append_event(
+                _wrap(RuntimeErrorEvent(code="internal_error", message="Internal server error"))
+            )
+            raise
         finally:
             self._live_runs.cleanup_run(exec_ctx.run_id)
 
@@ -756,6 +860,13 @@ class WorkflowRunner:
                 "WorkflowRunner must be used inside 'async with WorkflowRunner(...)'"
             )
         return self._persistence.inflight_store
+
+    def _require_history_store(self) -> ThreadHistoryStore:
+        if not self._entered:
+            raise RuntimeError(
+                "WorkflowRunner must be used inside 'async with WorkflowRunner(...)'"
+            )
+        return self._persistence.history_store
 
 
 def _compile_workflow(

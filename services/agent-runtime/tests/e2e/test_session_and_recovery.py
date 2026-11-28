@@ -31,6 +31,7 @@ from agent_runtime.orchestrator import (
     NodeRuntimeOverride,
     ResumeInput,
     SqlitePersistenceBackend,
+    ThreadSummary,
     WorkflowRunner,
     WorkflowState,
     build_agent_node,
@@ -1627,10 +1628,66 @@ async def test_workflow_runner_operates_with_custom_non_sqlite_persistence_backe
         async def list_for_thread(self, thread_id: str) -> list[InflightNodeRecord]:
             return [r for (tid, _), r in self._rows.items() if tid == thread_id]
 
+    class _MemoryHistoryStore:
+        def __init__(self) -> None:
+            self._threads: dict[str, Any] = {}
+            self._events: dict[str, list[RuntimeEvent]] = {}
+
+        async def upsert_thread(
+            self,
+            thread_id: str,
+            *,
+            workflow_id: str,
+            workspace_dir: str,
+            title: str,
+            status: Any,
+            last_run_id: str | None,
+        ) -> None:
+            existing = self._threads.get(thread_id)
+            now = datetime.now(UTC).isoformat()
+            self._threads[thread_id] = ThreadSummary(
+                thread_id=thread_id,
+                workflow_id=workflow_id,
+                workspace_dir=workspace_dir or (existing.workspace_dir if existing else ""),
+                title=existing.title if existing else title,
+                status=status,
+                last_run_id=last_run_id or (existing.last_run_id if existing else None),
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
+            )
+
+        async def update_thread_status(self, thread_id: str, *, status: Any) -> None:
+            existing = self._threads.get(thread_id)
+            if existing is not None:
+                self._threads[thread_id] = existing.model_copy(
+                    update={"status": status, "updated_at": datetime.now(UTC).isoformat()}
+                )
+
+        async def append_event(self, event: RuntimeEvent) -> None:
+            self._events.setdefault(event.thread_id, []).append(event)
+
+        async def get_thread(self, thread_id: str) -> Any:
+            return self._threads.get(thread_id)
+
+        async def list_threads(
+            self,
+            *,
+            workspace_dir: str | None = None,
+            limit: int = 50,
+        ) -> list[Any]:
+            items = list(self._threads.values())
+            if workspace_dir is not None:
+                items = [item for item in items if item.workspace_dir == workspace_dir]
+            return items[:limit]
+
+        async def list_events(self, thread_id: str) -> list[RuntimeEvent]:
+            return list(self._events.get(thread_id, ()))
+
     class _MemoryPersistenceBackend:
         def __init__(self) -> None:
             self.checkpointer = InMemorySaver()
             self.inflight_store = _MemoryInflightStore()
+            self.history_store = _MemoryHistoryStore()
 
         async def __aenter__(self) -> _MemoryPersistenceBackend:
             return self

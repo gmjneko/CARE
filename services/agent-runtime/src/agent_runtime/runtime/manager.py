@@ -18,6 +18,7 @@ from agent_runtime.orchestrator import (
     NodeRuntimeOverride,
     ResumeInput,
     ThreadState,
+    ThreadSummary,
     WorkflowBuilder,
     WorkflowRunner,
 )
@@ -399,6 +400,17 @@ class RunManager:
         thread_id: str,
     ) -> ThreadState:
         return await self._runner.get_thread_state(workflow, thread_id)
+
+    async def list_threads(
+        self,
+        *,
+        workspace_dir: str | None = None,
+        limit: int = 50,
+    ) -> tuple[ThreadSummary, ...]:
+        return await self._runner.list_threads(workspace_dir=workspace_dir, limit=limit)
+
+    async def get_thread_events(self, thread_id: str) -> tuple[RuntimeEvent, ...]:
+        return await self._runner.get_thread_events(thread_id)
 
     async def _launch(self, stream: AsyncIterator[RuntimeEvent]) -> RunSnapshot:
         try:

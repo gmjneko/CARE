@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import Annotated
 
@@ -42,11 +43,17 @@ def get_runtime_version(request: Request) -> str:
     return request.app.version
 
 
+def get_settings_lock(request: Request) -> asyncio.Lock:
+    """Return the app-scoped lock serializing read-merge-write updates to local settings."""
+    return request.app.state.settings_lock
+
+
 ConfigDep = Annotated[ServerConfig, Depends(get_config)]
 RunManagerDep = Annotated[RunManager, Depends(get_run_manager)]
 WorkflowRegistryDep = Annotated[WorkflowRegistry, Depends(get_workflow_registry)]
 AdapterRegistryDep = Annotated[AdapterRegistry, Depends(get_adapter_registry)]
 RuntimeVersionDep = Annotated[str, Depends(get_runtime_version)]
+SettingsLockDep = Annotated[asyncio.Lock, Depends(get_settings_lock)]
 
 
 def require_auth(
@@ -74,11 +81,13 @@ __all__ = [
     "ConfigDep",
     "RunManagerDep",
     "RuntimeVersionDep",
+    "SettingsLockDep",
     "WorkflowRegistryDep",
     "get_adapter_registry",
     "get_config",
     "get_run_manager",
     "get_runtime_version",
+    "get_settings_lock",
     "get_workflow_registry",
     "require_auth",
 ]

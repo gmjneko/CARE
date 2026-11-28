@@ -6,18 +6,22 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from agent_runtime.api.deps import (
     AdapterRegistryDep,
     ConfigDep,
     RunManagerDep,
     RuntimeVersionDep,
+    SettingsLockDep,
     WorkflowRegistryDep,
     require_auth,
 )
+from agent_runtime.api.errors import format_validation_error
 from agent_runtime.api.schemas import (
     AdapterInfo,
     HealthResponse,
+    LocalSettingsResponse,
     MessageControlRequest,
     RespondInteractionRequest,
     ResumeThreadRequest,
@@ -26,9 +30,16 @@ from agent_runtime.api.schemas import (
 )
 from agent_runtime.api.sse import EventStreamResponse, build_sse_response, resolve_after_seq
 from agent_runtime.config import resolve_run_model
-from agent_runtime.orchestrator import ThreadState
+from agent_runtime.errors import InvalidInputError
+from agent_runtime.orchestrator import ThreadState, ThreadSummary
 from agent_runtime.protocol import RuntimeEvent
 from agent_runtime.runtime import RunSnapshot
+from agent_runtime.settings import (
+    LocalSettings,
+    ModelProfile,
+    load_local_settings,
+    save_local_settings,
+)
 
 health_router = APIRouter(tags=["system"])
 api_router = APIRouter(dependencies=[Depends(require_auth)])
@@ -196,6 +207,24 @@ async def suspend_run(run_id: str, manager: RunManagerDep) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@api_router.get("/threads", response_model=list[ThreadSummary], tags=["threads"])
+async def list_threads(
+    manager: RunManagerDep,
+    workspace_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[ThreadSummary]:
+    return list(await manager.list_threads(workspace_dir=workspace_dir, limit=limit))
+
+
+@api_router.get(
+    "/threads/{thread_id}/events",
+    response_model=list[RuntimeEvent],
+    tags=["threads"],
+)
+async def get_thread_events(thread_id: str, manager: RunManagerDep) -> list[RuntimeEvent]:
+    return list(await manager.get_thread_events(thread_id))
+
+
 @api_router.get(
     "/workflows/{workflow_id}/threads/{thread_id}",
     response_model=ThreadState,
@@ -252,6 +281,53 @@ async def discard_thread(
     manager: RunManagerDep,
 ) -> ThreadState:
     return await manager.discard(workflow_id, thread_id)
+
+
+def _require_local_mode(config: ConfigDep) -> None:
+    if config.mode != "local":
+        raise InvalidInputError("Local settings API is only supported in local mode")
+
+
+@api_router.get("/settings", response_model=LocalSettingsResponse, tags=["settings"])
+async def get_settings(config: ConfigDep) -> LocalSettingsResponse:
+    _require_local_mode(config)
+    return LocalSettingsResponse.from_settings(load_local_settings())
+
+
+@api_router.put("/settings", response_model=LocalSettingsResponse, tags=["settings"])
+async def update_settings(
+    body: LocalSettings,
+    config: ConfigDep,
+    settings_lock: SettingsLockDep,
+) -> LocalSettingsResponse:
+    _require_local_mode(config)
+    async with settings_lock:
+        existing = load_local_settings()
+        merged_profiles: dict[str, ModelProfile] = {}
+        try:
+            for name, incoming in body.profiles.items():
+                if "api_key" not in incoming.model_fields_set and name in existing.profiles:
+                    preserved_key = existing.profiles[name].api_key
+                    if preserved_key is not None:
+                        merged_profiles[name] = ModelProfile(
+                            model=incoming.model,
+                            provider=incoming.provider,
+                            base_url=incoming.base_url,
+                            api_protocol=incoming.api_protocol,
+                            api_key=preserved_key,
+                            thinking_level=incoming.thinking_level,
+                        )
+                        continue
+                merged_profiles[name] = incoming
+            updated = LocalSettings(
+                active_profile=body.active_profile,
+                profiles=merged_profiles,
+                adapter_bins=body.adapter_bins,
+            )
+        except ValidationError as exc:
+            raise InvalidInputError(format_validation_error(exc)) from exc
+        save_local_settings(updated)
+    return LocalSettingsResponse.from_settings(updated)
 
 
 __all__ = [
