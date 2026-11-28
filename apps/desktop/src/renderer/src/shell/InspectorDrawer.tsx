@@ -2,10 +2,16 @@ import { useMemo, useState } from 'react'
 import * as Collapsible from '@radix-ui/react-collapsible'
 import { ArrowLeft, ChevronDown, PanelRight, X } from 'lucide-react'
 import { useSessionStore } from '@renderer/stores/session-store'
-import { useWorkbenchStore } from '@renderer/stores/workbench-store'
+import {
+  DEFAULT_RIGHT_PANEL_WIDTH,
+  MAX_RIGHT_PANEL_WIDTH,
+  MIN_RIGHT_PANEL_WIDTH,
+  useWorkbenchStore
+} from '@renderer/stores/workbench-store'
 import { cn } from '@renderer/ui/cn'
 import type { WorkbenchContext } from './contracts'
 import { getVisibleInspectorWidgets } from './registries'
+import { ResizeHandle } from './ResizeHandle'
 
 /**
  * Right-hand inspector with continuous layout-squeezing transitions:
@@ -15,6 +21,8 @@ import { getVisibleInspectorWidgets } from './registries'
  */
 export function InspectorDrawer(): React.JSX.Element | null {
   const inspectorMode = useWorkbenchStore((s) => s.inspectorMode)
+  const rightPanelWidth = useWorkbenchStore((s) => s.rightPanelWidth)
+  const setRightPanelWidth = useWorkbenchStore((s) => s.setRightPanelWidth)
   const inspectorDetail = useWorkbenchStore((s) => s.inspectorDetail)
   const openInspectorDetail = useWorkbenchStore((s) => s.openInspectorDetail)
   const closeInspectorDetail = useWorkbenchStore((s) => s.closeInspectorDetail)
@@ -25,6 +33,7 @@ export function InspectorDrawer(): React.JSX.Element | null {
   const activeWorkflowId = useSessionStore((s) => s.activeWorkflowId)
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
+  const [resizingPanel, setResizingPanel] = useState(false)
 
   const ctx: WorkbenchContext = useMemo(
     () => ({
@@ -117,72 +126,94 @@ export function InspectorDrawer(): React.JSX.Element | null {
         </aside>
       </div>
 
-      {/* Track 2: Docked right side panel — crisp continuous push-in/out with no fade or blur */}
+      {/* Track 2: Docked right side panel — crisp continuous push-in/out + manual edge resize */}
       <div
         aria-hidden={!isPanel}
+        style={{ width: isPanel ? rightPanelWidth : 0 }}
         className={cn(
-          'care-width-track h-full shrink-0 overflow-hidden',
-          isPanel ? 'w-[480px] max-w-[52vw]' : 'pointer-events-none w-0'
+          'relative h-full max-w-[60vw] shrink-0',
+          !resizingPanel && 'care-width-track',
+          !isPanel && 'pointer-events-none'
         )}
       >
-        <aside className="flex h-full w-[480px] max-w-[52vw] flex-col border-l border-[var(--border-hairline)] bg-[var(--bg-surface)]">
-          <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {inspectorDetail ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={closeInspectorDetail}
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                  >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    <span>返回概览</span>
-                  </button>
-                  <span className="h-3.5 w-px bg-[var(--border-hairline)]" />
-                  <div className="min-w-0">
-                    <div className="truncate text-ui font-medium text-[var(--text-primary)]">
-                      {inspectorDetail.title}
-                    </div>
-                    {inspectorDetail.subtitle && (
-                      <div className="truncate text-caption text-[var(--text-muted)]">
-                        {inspectorDetail.subtitle}
+        {isPanel && (
+          <ResizeHandle
+            side="right"
+            currentWidth={rightPanelWidth}
+            minWidth={MIN_RIGHT_PANEL_WIDTH}
+            maxWidth={MAX_RIGHT_PANEL_WIDTH}
+            defaultWidth={DEFAULT_RIGHT_PANEL_WIDTH}
+            onResize={setRightPanelWidth}
+            onResizingChange={setResizingPanel}
+          />
+        )}
+        <div className="h-full w-full overflow-hidden">
+          <aside
+            style={{ width: rightPanelWidth }}
+            className="flex h-full max-w-[60vw] flex-col border-l border-[var(--border-hairline)] bg-[var(--bg-surface)]"
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3.5 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                {inspectorDetail ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={closeInspectorDetail}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-ui font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    >
+                      <ArrowLeft className="h-3.5 w-3.5" />
+                      <span>返回概览</span>
+                    </button>
+                    <span className="h-3.5 w-px bg-[var(--border-hairline)]" />
+                    <div className="min-w-0">
+                      <div className="truncate text-ui font-medium text-[var(--text-primary)]">
+                        {inspectorDetail.title}
                       </div>
-                    )}
-                  </div>
-                </>
+                      {inspectorDetail.subtitle && (
+                        <div className="truncate text-caption text-[var(--text-muted)]">
+                          {inspectorDetail.subtitle}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-ui font-semibold text-[var(--text-primary)]">
+                    工作区详情
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectorMode('closed')}
+                title="收起右侧边栏"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div
+              key={inspectorDetail?.id ?? 'empty'}
+              className="care-section-blur flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              {inspectorDetail ? (
+                <div className="flex-1 overflow-y-auto">{inspectorDetail.render()}</div>
               ) : (
-                <span className="text-ui font-semibold text-[var(--text-primary)]">工作区详情</span>
+                <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+                  <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 text-[var(--text-muted)]">
+                    <PanelRight className="h-5 w-5" strokeWidth={1.6} />
+                  </div>
+                  <div className="text-ui font-medium text-[var(--text-primary)]">
+                    右侧扩展工作区
+                  </div>
+                  <p className="mt-1.5 max-w-[260px] text-caption text-[var(--text-muted)]">
+                    点击悬浮卡中的代码变更或项目文件将在此展开预览；后续也将承接终端与产物预览插件。
+                  </p>
+                </div>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => setInspectorMode('closed')}
-              title="收起右侧边栏"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div
-            key={inspectorDetail?.id ?? 'empty'}
-            className="care-section-blur flex min-h-0 flex-1 flex-col overflow-hidden"
-          >
-            {inspectorDetail ? (
-              <div className="flex-1 overflow-y-auto">{inspectorDetail.render()}</div>
-            ) : (
-              <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-                <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--border-card)] bg-[var(--bg-subtle)]/70 text-[var(--text-muted)]">
-                  <PanelRight className="h-5 w-5" strokeWidth={1.6} />
-                </div>
-                <div className="text-ui font-medium text-[var(--text-primary)]">右侧扩展工作区</div>
-                <p className="mt-1.5 max-w-[260px] text-caption text-[var(--text-muted)]">
-                  点击悬浮卡中的代码变更或项目文件将在此展开预览；后续也将承接终端与产物预览插件。
-                </p>
-              </div>
-            )}
-          </div>
-        </aside>
+          </aside>
+        </div>
       </div>
     </>
   )

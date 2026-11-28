@@ -1,8 +1,14 @@
-import type { ReactNode } from 'react'
-import { useWorkbenchStore } from '@renderer/stores/workbench-store'
+import { useState, type ReactNode } from 'react'
+import {
+  DEFAULT_SIDEBAR_WIDTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  useWorkbenchStore
+} from '@renderer/stores/workbench-store'
 import { cn } from '@renderer/ui/cn'
 import { InspectorDrawer } from './InspectorDrawer'
 import { pageRegistry } from './registries'
+import { ResizeHandle } from './ResizeHandle'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 
@@ -18,19 +24,37 @@ interface WorkbenchShellProps {
  */
 export function WorkbenchShell({ overlays }: WorkbenchShellProps): React.JSX.Element {
   const sidebarOpen = useWorkbenchStore((s) => s.sidebarOpen)
+  const sidebarWidth = useWorkbenchStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useWorkbenchStore((s) => s.setSidebarWidth)
   const activePageId = useWorkbenchStore((s) => s.activePageId)
   const activePage = pageRegistry.get(activePageId)
   const ActivePageComponent = activePage?.Component
+  const [resizingSidebar, setResizingSidebar] = useState(false)
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-sidebar)] text-[var(--text-primary)]">
       <div
+        style={{ width: sidebarOpen ? sidebarWidth : 0 }}
         className={cn(
-          'care-width-track h-full shrink-0 overflow-hidden',
-          sidebarOpen ? 'w-[248px]' : 'pointer-events-none w-0'
+          'relative h-full shrink-0',
+          !resizingSidebar && 'care-width-track',
+          !sidebarOpen && 'pointer-events-none'
         )}
       >
-        <Sidebar />
+        <div className="h-full w-full overflow-hidden">
+          <Sidebar width={sidebarWidth} />
+        </div>
+        {sidebarOpen && (
+          <ResizeHandle
+            side="left"
+            currentWidth={sidebarWidth}
+            minWidth={MIN_SIDEBAR_WIDTH}
+            maxWidth={MAX_SIDEBAR_WIDTH}
+            defaultWidth={DEFAULT_SIDEBAR_WIDTH}
+            onResize={setSidebarWidth}
+            onResizingChange={setResizingSidebar}
+          />
+        )}
       </div>
 
       {/* Main white canvas */}

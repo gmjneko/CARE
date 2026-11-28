@@ -27,7 +27,7 @@ function baseName(dirPath: string): string {
   return parts[parts.length - 1] || dirPath
 }
 
-export function Sidebar(): React.JSX.Element {
+export function Sidebar({ width }: { width: number }): React.JSX.Element {
   const activePageId = useWorkbenchStore((s) => s.activePageId)
   const setActivePage = useWorkbenchStore((s) => s.setActivePage)
   const toggleSidebar = useWorkbenchStore((s) => s.toggleSidebar)
@@ -117,7 +117,10 @@ export function Sidebar(): React.JSX.Element {
         : 'bg-[var(--status-warning)]'
 
   return (
-    <aside className="flex h-full w-[248px] shrink-0 flex-col border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] select-none">
+    <aside
+      style={{ width }}
+      className="flex h-full shrink-0 flex-col border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] select-none"
+    >
       {/* Top utility bar: traffic lights + sidebar toggle + search icon */}
       <div
         className={cn(
