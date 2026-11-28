@@ -18,12 +18,12 @@
 
 :root {
   /* Crisp cool-neutral light desktop palette */
-  --bg-sidebar: #f8f8fa;
+  --bg-sidebar: #fafafa;
   --bg-canvas: #ffffff;
   --bg-surface: #ffffff;
   --bg-subtle: #f3f4f6;
-  --bg-hover: #efeff2;
-  --bg-active: #e8e9ee;
+  --bg-hover: #f2f2f2;
+  --bg-active: #ececec;
 
   --border-hairline: #ededf0;
   --border-card: #e5e6eb;
