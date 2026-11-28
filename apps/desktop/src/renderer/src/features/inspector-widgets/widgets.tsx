@@ -2,16 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   CheckCircle2,
   ChevronRight,
-  FileCode2,
   FileDiff,
-  Folder,
   GitBranch,
+  Globe,
   Laptop,
   Loader2,
   Package,
   RefreshCw
 } from 'lucide-react'
-import type { GitWorkspaceSummary, WorkspaceFileEntry } from '@shared/ipc-contracts'
+import type { GitWorkspaceSummary } from '@shared/ipc-contracts'
 import { projectEventsToTimeline } from '@renderer/sdk/event-projection'
 import type { InspectorWidgetProps } from '@renderer/shell/contracts'
 import { useSessionStore } from '@renderer/stores/session-store'
@@ -284,156 +283,11 @@ export function ArtifactsWidget(): React.JSX.Element {
   )
 }
 
-function FilePreviewDetail({
-  workspaceDir,
-  relativePath
-}: {
-  workspaceDir: string
-  relativePath: string
-}): React.JSX.Element {
-  const [fileState, setFileState] = useState<{
-    key: string
-    content: string
-    truncated: boolean
-  } | null>(null)
-  const currentKey = `${workspaceDir}::${relativePath}`
-
-  useEffect(() => {
-    let cancelled = false
-    void window.careDesktop
-      .readWorkspaceFile(workspaceDir, relativePath)
-      .then((res) => {
-        if (!cancelled) {
-          setFileState({ key: currentKey, content: res.content, truncated: res.truncated })
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setFileState({
-            key: currentKey,
-            content: `无法读取文件: ${String(err)}`,
-            truncated: false
-          })
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceDir, relativePath, currentKey])
-
-  if (!fileState || fileState.key !== currentKey) {
-    return (
-      <div className="flex items-center gap-2 p-4 text-ui text-[var(--text-muted)]">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        <span>正在读取文件...</span>
-      </div>
-    )
-  }
-
+export function ReferencesWidget(): React.JSX.Element {
   return (
-    <div className="p-3">
-      {fileState.truncated && (
-        <div className="mb-2 rounded-lg bg-[#fffaf0] px-2.5 py-1 text-caption text-[var(--status-warning)]">
-          文件超过 256 KiB，已截断预览
-        </div>
-      )}
-      <pre className="overflow-x-auto font-mono text-code text-[var(--text-primary)]">
-        <code>{fileState.content}</code>
-      </pre>
-    </div>
-  )
-}
-
-export function ReferencesWidget({
-  workspaceDir,
-  openDetail
-}: InspectorWidgetProps): React.JSX.Element {
-  const [entriesState, setEntriesState] = useState<{
-    dir: string | null
-    items: WorkspaceFileEntry[]
-  }>({ dir: null, items: [] })
-  const [expanded, setExpanded] = useState(false)
-
-  useEffect(() => {
-    if (!workspaceDir) return
-    let cancelled = false
-    void window.careDesktop
-      .listWorkspaceFiles(workspaceDir)
-      .then((items) => {
-        if (!cancelled) setEntriesState({ dir: workspaceDir, items })
-      })
-      .catch(() => {
-        if (!cancelled) setEntriesState({ dir: workspaceDir, items: [] })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workspaceDir])
-
-  if (!workspaceDir) {
-    return <div className="px-1.5 py-1 text-ui text-[var(--text-muted)]">未绑定项目目录</div>
-  }
-
-  const entries = entriesState.dir === workspaceDir ? entriesState.items : []
-
-  return (
-    <div className="space-y-1 text-ui">
-      <button
-        type="button"
-        onClick={() => setExpanded((prev) => !prev)}
-        className="flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <ChevronRight
-            className={cn(
-              'h-3.5 w-3.5 text-[var(--text-muted)] transition-transform',
-              expanded && 'rotate-90'
-            )}
-          />
-          <span>项目文件</span>
-        </span>
-        <span className="text-caption text-[var(--text-muted)]">{entries.length}</span>
-      </button>
-
-      {expanded && (
-        <div className="max-h-[240px] space-y-0.5 overflow-y-auto pl-3">
-          {entries.map((entry) => (
-            <button
-              key={entry.relativePath}
-              type="button"
-              disabled={entry.isDirectory}
-              onClick={() => {
-                if (entry.isDirectory) return
-                openDetail({
-                  id: `file:${entry.relativePath}`,
-                  title: entry.name,
-                  subtitle: entry.relativePath,
-                  render: () => (
-                    <FilePreviewDetail
-                      workspaceDir={workspaceDir}
-                      relativePath={entry.relativePath}
-                    />
-                  )
-                })
-              }}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-code text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default"
-            >
-              {entry.isDirectory ? (
-                <Folder
-                  className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-                  strokeWidth={1.6}
-                />
-              ) : (
-                <FileCode2
-                  className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-                  strokeWidth={1.6}
-                />
-              )}
-              <span className="truncate font-mono">{entry.name}</span>
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="flex items-center gap-2 px-1.5 py-1 text-ui text-[var(--text-muted)]">
+      <Globe className="h-4 w-4" strokeWidth={1.6} />
+      <span>暂无参考</span>
     </div>
   )
 }
