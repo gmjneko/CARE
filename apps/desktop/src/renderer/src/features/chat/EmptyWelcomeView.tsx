@@ -11,16 +11,8 @@ function baseName(dirPath: string): string {
   return parts[parts.length - 1] || dirPath
 }
 
-function getGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 12) return '上午好呀，今天想一起完成什么任务'
-  if (hour < 18) return '下午好呀，卡住的代码发来看看'
-  return '晚上好呀，把想法交给 CARE 来推进'
-}
-
 /**
- * Clean centered welcome page styled with ambient brand orb, unified double-layer composer tray,
- * live workspace/host/branch strip, and bordered capability pills.
+ * Clean centered welcome page with flush double-layer composer tray and live workspace strip.
  */
 export function EmptyWelcomeView(): React.JSX.Element {
   const [draft, setDraft] = useState('')
@@ -70,14 +62,11 @@ export function EmptyWelcomeView(): React.JSX.Element {
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-6 pb-16">
-      <div className="w-full max-w-[680px]">
-        {/* Glowing Brand Orb + time-aware greeting */}
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="care-brand-orb mb-5 flex h-12 w-12 items-center justify-center rounded-full text-heading font-bold tracking-tight text-white">
-            C
-          </div>
-          <h1 className="text-display font-semibold tracking-tight text-[var(--text-primary)]">
-            {getGreeting()}
+      <div className="w-full max-w-[760px]">
+        {/* Welcome title */}
+        <div className="mb-8 text-center">
+          <h1 className="care-hero-title inline-block text-display font-semibold tracking-[0.06em]">
+            一起探索无限可能
           </h1>
         </div>
 
@@ -97,16 +86,17 @@ export function EmptyWelcomeView(): React.JSX.Element {
           </div>
         )}
 
-        {/* Unified soft-gray outer tray housing white ComposerCard + workspace/host/branch strip */}
-        <div className="rounded-[22px] bg-[var(--bg-subtle)]/85 p-1.5 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
+        {/* Flush double-layer tray: white ComposerCard aligned edge-to-edge on top/left/right, soft gray strip below */}
+        <div className="care-hero-composer rounded-[20px] bg-[var(--bg-subtle)]/80">
           <ComposerCard
             value={draft}
             onValueChange={setDraft}
-            className="rounded-[18px] shadow-[var(--shadow-composer)]"
+            size="hero"
+            className="rounded-[20px] shadow-[var(--shadow-composer)]"
           />
 
           {/* Recessed context strip: 📁 project · 💻 本地 · ⎇ branch */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-ui text-[var(--text-secondary)]">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-ui text-[var(--text-secondary)]">
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button

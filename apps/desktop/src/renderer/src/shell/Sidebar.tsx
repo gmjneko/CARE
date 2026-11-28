@@ -354,7 +354,7 @@ export function Sidebar(): React.JSX.Element {
           title="打开工作台设置"
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 py-1 text-left transition-colors hover:bg-[var(--bg-hover)]"
         >
-          <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#38bdf8] to-[#2563eb] text-caption font-semibold text-white">
+          <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-primary)] text-caption font-semibold text-[var(--accent-primary-fg)]">
             C
             <span
               className={cn(

@@ -22,6 +22,7 @@ interface ComposerCardProps {
   placeholder?: string
   value?: string
   onValueChange?: (next: string) => void
+  size?: 'default' | 'hero'
   className?: string
 }
 
@@ -32,6 +33,7 @@ export function ComposerCard({
   placeholder,
   value,
   onValueChange,
+  size = 'default',
   className
 }: ComposerCardProps): React.JSX.Element {
   const [internalText, setInternalText] = useState('')
@@ -133,7 +135,7 @@ export function ComposerCard({
         className
       )}
     >
-      <div className="px-4 pt-3.5 pb-2">
+      <div className="px-4 pb-1.5 pt-3.5">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -142,7 +144,10 @@ export function ComposerCard({
           onKeyDown={handleKeyDown}
           disabled={!runtimeReady || submitting}
           placeholder={runtimeReady ? effectivePlaceholder : '正在连接本地 Agent Runtime...'}
-          className="max-h-[180px] min-h-[28px] w-full resize-none bg-transparent text-body text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
+          className={cn(
+            'max-h-[180px] w-full resize-none bg-transparent text-heading text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60',
+            size === 'hero' ? 'min-h-[42px]' : 'min-h-[28px]'
+          )}
         />
       </div>
 
