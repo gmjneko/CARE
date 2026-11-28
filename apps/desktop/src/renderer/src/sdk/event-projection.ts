@@ -124,6 +124,15 @@ export function formatStageLabel(nodeId: string, role?: string | null): string {
   }
 }
 
+export function formatDurationZh(ms: number | null): string {
+  if (ms === null || ms < 0) return ''
+  const secs = Math.max(1, Math.round(ms / 1000))
+  if (secs < 60) return `${secs}秒`
+  const mins = Math.floor(secs / 60)
+  const rem = secs % 60
+  return rem > 0 ? `${mins}分 ${rem}秒` : `${mins}分`
+}
+
 export function classifyTool(toolName: string): ToolCategory {
   const lower = toolName.toLowerCase()
   if (READ_TOOLS.has(lower) || lower.startsWith('read_') || lower.startsWith('search_')) {

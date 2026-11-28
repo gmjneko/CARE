@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import * as Collapsible from '@radix-ui/react-collapsible'
-import { AlertCircle, Brain, ChevronRight, Loader2 } from 'lucide-react'
+import { AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
 import {
+  formatDurationZh,
   formatStageLabel,
   projectEventsToTimeline,
   type ProjectedTurn,
@@ -12,23 +13,18 @@ import { cn } from '@renderer/ui/cn'
 import { MarkdownRenderer } from '@renderer/ui/markdown/MarkdownRenderer'
 import { ComposerCard } from './ComposerCard'
 import { InteractionBanner } from './InteractionBanner'
-import { ToolGroupSummary } from './ToolGroupSummary'
+import { ActivityCluster, type ActivityStep } from './ToolGroupSummary'
 
 type NonStageItem = Exclude<ProjectedTurnItem, { kind: 'stage' }>
+
+type GroupedRenderBlock =
+  | { id: string; kind: 'activity'; steps: ActivityStep[] }
+  | Extract<NonStageItem, { kind: 'text' | 'notice' }>
 
 interface StageSegment {
   id: string
   stage: Extract<ProjectedTurnItem, { kind: 'stage' }> | null
   items: NonStageItem[]
-}
-
-function formatDuration(ms: number | null): string {
-  if (ms === null || ms < 0) return ''
-  const secs = Math.max(1, Math.round(ms / 1000))
-  if (secs < 60) return `${secs}秒`
-  const mins = Math.floor(secs / 60)
-  const rem = secs % 60
-  return rem > 0 ? `${mins}分 ${rem}秒` : `${mins}分`
 }
 
 function splitByStage(items: ProjectedTurnItem[]): StageSegment[] {
@@ -51,6 +47,27 @@ function splitByStage(items: ProjectedTurnItem[]): StageSegment[] {
   return segments
 }
 
+/**
+ * Merge consecutive silent thinking + tool_group steps into a single collapsible ActivityCluster,
+ * while preserving exact chronological interleaving around visible narration texts and notices.
+ */
+function groupConsecutiveActivity(items: NonStageItem[]): GroupedRenderBlock[] {
+  const blocks: GroupedRenderBlock[] = []
+  for (const item of items) {
+    if (item.kind === 'thinking' || item.kind === 'tool_group') {
+      const last = blocks[blocks.length - 1]
+      if (last && last.kind === 'activity') {
+        last.steps.push(item)
+      } else {
+        blocks.push({ id: `cluster:${item.id}`, kind: 'activity', steps: [item] })
+      }
+    } else {
+      blocks.push(item)
+    }
+  }
+  return blocks
+}
+
 function LiveElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
   const [elapsed, setElapsed] = useState(() => Math.max(0, Date.now() - Date.parse(startedAt)))
 
@@ -61,36 +78,7 @@ function LiveElapsed({ startedAt }: { startedAt: string }): React.JSX.Element {
     return () => clearInterval(timer)
   }, [startedAt])
 
-  return <span>{formatDuration(elapsed)}</span>
-}
-
-function ThinkingBlock({
-  item
-}: {
-  item: Extract<ProjectedTurnItem, { kind: 'thinking' }>
-}): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-
-  return (
-    <Collapsible.Root open={open} onOpenChange={setOpen}>
-      <Collapsible.Trigger className="inline-flex items-center gap-1.5 rounded-lg py-0.5 text-ui text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]">
-        <Brain className="h-3.5 w-3.5" strokeWidth={1.6} />
-        <span>
-          {item.streaming
-            ? '正在思考...'
-            : item.durationMs !== null
-              ? `已思考 ${formatDuration(item.durationMs)}`
-              : '已思考'}
-        </span>
-        <ChevronRight className={cn('care-chevron h-3.5 w-3.5', open && 'rotate-90')} />
-      </Collapsible.Trigger>
-      <Collapsible.Content className="care-collapsible">
-        <div className="mt-1.5 rounded-xl border border-[var(--border-hairline)] bg-[var(--bg-subtle)]/50 px-3.5 py-2.5 text-ui text-[var(--text-secondary)] whitespace-pre-wrap">
-          {item.text}
-        </div>
-      </Collapsible.Content>
-    </Collapsible.Root>
-  )
+  return <span>{formatDurationZh(elapsed)}</span>
 }
 
 function StageDivider({
@@ -110,23 +98,21 @@ function StageDivider({
 }
 
 function TurnItemList({ items }: { items: NonStageItem[] }): React.JSX.Element {
+  const blocks = useMemo(() => groupConsecutiveActivity(items), [items])
+
   return (
     <div className="space-y-3">
-      {items.map((item) => {
-        switch (item.kind) {
-          case 'thinking':
-            return <ThinkingBlock key={item.id} item={item} />
+      {blocks.map((block) => {
+        switch (block.kind) {
+          case 'activity':
+            return <ActivityCluster key={block.id} steps={block.steps} />
           case 'text':
-            return <MarkdownRenderer key={item.id} content={item.text} />
-          case 'tool_group':
-            return (
-              <ToolGroupSummary key={item.id} toolCalls={item.toolCalls} counts={item.counts} />
-            )
+            return <MarkdownRenderer key={block.id} content={block.text} />
           case 'notice':
             return (
-              <div key={item.id} className="flex flex-wrap gap-1.5">
+              <div key={block.id} className="flex flex-wrap gap-1.5">
                 <span className="rounded-full bg-[var(--bg-subtle)] px-2.5 py-0.5 text-caption text-[var(--text-muted)]">
-                  {item.text}
+                  {block.text}
                 </span>
               </div>
             )
@@ -151,7 +137,7 @@ function StageSegmentView({
   const processItems = hasFinalReply ? segment.items.slice(0, -1) : segment.items
   const finalItem = hasFinalReply ? lastItem : null
 
-  const durationText = formatDuration(durationMs)
+  const durationText = formatDurationZh(durationMs)
   const collapsedLabel = durationText ? `用时 ${durationText}` : '执行过程'
 
   return (

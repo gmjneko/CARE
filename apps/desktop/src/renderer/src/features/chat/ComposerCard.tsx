@@ -22,7 +22,6 @@ interface ComposerCardProps {
   placeholder?: string
   value?: string
   onValueChange?: (next: string) => void
-  size?: 'default' | 'hero'
   className?: string
 }
 
@@ -33,7 +32,6 @@ export function ComposerCard({
   placeholder,
   value,
   onValueChange,
-  size = 'default',
   className
 }: ComposerCardProps): React.JSX.Element {
   const [internalText, setInternalText] = useState('')
@@ -131,7 +129,7 @@ export function ComposerCard({
   return (
     <div
       className={cn(
-        'rounded-2xl border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-composer)] transition-shadow focus-within:border-[#d5d5ce]',
+        'rounded-[20px] border border-[var(--border-card)] bg-[var(--bg-surface)] shadow-[var(--shadow-composer)] transition-shadow focus-within:border-[#d5d5ce]',
         className
       )}
     >
@@ -144,10 +142,7 @@ export function ComposerCard({
           onKeyDown={handleKeyDown}
           disabled={!runtimeReady || submitting}
           placeholder={runtimeReady ? effectivePlaceholder : '正在连接本地 Agent Runtime...'}
-          className={cn(
-            'max-h-[180px] w-full resize-none bg-transparent text-heading text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60',
-            size === 'hero' ? 'min-h-[42px]' : 'min-h-[28px]'
-          )}
+          className="max-h-[180px] min-h-[42px] w-full resize-none bg-transparent text-heading text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
         />
       </div>
 

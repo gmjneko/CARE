@@ -330,35 +330,34 @@ body,
 
 .care-menu {
   transform-origin: var(--radix-dropdown-menu-content-transform-origin);
-  will-change: opacity, filter, transform;
 }
 
 .care-menu[data-state='open'] {
   animation:
-    care-fade-in 200ms var(--care-ease) both,
-    care-blur-in 380ms var(--care-ease) both,
-    care-scale-in-down 280ms var(--care-ease) both;
+    care-fade-in 200ms var(--care-ease) backwards,
+    care-blur-in 380ms var(--care-ease) backwards,
+    care-scale-in-down 280ms var(--care-ease) backwards;
 }
 
 .care-menu[data-state='open'][data-side='top'] {
   animation:
-    care-fade-in 200ms var(--care-ease) both,
-    care-blur-in 380ms var(--care-ease) both,
-    care-scale-in-up 280ms var(--care-ease) both;
+    care-fade-in 200ms var(--care-ease) backwards,
+    care-blur-in 380ms var(--care-ease) backwards,
+    care-scale-in-up 280ms var(--care-ease) backwards;
 }
 
 .care-menu[data-state='open'][data-side='right'] {
   animation:
-    care-fade-in 200ms var(--care-ease) both,
-    care-blur-in 380ms var(--care-ease) both,
-    care-scale-in-right 280ms var(--care-ease) both;
+    care-fade-in 200ms var(--care-ease) backwards,
+    care-blur-in 380ms var(--care-ease) backwards,
+    care-scale-in-right 280ms var(--care-ease) backwards;
 }
 
 .care-menu[data-state='open'][data-side='left'] {
   animation:
-    care-fade-in 200ms var(--care-ease) both,
-    care-blur-in 380ms var(--care-ease) both,
-    care-scale-in-left 280ms var(--care-ease) both;
+    care-fade-in 200ms var(--care-ease) backwards,
+    care-blur-in 380ms var(--care-ease) backwards,
+    care-scale-in-left 280ms var(--care-ease) backwards;
 }
 
 .care-menu[data-state='closed'] {
@@ -390,21 +389,17 @@ body,
 }
 
 .care-overlay[data-state='open'] {
-  animation: care-fade-in 180ms var(--care-ease) both;
+  animation: care-fade-in 180ms var(--care-ease) backwards;
 }
 
 .care-overlay[data-state='closed'] {
   animation: care-fade-out 160ms var(--care-ease) both;
 }
 
-.care-dialog {
-  will-change: opacity, filter, transform;
-}
-
 .care-dialog[data-state='open'] {
   animation:
-    care-dialog-in 220ms var(--care-ease) both,
-    care-blur-in 340ms var(--care-ease) both;
+    care-dialog-in 220ms var(--care-ease) backwards,
+    care-blur-in 340ms var(--care-ease) backwards;
 }
 
 .care-dialog[data-state='closed'] {
@@ -415,14 +410,15 @@ body,
 
 .care-collapsible {
   overflow: hidden;
-  will-change: height, opacity, filter, transform;
 }
 
+/* Open uses `backwards` (NOT `both`) so `height` releases back to `auto` once finished,
+   allowing nested collapsibles inside to expand freely without clipping. */
 .care-collapsible[data-state='open'] {
   animation:
-    care-disclosure-height-in 420ms var(--care-ease) both,
-    care-fade-in 300ms var(--care-ease) both,
-    care-blur-in 360ms var(--care-ease) both;
+    care-disclosure-height-in 420ms var(--care-ease) backwards,
+    care-fade-in 300ms var(--care-ease) backwards,
+    care-blur-in 360ms var(--care-ease) backwards;
 }
 
 .care-collapsible[data-state='closed'] {
@@ -461,16 +457,16 @@ body,
 
 .care-page-enter {
   animation:
-    care-fade-in 200ms var(--care-ease) both,
-    care-blur-in 380ms var(--care-ease) both;
+    care-fade-in 200ms var(--care-ease) backwards,
+    care-blur-in 380ms var(--care-ease) backwards;
 }
 
 .care-section-blur {
-  animation: care-section-blur 240ms var(--care-ease) both;
+  animation: care-section-blur 240ms var(--care-ease) backwards;
 }
 
 .care-fade-up {
-  animation: care-fade-up 300ms var(--care-ease) both;
+  animation: care-fade-up 300ms var(--care-ease) backwards;
 }
 
 .care-chevron {

@@ -88,12 +88,7 @@ export function EmptyWelcomeView(): React.JSX.Element {
 
         {/* Flush double-layer tray: white ComposerCard aligned edge-to-edge on top/left/right, soft gray strip below */}
         <div className="care-hero-composer rounded-[20px] bg-[var(--bg-subtle)]/80">
-          <ComposerCard
-            value={draft}
-            onValueChange={setDraft}
-            size="hero"
-            className="rounded-[20px] shadow-[var(--shadow-composer)]"
-          />
+          <ComposerCard value={draft} onValueChange={setDraft} />
 
           {/* Recessed context strip: 📁 project · 💻 本地 · ⎇ branch */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-ui text-[var(--text-secondary)]">
